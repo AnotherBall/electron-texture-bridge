@@ -1,0 +1,10 @@
+target/
+node_modules/
+*.node
+vendor/SpoutDX/
+vendor/Syphon.framework/
+vendor/syphon-src/build/
+build
+cpp
+.DS_Store
+out

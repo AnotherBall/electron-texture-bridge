@@ -1,0 +1,25 @@
+{
+  "name": "electron-texture-bridge",
+  "version": "0.1.0",
+  "description": "Cross-platform GPU texture sharing for Electron: Spout (Win) + Syphon Metal (Mac)",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "binaryName": "texture-bridge",
+    "triples": {}
+  },
+  "scripts": {
+    "build": "napi build --platform --release --js index.js --dts index.d.ts",
+    "build:debug": "napi build --platform --js index.js --dts index.d.ts"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.4",
+    "@types/node": "^25.2.0"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "texture-bridge.*.node"
+  ],
+  "license": "MIT"
+}
