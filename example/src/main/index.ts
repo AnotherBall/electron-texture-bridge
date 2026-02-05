@@ -17,11 +17,32 @@ import {
   ipcMain,
   sharedTexture,
   globalShortcut,
+  Event,
 } from "electron";
 import path from "path";
 
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
+
+// Electron paint event with shared texture info
+interface TextureInfo {
+  pixelFormat: string;
+  codedSize: { width: number; height: number };
+  visibleRect: { x: number; y: number; width: number; height: number };
+  handle: {
+    ntHandle?: Buffer;   // Windows (Electron 40+)
+    ioSurface?: Buffer;  // macOS
+  };
+}
+
+interface PaintTexture {
+  textureInfo: TextureInfo;
+  release?: () => void;
+}
+
+interface PaintEvent extends Event {
+  texture?: PaintTexture;
+}
 
 // Native addon (CommonJS)
 const { TextureSender, getPlatform } = require("electron-texture-bridge");
@@ -124,7 +145,7 @@ app.whenReady().then(() => {
   let frameCount = 0;
 
   // ---- Paint event handler: GPU texture → Syphon + Preview ----
-  renderWin.webContents.on("paint", (event) => {
+  renderWin.webContents.on("paint", (event: PaintEvent) => {
     frameCount++;
     const now = Date.now();
     if (now - lastTime >= 1000) {
@@ -134,8 +155,8 @@ app.whenReady().then(() => {
       console.log(`[texture-bridge] FPS: ${currentFps.toFixed(1)}`);
     }
 
-    const texture = (event as any).texture;
-    if (!texture?.textureInfo) return;
+    const texture = event.texture;
+    if (!texture) return;
 
     const { textureInfo } = texture;
     const { handle, codedSize } = textureInfo;
@@ -143,17 +164,24 @@ app.whenReady().then(() => {
     try {
       // 1. Send to Syphon/Spout (GPU zero-copy)
       if (sender) {
-        if (process.platform === "win32") {
-          if (handle?.dxgiHandle) {
-            sender.send(handle.dxgiHandle, codedSize.width, codedSize.height);
+        switch (process.platform) {
+          case "win32": {
+            // Electron 40+ uses ntHandle (Buffer) instead of dxgiHandle (number)
+            const ntHandle = handle.ntHandle;
+            if (ntHandle && Buffer.isBuffer(ntHandle)) {
+              // Read 64-bit handle from buffer (little-endian)
+              // Windows HANDLEs are within safe integer range, so convert to Number
+              const handleValue = Number(ntHandle.readBigInt64LE(0));
+              sender.send(handleValue, codedSize.width, codedSize.height);
+            }
+            break;
           }
-        } else {
-          if (handle?.ioSurface) {
-            sender.sendSurface(
-              handle.ioSurface,
-              codedSize.width,
-              codedSize.height
-            );
+          case "darwin": {
+            const ioSurface = handle.ioSurface;
+            if (ioSurface) {
+              sender.sendSurface(ioSurface, codedSize.width, codedSize.height);
+            }
+            break;
           }
         }
       }
@@ -174,12 +202,11 @@ app.whenReady().then(() => {
           // Ignore preview errors
         }
       }
-    } catch (err: any) {
-      console.error("[texture-bridge] send error:", err.message);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[texture-bridge] send error:", message);
     } finally {
-      if (texture.release) {
-        texture.release();
-      }
+      texture.release?.();
     }
   });
 

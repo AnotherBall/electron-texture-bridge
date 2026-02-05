@@ -19,6 +19,9 @@
     "electron-texture-bridge": "link:..",
     "three": "^0.182.0"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": ["electron", "esbuild", "electron-winstaller"]
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/three": "^0.182.0",

@@ -5,9 +5,10 @@ vendor/SpoutDX/
 vendor/Syphon.framework/
 vendor/syphon-src/build/
 /build
-cpp
 .DS_Store
 out
 example/out
 example/dist
 example/node_modules
+index.d.ts
+index.js

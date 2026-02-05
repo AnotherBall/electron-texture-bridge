@@ -20,6 +20,8 @@ fn build_windows() {
         .file("vendor/SpoutDX/SpoutSenderNames.cpp")
         .file("vendor/SpoutDX/SpoutFrameCount.cpp")
         .file("vendor/SpoutDX/SpoutUtils.cpp")
+        .file("vendor/SpoutDX/SpoutCopy.cpp")
+        .file("vendor/SpoutDX/SpoutSharedMemory.cpp")
         .include("vendor/SpoutDX")
         .include("cpp/win")
         .flag("/EHsc")
@@ -28,6 +30,13 @@ fn build_windows() {
 
     println!("cargo:rustc-link-lib=d3d11");
     println!("cargo:rustc-link-lib=dxgi");
+    println!("cargo:rustc-link-lib=user32");
+    println!("cargo:rustc-link-lib=gdi32");
+    println!("cargo:rustc-link-lib=shell32");
+    println!("cargo:rustc-link-lib=ole32");
+    println!("cargo:rustc-link-lib=comdlg32");
+    println!("cargo:rustc-link-lib=comctl32");
+    println!("cargo:rustc-link-lib=shlwapi");
 }
 
 #[cfg(target_os = "macos")]
