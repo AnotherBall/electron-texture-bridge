@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Texture Bridge - Three.js Raymarching VJ</title>
+  <style>* { margin: 0; padding: 0; } canvas { display: block; }</style>
+</head>
+<body>
+  <canvas id="canvas" width="1920" height="1080"></canvas>
+  <script type="module">
+    import RenderWorker from './render-worker?worker';
+
+    const canvas = document.getElementById('canvas');
+    const offscreen = canvas.transferControlToOffscreen();
+
+    // Create worker with bundled Three.js
+    const worker = new RenderWorker();
+    worker.postMessage({ type: 'init', canvas: offscreen }, [offscreen]);
+
+    // Audio-reactive simulation (replace with real Web Audio API analysis)
+    // In a real VJ app, use AudioContext + AnalyserNode
+    setInterval(() => {
+      // Simulate low/mid/high frequency analysis
+      worker.postMessage({
+        type: 'audio',
+        bass: Math.pow(Math.random(), 2) * 0.5,
+        mid: Math.pow(Math.random(), 2) * 0.3,
+        high: Math.pow(Math.random(), 2) * 0.2,
+      });
+    }, 50);
+
+    // Simulate beat detection at ~120 BPM
+    setInterval(() => {
+      if (Math.random() > 0.3) {
+        worker.postMessage({ type: 'beat' });
+      }
+    }, 500);
+
+    // Example: Real audio analysis would look like this:
+    /*
+    const audioContext = new AudioContext();
+    const analyser = audioContext.createAnalyser();
+    analyser.fftSize = 256;
+
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      const source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      function analyzeAudio() {
+        requestAnimationFrame(analyzeAudio);
+        analyser.getByteFrequencyData(dataArray);
+
+        // Split into frequency bands
+        const bass = dataArray.slice(0, 10).reduce((a, b) => a + b) / 10 / 255;
+        const mid = dataArray.slice(10, 50).reduce((a, b) => a + b) / 40 / 255;
+        const high = dataArray.slice(50, 100).reduce((a, b) => a + b) / 50 / 255;
+
+        worker.postMessage({ type: 'audio', bass, mid, high });
+      }
+      analyzeAudio();
+    });
+    */
+  </script>
+</body>
+</html>
