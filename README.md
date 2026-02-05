@@ -12,66 +12,150 @@ Electron の `useSharedTexture` offscreen rendering から **Spout** (Windows) /
 
 全パスが GPU 上で完結。CPU readback なし。
 
-## セットアップ
+## 必要要件
 
-### 前提条件
-
-- Rust toolchain (`rustup`)
+### 共通
 - Node.js 20+
-- **Windows**: Visual Studio Build Tools, Windows SDK
-- **macOS**: Xcode Command Line Tools
+- pnpm 10+
+- Rust toolchain (`rustup`)
 
-### vendor ライブラリの配置
+### macOS
+- Xcode Command Line Tools
+- macOS 11.0+
 
-#### Windows: Spout2 SDK
+### Windows
+- Visual Studio Build Tools 2019+
+- Windows SDK 10.0.19041.0+
 
-```bash
-# Spout2 のソースを vendor/SpoutDX/ に配置
-git clone https://github.com/leadedge/Spout2.git /tmp/Spout2
-cp -r /tmp/Spout2/SPOUTSDK/SpoutDirectX/SpoutDX vendor/SpoutDX
-# SpoutDX 内部が参照するファイルも必要
-cp /tmp/Spout2/SPOUTSDK/SpoutDirectX/SpoutDirectX.cpp vendor/SpoutDX/
-cp /tmp/Spout2/SPOUTSDK/SpoutDirectX/SpoutDirectX.h vendor/SpoutDX/
-cp /tmp/Spout2/SPOUTSDK/SpoutGL/SpoutSenderNames.cpp vendor/SpoutDX/
-cp /tmp/Spout2/SPOUTSDK/SpoutGL/SpoutSenderNames.h vendor/SpoutDX/
-cp /tmp/Spout2/SPOUTSDK/SpoutGL/SpoutFrameCount.cpp vendor/SpoutDX/
-cp /tmp/Spout2/SPOUTSDK/SpoutGL/SpoutFrameCount.h vendor/SpoutDX/
-cp /tmp/Spout2/SPOUTSDK/SpoutGL/SpoutUtils.cpp vendor/SpoutDX/
-cp /tmp/Spout2/SPOUTSDK/SpoutGL/SpoutUtils.h vendor/SpoutDX/
-```
+## macOS でのビルド
 
-#### macOS: Syphon Framework
+### 1. Rust と Node.js のセットアップ
 
 ```bash
-# Syphon の Release ビルドを vendor/ に配置
-# GitHub Releases から .framework.zip をダウンロード
-# https://github.com/Syphon/Syphon-Framework/releases
-unzip Syphon.framework.zip -d vendor/
-# vendor/Syphon.framework/ が存在することを確認
+# Rust のインストール
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+
+# pnpm のインストール (未インストールの場合)
+npm install -g pnpm
 ```
 
-### ビルド
+### 2. Syphon Framework のビルド
 
 ```bash
-# ルートで依存インストール
-npm install
+# リポジトリをクローン
+git clone --recursive https://github.com/naporin0624/electron-texture-bridge.git
+cd electron-texture-bridge
 
-# napi-rs でネイティブアドオンをビルド
-npm run build
+# Syphon Framework をビルド
+cd vendor/syphon-src
+xcodebuild -project Syphon.xcodeproj -scheme Syphon -configuration Release
 
-# → texture-bridge.darwin-arm64.node (Mac) または
-#   texture-bridge.win32-x64-msvc.node (Win) が生成される
+# ビルドされたフレームワークを vendor/ にコピー
+cp -r build/Build/Products/Release/Syphon.framework ../
+cd ../..
 ```
 
-### 動作確認
+### 3. ネイティブアドオンのビルド
+
+```bash
+# 依存関係のインストール
+pnpm install
+
+# ネイティブアドオンのビルド
+pnpm run build
+# → index.darwin-arm64.node (Apple Silicon)
+# → index.darwin-x64.node (Intel Mac)
+```
+
+### 4. Example アプリの実行
 
 ```bash
 cd example
-npm install
-npm start
+pnpm install
+pnpm run dev
 ```
 
-Spout receiver (Windows) または Syphon client (macOS) で "ElectronVJ" が見えれば成功。
+Syphon Simple Client などで "TextureBridgeExample" が表示されれば成功。
+
+### 5. アプリケーションのパッケージング
+
+```bash
+cd example
+pnpm run build:mac
+# → dist/texture-bridge-example-x.x.x.dmg
+```
+
+## Windows でのビルド
+
+### 1. 前提条件のインストール
+
+```powershell
+# Rust のインストール
+# https://rustup.rs/ からインストーラをダウンロードして実行
+
+# Visual Studio Build Tools のインストール
+# https://visualstudio.microsoft.com/downloads/ から
+# "Build Tools for Visual Studio" をダウンロード
+# インストール時に以下を選択:
+# - "Desktop development with C++"
+# - Windows 10/11 SDK
+```
+
+### 2. Spout2 SDK のセットアップ
+
+```powershell
+# リポジトリをクローン
+git clone --recursive https://github.com/naporin0624/electron-texture-bridge.git
+cd electron-texture-bridge
+
+# Spout2 SDK をダウンロード
+git clone https://github.com/leadedge/Spout2.git temp_spout
+
+# 必要なファイルを vendor/SpoutDX/ にコピー
+mkdir -p vendor/SpoutDX
+Copy-Item temp_spout/SPOUTSDK/SpoutDirectX/SpoutDX/* vendor/SpoutDX/ -Recurse
+Copy-Item temp_spout/SPOUTSDK/SpoutDirectX/SpoutDirectX.cpp vendor/SpoutDX/
+Copy-Item temp_spout/SPOUTSDK/SpoutDirectX/SpoutDirectX.h vendor/SpoutDX/
+Copy-Item temp_spout/SPOUTSDK/SpoutGL/SpoutSenderNames.cpp vendor/SpoutDX/
+Copy-Item temp_spout/SPOUTSDK/SpoutGL/SpoutSenderNames.h vendor/SpoutDX/
+Copy-Item temp_spout/SPOUTSDK/SpoutGL/SpoutFrameCount.cpp vendor/SpoutDX/
+Copy-Item temp_spout/SPOUTSDK/SpoutGL/SpoutFrameCount.h vendor/SpoutDX/
+Copy-Item temp_spout/SPOUTSDK/SpoutGL/SpoutUtils.cpp vendor/SpoutDX/
+Copy-Item temp_spout/SPOUTSDK/SpoutGL/SpoutUtils.h vendor/SpoutDX/
+
+# 一時ディレクトリを削除
+Remove-Item -Recurse -Force temp_spout
+```
+
+### 3. ネイティブアドオンのビルド
+
+```powershell
+# 依存関係のインストール
+pnpm install
+
+# ネイティブアドオンのビルド
+pnpm run build
+# → index.win32-x64-msvc.node
+```
+
+### 4. Example アプリの実行
+
+```powershell
+cd example
+pnpm install
+pnpm run dev
+```
+
+Spout Receiver などで "TextureBridgeExample" が表示されれば成功。
+
+### 5. アプリケーションのパッケージング
+
+```powershell
+cd example
+pnpm run build:win
+# → dist/texture-bridge-example-x.x.x-setup.exe
+```
 
 ## JS API
 
@@ -94,7 +178,7 @@ win.webContents.on('paint', (_event, _dirty, texture) => {
 sender.stop();
 ```
 
-## handle の取得方法
+## Handle の取得方法
 
 Electron 39+ での `textureInfo.handle` の構造はプラットフォームにより異なる:
 
@@ -103,8 +187,14 @@ Electron 39+ での `textureInfo.handle` の構造はプラットフォームに
 | Windows  | `handle.dxgiHandle` | BigInt/number | DXGI Shared HANDLE |
 | macOS    | `handle.ioSurfaceId` | number | IOSurfaceID |
 
-※ Electron のバージョンによって property 名が変わる可能性あり。
-  `example/main.js` のフォールバック処理を参照。
+## Example アプリケーション
+
+`example/` ディレクトリに Three.js を使った raymarching シェーダーの VJ アプリケーションが含まれています。
+
+- OffscreenCanvas + WebWorker での Three.js レンダリング
+- GLSL raymarching シェーダー（SDF ベースの 3D ビジュアル）
+- オーディオリアクティブなパラメータ制御
+- WebGPU プレビューウィンドウ
 
 ## トラブルシューティング
 
@@ -117,14 +207,46 @@ Electron 39+ での `textureInfo.handle` の構造はプラットフォームに
 - `preserveDrawingBuffer` は不要（Compositor が直接読む）
 - ピクセルフォーマットの不一致: Chromium は BGRA、受信側も BGRA を期待しているか確認
 
-### Syphon receiver に表示されない
+### Syphon receiver に表示されない (macOS)
 - `vendor/Syphon.framework` が正しい場所にあるか
 - macOS の Gatekeeper: `xattr -dr com.apple.quarantine vendor/Syphon.framework`
 - Console.app でエラーログを確認
 
+### Spout receiver に表示されない (Windows)
+- Spout2 がシステムにインストールされているか確認
+- GPU ドライバが最新か確認
+- DirectX 11 対応の GPU が必要
+
 ### release() を呼び忘れるとフリーズ
 - テクスチャプールは数枚しかない。`release()` を呼ばないと枯渇して paint が止まる
 - try/finally で確実に呼ぶこと
+
+## ディレクトリ構成
+
+```
+electron-texture-bridge/
+├── src/                    # Rust ソースコード
+│   ├── lib.rs             # NAPI エントリポイント
+│   ├── types.rs           # 共通型定義
+│   ├── mac/               # macOS (Syphon) 実装
+│   └── win/               # Windows (Spout) 実装
+├── cpp/                    # C++/ObjC++ ブリッジ
+│   ├── mac/               # Syphon ObjC++ ラッパー
+│   └── win/               # Spout C++ ラッパー
+├── vendor/                 # サードパーティライブラリ
+│   ├── syphon-src/        # Syphon Framework ソース (submodule)
+│   ├── Syphon.framework/  # ビルド済み Framework (gitignore)
+│   └── SpoutDX/           # Spout SDK (gitignore)
+├── example/                # サンプルアプリケーション
+│   ├── src/
+│   │   ├── main/          # Electron メインプロセス
+│   │   ├── preload/       # プリロードスクリプト
+│   │   └── renderer/      # レンダラー (Three.js + Worker)
+│   └── build/             # アプリアイコン等
+├── build.rs               # Rust ビルドスクリプト
+├── Cargo.toml             # Rust 依存関係
+└── package.json           # Node.js 依存関係
+```
 
 ## ライセンス
 
