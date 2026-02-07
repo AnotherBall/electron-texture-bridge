@@ -17,35 +17,19 @@ import {
   ipcMain,
   sharedTexture,
   globalShortcut,
-  Event,
+  type Event,
 } from "electron";
 import path from "path";
-
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-
-// Electron paint event with shared texture info
-interface TextureInfo {
-  pixelFormat: string;
-  codedSize: { width: number; height: number };
-  visibleRect: { x: number; y: number; width: number; height: number };
-  handle: {
-    ntHandle?: Buffer;   // Windows (Electron 40+)
-    ioSurface?: Buffer;  // macOS
-  };
-}
-
-interface PaintTexture {
-  textureInfo: TextureInfo;
-  release?: () => void;
-}
+import {
+  TextureSender,
+  getPlatform,
+  type TextureInfo,
+  type PaintTexture,
+} from "@electron-texture-bridge/core";
 
 interface PaintEvent extends Event {
   texture?: PaintTexture;
 }
-
-// Native addon (CommonJS)
-const { TextureSender, getPlatform } = require("electron-texture-bridge");
 
 let renderWin: BrowserWindow | null = null;
 let previewWin: BrowserWindow | null = null;

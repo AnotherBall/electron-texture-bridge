@@ -1,5 +1,5 @@
 {
-  "name": "texture-bridge-example",
+  "name": "@electron-texture-bridge/example",
   "version": "0.1.0",
   "description": "Three.js raymarching VJ example with GPU texture bridge to Syphon",
   "author": "naporin0624",
@@ -16,11 +16,8 @@
     "build:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {
-    "electron-texture-bridge": "link:..",
+    "@electron-texture-bridge/core": "workspace:*",
     "three": "^0.182.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": ["electron", "esbuild", "electron-winstaller"]
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

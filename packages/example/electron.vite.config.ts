@@ -3,7 +3,7 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin({ exclude: ["electron-texture-bridge"] })],
+    plugins: [externalizeDepsPlugin()],
   },
   preload: {
     plugins: [externalizeDepsPlugin()],

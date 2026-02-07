@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            name: darwin-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            name: darwin-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: win32-x64-msvc
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.name }})
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # macOS: Build Syphon.framework from source
+      - name: Build Syphon.framework
+        if: runner.os == 'macOS'
+        run: |
+          cd vendor/syphon-src
+          xcodebuild -project Syphon.xcodeproj \
+            -scheme Syphon \
+            -configuration Release \
+            -derivedDataPath build \
+            ONLY_ACTIVE_ARCH=NO \
+            BUILD_LIBRARY_FOR_DISTRIBUTION=YES
+          cp -R build/Build/Products/Release/Syphon.framework ../Syphon.framework
+
+      # Windows: Fetch Spout2 SDK
+      - name: Fetch Spout2 SDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
+          Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutDirectX/SpoutDX vendor/SpoutDX
+          Remove-Item -Recurse -Force _spout2_tmp
+
+      - run: pnpm install
+
+      - name: Build native addon
+        working-directory: packages/native
+        run: pnpm run build
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.name }}
+          path: packages/native/texture-bridge.*.node
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    name: Publish
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages/native/artifacts
+
+      - name: Move artifacts
+        working-directory: packages/native
+        run: pnpm run artifacts
+
+      - name: Generate platform packages
+        working-directory: packages/native
+        run: pnpm run prepublish
+
+      - name: Publish platform packages
+        working-directory: packages/native
+        run: |
+          for dir in npm/*/; do
+            if [ -f "$dir/package.json" ]; then
+              echo "Publishing $dir..."
+              cd "$dir"
+              npm publish --access public --provenance
+              cd -
+            fi
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @electron-texture-bridge/native
+        working-directory: packages/native
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build and publish @electron-texture-bridge/core
+        run: |
+          pnpm --filter @electron-texture-bridge/core run build
+          cd packages/core
+          npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,28 +1,38 @@
 fn main() {
     napi_build::setup();
 
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let workspace_root = std::path::Path::new(&manifest_dir)
+        .parent()
+        .unwrap() // packages/
+        .parent()
+        .unwrap(); // root
+    let vendor_dir = workspace_root.join("vendor");
+
     #[cfg(target_os = "windows")]
-    build_windows();
+    build_windows(&vendor_dir);
 
     #[cfg(target_os = "macos")]
-    build_macos();
+    build_macos(&vendor_dir);
 }
 
 #[cfg(target_os = "windows")]
-fn build_windows() {
+fn build_windows(vendor_dir: &std::path::Path) {
+    let spout_dir = vendor_dir.join("SpoutDX");
+
     // SpoutDX の C++ ソースをビルド
     // vendor/SpoutDX/ に Spout2 SDK のソースを配置すること
     cc::Build::new()
         .cpp(true)
         .file("cpp/win/spout_bridge.cpp")
-        .file("vendor/SpoutDX/SpoutDX.cpp")
-        .file("vendor/SpoutDX/SpoutDirectX.cpp")
-        .file("vendor/SpoutDX/SpoutSenderNames.cpp")
-        .file("vendor/SpoutDX/SpoutFrameCount.cpp")
-        .file("vendor/SpoutDX/SpoutUtils.cpp")
-        .file("vendor/SpoutDX/SpoutCopy.cpp")
-        .file("vendor/SpoutDX/SpoutSharedMemory.cpp")
-        .include("vendor/SpoutDX")
+        .file(spout_dir.join("SpoutDX.cpp"))
+        .file(spout_dir.join("SpoutDirectX.cpp"))
+        .file(spout_dir.join("SpoutSenderNames.cpp"))
+        .file(spout_dir.join("SpoutFrameCount.cpp"))
+        .file(spout_dir.join("SpoutUtils.cpp"))
+        .file(spout_dir.join("SpoutCopy.cpp"))
+        .file(spout_dir.join("SpoutSharedMemory.cpp"))
+        .include(&spout_dir)
         .include("cpp/win")
         .flag("/EHsc")
         .flag("/std:c++17")
@@ -40,7 +50,9 @@ fn build_windows() {
 }
 
 #[cfg(target_os = "macos")]
-fn build_macos() {
+fn build_macos(vendor_dir: &std::path::Path) {
+    let vendor_str = vendor_dir.to_str().unwrap();
+
     // Syphon Metal の ObjC++ ブリッジをビルド
     cc::Build::new()
         .file("cpp/mac/syphon_bridge.mm")
@@ -50,7 +62,7 @@ fn build_macos() {
         .flag("-fobjc-arc")
         // Syphon.framework の場所
         .flag("-F")
-        .flag("vendor")
+        .flag(vendor_str)
         .compile("syphon_bridge");
 
     // フレームワークリンク
@@ -61,7 +73,7 @@ fn build_macos() {
     println!("cargo:rustc-link-lib=framework=QuartzCore");
 
     // Syphon.framework の検索パス
-    println!("cargo:rustc-link-search=framework=vendor");
+    println!("cargo:rustc-link-search=framework={vendor_str}");
 
     // rpath を設定（ランタイムでフレームワークを見つけられるように）
     // @loader_path: .node ファイルと同じディレクトリ

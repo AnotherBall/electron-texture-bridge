@@ -1,0 +1,30 @@
+import { TextureSender, getPlatform } from "@electron-texture-bridge/native";
+import type { TextureInfo, PaintTexture, Platform } from "./types";
+
+export { TextureSender, getPlatform };
+export type { TextureInfo, PaintTexture, Platform };
+
+/**
+ * Send a texture from an Electron paint event to Syphon/Spout.
+ *
+ * Handles platform detection and buffer extraction automatically.
+ */
+export function sendTextureFromPaintEvent(
+  sender: InstanceType<typeof TextureSender>,
+  textureInfo: TextureInfo,
+): void {
+  const { handle, codedSize } = textureInfo;
+
+  if (process.platform === "win32") {
+    const ntHandle = handle.ntHandle;
+    if (ntHandle && Buffer.isBuffer(ntHandle)) {
+      const handleValue = Number(ntHandle.readBigInt64LE(0));
+      sender.send(handleValue, codedSize.width, codedSize.height);
+    }
+  } else if (process.platform === "darwin") {
+    const ioSurface = handle.ioSurface;
+    if (ioSurface) {
+      sender.sendSurface(ioSurface, codedSize.width, codedSize.height);
+    }
+  }
+}
