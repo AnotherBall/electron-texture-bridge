@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Syphon Preview (WebGPU)</title>
+  <title>Preview (GPU Zero-Copy)</title>
   <style>
     * { margin: 0; padding: 0; }
     body {
@@ -37,10 +37,17 @@
 </head>
 <body>
   <div id="info">Initializing WebGPU...</div>
-  <canvas id="preview" width="1920" height="1080"></canvas>
+  <canvas id="preview"></canvas>
 
   <script type="module">
+    const params = new URLSearchParams(location.search);
+    const W = parseInt(params.get('w'), 10) || 1920;
+    const H = parseInt(params.get('h'), 10) || 1080;
+
     const canvas = document.getElementById('preview');
+    canvas.width = W;
+    canvas.height = H;
+
     const infoEl = document.getElementById('info');
 
     let device = null;
@@ -101,11 +108,7 @@
       context = canvas.getContext('webgpu');
 
       const format = navigator.gpu.getPreferredCanvasFormat();
-      context.configure({
-        device,
-        format,
-        alphaMode: 'opaque',
-      });
+      context.configure({ device, format, alphaMode: 'opaque' });
 
       const shaderModule = device.createShaderModule({ code: shaderCode });
 

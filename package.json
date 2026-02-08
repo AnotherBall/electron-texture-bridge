@@ -3,7 +3,8 @@
   "scripts": {
     "build:native": "pnpm --filter @electron-texture-bridge/native run build",
     "build:core": "pnpm --filter @electron-texture-bridge/core run build",
-    "build": "pnpm run build:native && pnpm run build:core",
+    "build:renderer": "pnpm --filter @electron-texture-bridge/renderer run build",
+    "build": "pnpm run build:native && pnpm run build:core && pnpm run build:renderer",
     "dev:example": "pnpm --filter @electron-texture-bridge/example run dev",
     "lint": "oxlint packages/*/src",
     "fmt": "oxfmt --write packages/*/src",

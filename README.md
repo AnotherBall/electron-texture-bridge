@@ -1,253 +1,361 @@
 # electron-texture-bridge
 
-Electron の `useSharedTexture` offscreen rendering から **Spout** (Windows) / **Syphon Metal** (macOS) へ GPU zero-copy でテクスチャを共有する napi-rs ネイティブアドオン。
+[![CI](https://github.com/naporin0624/electron-texture-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/naporin0624/electron-texture-bridge/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## アーキテクチャ
+**GPU zero-copy texture sharing from Electron to VJ software via Spout / Syphon Metal.**
+
+[日本語](lang/ja/README.md)
+
+A napi-rs native addon that captures GPU textures from Electron's offscreen rendering (`useSharedTexture`) and shares them with external applications like Resolume Arena, VDMX, OBS, TouchDesigner, and other Syphon/Spout-compatible receivers — all without CPU readback.
+
+## Architecture
 
 ```
-[Worker Thread]           [Chromium GPU Process]      [Native Addon]        [VJ App]
- Three.js / WebGL  ──→   Compositor (Metal/D3D11) ──→  texture-bridge  ──→  Resolume
- OffscreenCanvas          Shared Texture                Spout / Syphon      VDMX 等
+[Web Worker]              [Chromium GPU Process]         [Native Addon]         [External Apps]
+ Three.js / WebGL  ──→   Compositor (Metal / D3D11) ──→  texture-bridge  ──→   Resolume Arena
+ OffscreenCanvas          Shared Texture (GPU)            Spout / Syphon        VDMX, OBS, etc.
 ```
 
-全パスが GPU 上で完結。CPU readback なし。
+The entire pipeline stays on the GPU. No CPU readback. Sub-frame latency.
 
-## 必要要件
+## Features
 
-### 共通
-- Node.js 20+
-- pnpm 10+
-- Rust toolchain (`rustup`)
+- **GPU Zero-Copy**: Textures are shared directly on the GPU via IOSurface (macOS) or DXGI Shared Handle (Windows)
+- **Cross-Platform**: Syphon Metal on macOS, Spout on Windows
+- **Electron Native**: Built for Electron 40+'s `useSharedTexture` paint event API
+- **WebGPU Preview**: Optional zero-copy preview window using `importExternalTexture`
+- **High-Level API**: `sendTextureFromPaintEvent()` handles all platform-specific details
+- **napi-rs**: Type-safe Rust → Node.js bindings with prebuilt binaries
+
+## Supported Platforms
+
+| Platform | Protocol | GPU API | Target |
+|----------|----------|---------|--------|
+| macOS (Apple Silicon) | Syphon Metal | IOSurface + Metal | `aarch64-apple-darwin` |
+| macOS (Intel) | Syphon Metal | IOSurface + Metal | `x86_64-apple-darwin` |
+| Windows x64 | Spout | DXGI Shared Handle + D3D11 | `x86_64-pc-windows-msvc` |
+
+## Requirements
+
+- **Node.js** 20+
+- **pnpm** 10+
+- **Rust** toolchain (via [rustup](https://rustup.rs/))
+- **Electron** 40.0.0+
 
 ### macOS
+
 - Xcode Command Line Tools
-- macOS 11.0+
+- macOS 11.0+ (Metal support)
 
 ### Windows
-- Visual Studio Build Tools 2019+
+
+- Visual Studio Build Tools 2019+ with "Desktop development with C++" workload
 - Windows SDK 10.0.19041.0+
+- DirectX 11 compatible GPU
 
-## macOS でのビルド
+## Installation
 
-### 1. Rust と Node.js のセットアップ
+### As a library
 
 ```bash
-# Rust のインストール
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-# pnpm のインストール (未インストールの場合)
-npm install -g pnpm
+npm install @electron-texture-bridge/core
+# or
+pnpm add @electron-texture-bridge/core
 ```
 
-### 2. Syphon Framework のビルド
+The `@electron-texture-bridge/core` package provides the high-level TypeScript API. Platform-specific native binaries (`@electron-texture-bridge/native-*`) are installed automatically as optional dependencies.
+
+### Building from source
 
 ```bash
-# リポジトリをクローン
+# Clone with submodules (Syphon source)
 git clone --recursive https://github.com/naporin0624/electron-texture-bridge.git
 cd electron-texture-bridge
+```
 
-# Syphon Framework をビルド
+#### macOS: Build Syphon Framework
+
+```bash
 cd vendor/syphon-src
-xcodebuild -project Syphon.xcodeproj -scheme Syphon -configuration Release
-
-# ビルドされたフレームワークを vendor/ にコピー
-cp -r build/Build/Products/Release/Syphon.framework ../
+xcodebuild -project Syphon.xcodeproj \
+  -scheme Syphon \
+  -configuration Release \
+  -derivedDataPath build \
+  ONLY_ACTIVE_ARCH=NO \
+  BUILD_LIBRARY_FOR_DISTRIBUTION=YES
+cp -R build/Build/Products/Release/Syphon.framework ../Syphon.framework
 cd ../..
 ```
 
-### 3. ネイティブアドオンのビルド
+#### Windows: Fetch Spout2 SDK
+
+```powershell
+git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
+Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutDirectX/SpoutDX vendor/SpoutDX
+Remove-Item -Recurse -Force _spout2_tmp
+```
+
+#### Build
 
 ```bash
-# 依存関係のインストール
 pnpm install
-
-# ネイティブアドオンのビルド
-pnpm run build
-# → index.darwin-arm64.node (Apple Silicon)
-# → index.darwin-x64.node (Intel Mac)
+pnpm build          # Builds native addon + core TypeScript package
 ```
 
-### 4. Example アプリの実行
+## Quick Start
 
-```bash
-cd example
-pnpm install
-pnpm run dev
-```
+```typescript
+import { BrowserWindow, sharedTexture } from "electron";
+import { TextureSender, sendTextureFromPaintEvent } from "@electron-texture-bridge/core";
 
-Syphon Simple Client などで "TextureBridgeExample" が表示されれば成功。
-
-### 5. アプリケーションのパッケージング
-
-```bash
-cd example
-pnpm run build:mac
-# → dist/texture-bridge-example-x.x.x.dmg
-```
-
-## Windows でのビルド
-
-### 1. 前提条件のインストール
-
-```powershell
-# Rust のインストール
-# https://rustup.rs/ からインストーラをダウンロードして実行
-
-# Visual Studio Build Tools のインストール
-# https://visualstudio.microsoft.com/downloads/ から
-# "Build Tools for Visual Studio" をダウンロード
-# インストール時に以下を選択:
-# - "Desktop development with C++"
-# - Windows 10/11 SDK
-```
-
-### 2. Spout2 SDK のセットアップ
-
-```powershell
-# リポジトリをクローン
-git clone --recursive https://github.com/naporin0624/electron-texture-bridge.git
-cd electron-texture-bridge
-
-# Spout2 SDK をダウンロード
-git clone https://github.com/leadedge/Spout2.git temp_spout
-
-# 必要なファイルを vendor/SpoutDX/ にコピー
-mkdir -p vendor/SpoutDX
-Copy-Item temp_spout/SPOUTSDK/SpoutDirectX/SpoutDX/* vendor/SpoutDX/ -Recurse
-Copy-Item temp_spout/SPOUTSDK/SpoutDirectX/SpoutDirectX.cpp vendor/SpoutDX/
-Copy-Item temp_spout/SPOUTSDK/SpoutDirectX/SpoutDirectX.h vendor/SpoutDX/
-Copy-Item temp_spout/SPOUTSDK/SpoutGL/SpoutSenderNames.cpp vendor/SpoutDX/
-Copy-Item temp_spout/SPOUTSDK/SpoutGL/SpoutSenderNames.h vendor/SpoutDX/
-Copy-Item temp_spout/SPOUTSDK/SpoutGL/SpoutFrameCount.cpp vendor/SpoutDX/
-Copy-Item temp_spout/SPOUTSDK/SpoutGL/SpoutFrameCount.h vendor/SpoutDX/
-Copy-Item temp_spout/SPOUTSDK/SpoutGL/SpoutUtils.cpp vendor/SpoutDX/
-Copy-Item temp_spout/SPOUTSDK/SpoutGL/SpoutUtils.h vendor/SpoutDX/
-
-# 一時ディレクトリを削除
-Remove-Item -Recurse -Force temp_spout
-```
-
-### 3. ネイティブアドオンのビルド
-
-```powershell
-# 依存関係のインストール
-pnpm install
-
-# ネイティブアドオンのビルド
-pnpm run build
-# → index.win32-x64-msvc.node
-```
-
-### 4. Example アプリの実行
-
-```powershell
-cd example
-pnpm install
-pnpm run dev
-```
-
-Spout Receiver などで "TextureBridgeExample" が表示されれば成功。
-
-### 5. アプリケーションのパッケージング
-
-```powershell
-cd example
-pnpm run build:win
-# → dist/texture-bridge-example-x.x.x-setup.exe
-```
-
-## JS API
-
-```js
-const { TextureSender, getPlatform } = require('electron-texture-bridge');
-
-// 初期化
-const sender = new TextureSender('MyVJApp', 1920, 1080);
-console.log(sender.platform()); // "spout" or "syphon-metal"
-
-// Electron の paint イベントで使用
-win.webContents.on('paint', (_event, _dirty, texture) => {
-  const { textureInfo, release } = texture;
-  const handle = extractHandle(textureInfo); // プラットフォーム別の handle 取得
-  sender.send(handle, textureInfo.codedSize.width, textureInfo.codedSize.height);
-  release(); // 必ず呼ぶ
+// 1. Create an offscreen window with shared texture enabled
+const win = new BrowserWindow({
+  width: 1920,
+  height: 1080,
+  show: false,
+  webPreferences: {
+    offscreen: { useSharedTexture: true },
+  },
 });
 
-// 終了
-sender.stop();
+// 2. Create a texture sender (visible in Syphon/Spout receivers)
+const sender = new TextureSender("MyApp", 1920, 1080);
+
+// 3. Forward paint event textures to Syphon/Spout
+win.webContents.on("paint", (event) => {
+  const texture = event.texture;
+  if (!texture) return;
+
+  try {
+    sendTextureFromPaintEvent(sender, texture.textureInfo);
+  } finally {
+    texture.release?.(); // IMPORTANT: Always release to prevent GPU memory leaks
+  }
+});
+
+win.webContents.setFrameRate(60);
 ```
 
-## Handle の取得方法
+## API Reference
 
-Electron 39+ での `textureInfo.handle` の構造はプラットフォームにより異なる:
+### `@electron-texture-bridge/core`
 
-| Platform | Handle Property | Type | 意味 |
-|----------|----------------|------|------|
-| Windows  | `handle.dxgiHandle` | BigInt/number | DXGI Shared HANDLE |
-| macOS    | `handle.ioSurfaceId` | number | IOSurfaceID |
+#### `sendTextureFromPaintEvent(sender, textureInfo)`
 
-## Example アプリケーション
+High-level convenience function that handles platform-specific texture handle extraction and forwarding.
 
-`example/` ディレクトリに Three.js を使った raymarching シェーダーの VJ アプリケーションが含まれています。
+- **macOS**: Reads `handle.ioSurface` buffer → calls `sender.sendSurface()`
+- **Windows**: Reads `handle.ntHandle` buffer as BigInt64LE → calls `sender.send()`
 
-- OffscreenCanvas + WebWorker での Three.js レンダリング
-- GLSL raymarching シェーダー（SDF ベースの 3D ビジュアル）
-- オーディオリアクティブなパラメータ制御
-- WebGPU プレビューウィンドウ
+```typescript
+function sendTextureFromPaintEvent(
+  sender: TextureSender,
+  textureInfo: TextureInfo,
+): void;
+```
 
-## トラブルシューティング
+#### `TextureSender`
 
-### paint イベントが発火しない
-- `win.webContents.setFrameRate(60)` を設定しているか確認
-- `show: false` でも paint は発火する
-- Worker 内で `requestAnimationFrame` ループが動いているか確認
+Native class for sending textures to Syphon/Spout receivers.
 
-### テクスチャが真っ黒
-- `preserveDrawingBuffer` は不要（Compositor が直接読む）
-- ピクセルフォーマットの不一致: Chromium は BGRA、受信側も BGRA を期待しているか確認
+```typescript
+class TextureSender {
+  // Create a sender with the given name (visible in receiver apps)
+  constructor(name: string, width: number, height: number);
 
-### Syphon receiver に表示されない (macOS)
-- `vendor/Syphon.framework` が正しい場所にあるか
-- macOS の Gatekeeper: `xattr -dr com.apple.quarantine vendor/Syphon.framework`
-- Console.app でエラーログを確認
+  // Send DXGI handle (Windows) or IOSurfaceID (macOS) - GPU zero-copy
+  send(handle: number, width: number, height: number): void;
 
-### Spout receiver に表示されない (Windows)
-- Spout2 がシステムにインストールされているか確認
-- GPU ドライバが最新か確認
-- DirectX 11 対応の GPU が必要
+  // Send IOSurfaceRef pointer directly (macOS only) - GPU zero-copy
+  sendSurface(surfaceBuffer: Buffer, width: number, height: number): void;
 
-### release() を呼び忘れるとフリーズ
-- テクスチャプールは数枚しかない。`release()` を呼ばないと枯渇して paint が止まる
-- try/finally で確実に呼ぶこと
+  // Send raw RGBA pixel data (fallback, involves CPU copy)
+  sendRgbaBuffer(data: Buffer, width: number, height: number, bytesPerRow?: number): void;
 
-## ディレクトリ構成
+  // Get the platform protocol name ("spout" | "syphon-metal")
+  platform(): string;
+
+  // Release resources
+  stop(): void;
+}
+```
+
+#### `getPlatform()`
+
+Returns the current platform's texture sharing protocol.
+
+```typescript
+function getPlatform(): "spout" | "syphon-metal" | "unsupported";
+```
+
+#### Types
+
+```typescript
+type PixelFormat = "bgra" | "nv12" | "rgba" | "rgbaf16";
+
+interface TextureInfo {
+  pixelFormat: PixelFormat;
+  codedSize: { width: number; height: number };
+  visibleRect: { x: number; y: number; width: number; height: number };
+  handle: {
+    ntHandle?: Buffer;   // Windows (Electron 40+)
+    ioSurface?: Buffer;  // macOS
+  };
+}
+
+interface PaintTexture {
+  textureInfo: TextureInfo;
+  release?: () => void;
+}
+
+type Platform = "spout" | "syphon-metal" | "unsupported";
+```
+
+## Performance
+
+| Path | GPU Copies | Latency | Memory |
+|------|-----------|---------|--------|
+| Syphon / Spout | 0 (zero-copy) | < 1 frame | Shared GPU memory |
+| WebGPU Preview | 0 (zero-copy) | < 1 frame | Shared GPU memory |
+| RGBA Buffer (fallback) | 1 (CPU → GPU) | 2-3 frames | CPU + GPU |
+
+## WebGPU Preview Window
+
+The library supports an optional GPU zero-copy preview path using Electron's `sharedTexture` API and WebGPU's `importExternalTexture`:
+
+```typescript
+// Main process: forward texture to preview window
+const imported = sharedTexture.importSharedTexture({ textureInfo });
+sharedTexture.sendSharedTexture({
+  frame: previewWin.webContents.mainFrame,
+  importedSharedTexture: imported,
+});
+
+// Renderer process (preview window): receive and render with WebGPU
+sharedTexture.setSharedTextureReceiver((data) => {
+  const videoFrame = data.importedSharedTexture.getVideoFrame();
+  const externalTexture = device.importExternalTexture({ source: videoFrame });
+  // Render with zero-copy GPU texture...
+});
+```
+
+## Example Application
+
+The `packages/example/` directory contains a full VJ application demonstrating:
+
+- **Three.js + GLSL raymarching** in an OffscreenCanvas Web Worker
+- **SDF-based 3D visuals** with audio-reactive parameters
+- **WebGPU preview window** with GPU zero-copy texture display
+- **Syphon/Spout output** for integration with professional VJ software
+
+```bash
+# Run the example
+pnpm dev:example
+```
+
+Look for "ElectronVJ-ThreeJS" in your Syphon/Spout receiver application.
+
+### Packaging the example
+
+```bash
+# macOS
+pnpm --filter @electron-texture-bridge/example run build:mac
+
+# Windows
+pnpm --filter @electron-texture-bridge/example run build:win
+```
+
+## Project Structure
 
 ```
 electron-texture-bridge/
-├── src/                    # Rust ソースコード
-│   ├── lib.rs             # NAPI エントリポイント
-│   ├── types.rs           # 共通型定義
-│   ├── mac/               # macOS (Syphon) 実装
-│   └── win/               # Windows (Spout) 実装
-├── cpp/                    # C++/ObjC++ ブリッジ
-│   ├── mac/               # Syphon ObjC++ ラッパー
-│   └── win/               # Spout C++ ラッパー
-├── vendor/                 # サードパーティライブラリ
-│   ├── syphon-src/        # Syphon Framework ソース (submodule)
-│   ├── Syphon.framework/  # ビルド済み Framework (gitignore)
-│   └── SpoutDX/           # Spout SDK (gitignore)
-├── example/                # サンプルアプリケーション
-│   ├── src/
-│   │   ├── main/          # Electron メインプロセス
-│   │   ├── preload/       # プリロードスクリプト
-│   │   └── renderer/      # レンダラー (Three.js + Worker)
-│   └── build/             # アプリアイコン等
-├── build.rs               # Rust ビルドスクリプト
-├── Cargo.toml             # Rust 依存関係
-└── package.json           # Node.js 依存関係
+├── packages/
+│   ├── native/                # @electron-texture-bridge/native (napi-rs)
+│   │   ├── src/
+│   │   │   ├── lib.rs         # napi-rs entry point, TextureSender API
+│   │   │   ├── types.rs       # RawTextureHandle type alias
+│   │   │   ├── mac/           # macOS: Syphon Metal sender + FFI
+│   │   │   └── win/           # Windows: Spout sender + FFI
+│   │   ├── cpp/
+│   │   │   ├── mac/           # ObjC++ Syphon Metal bridge
+│   │   │   └── win/           # C++ Spout bridge
+│   │   ├── build.rs           # Platform-specific build configuration
+│   │   └── Cargo.toml
+│   ├── core/                  # @electron-texture-bridge/core (TypeScript)
+│   │   └── src/
+│   │       ├── index.ts       # sendTextureFromPaintEvent + re-exports
+│   │       └── types.ts       # TextureInfo, PaintTexture types
+│   └── example/               # Electron VJ demo app (private)
+│       └── src/
+│           ├── main/          # Electron main process
+│           ├── preload/       # sharedTexture receiver setup
+│           └── renderer/      # Three.js + GLSL + WebGPU preview
+├── vendor/                    # Third-party SDKs (gitignored, built locally)
+│   ├── syphon-src/            # Syphon Framework source (git submodule)
+│   ├── Syphon.framework/     # Built framework (macOS)
+│   └── SpoutDX/              # Spout SDK (Windows)
+├── specs/
+│   └── ARCHITECTURE.md        # Detailed architecture documentation
+├── Cargo.toml                 # Rust workspace root
+├── pnpm-workspace.yaml        # pnpm monorepo config
+└── package.json               # Root workspace scripts
 ```
 
-## ライセンス
+## Troubleshooting
 
-MIT
+### Paint event not firing
+
+- Ensure `win.webContents.setFrameRate(60)` is set
+- Paint events fire even with `show: false`
+- Verify that a `requestAnimationFrame` loop is running in the renderer/worker
+
+### Black texture output
+
+- `preserveDrawingBuffer` is not needed (Chromium compositor reads directly)
+- Check pixel format mismatch: Chromium outputs BGRA, ensure the receiver expects BGRA
+
+### Syphon receiver not showing output (macOS)
+
+- Verify `vendor/Syphon.framework` exists and was built correctly
+- Clear Gatekeeper quarantine: `xattr -dr com.apple.quarantine vendor/Syphon.framework`
+- Check Console.app for error logs
+
+### Spout receiver not showing output (Windows)
+
+- Verify Spout2 is installed on the system
+- Ensure GPU drivers are up to date
+- DirectX 11 compatible GPU is required
+
+### Freezing / paint events stop
+
+- **Always call `texture.release()`** after processing. The texture pool is small (a few frames). Failing to release will exhaust the pool and stall the paint event pipeline.
+- Use `try/finally` to guarantee release:
+
+```typescript
+win.webContents.on("paint", (event) => {
+  const texture = event.texture;
+  if (!texture) return;
+  try {
+    sendTextureFromPaintEvent(sender, texture.textureInfo);
+  } finally {
+    texture.release?.();
+  }
+});
+```
+
+## CI/CD
+
+GitHub Actions builds native binaries for all supported platforms:
+
+| Runner | Target | Output |
+|--------|--------|--------|
+| `macos-14` | `aarch64-apple-darwin` | `texture-bridge.darwin-arm64.node` |
+| `macos-13` | `x86_64-apple-darwin` | `texture-bridge.darwin-x64.node` |
+| `windows-latest` | `x86_64-pc-windows-msvc` | `texture-bridge.win32-x64-msvc.node` |
+
+Publishing to npm is triggered by version tags (`v*`).
+
+## License
+
+[MIT](LICENSE)

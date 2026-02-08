@@ -17,3 +17,6 @@ packages/native/index.js
 
 # core build
 packages/core/dist/
+
+# renderer build
+packages/renderer/dist/

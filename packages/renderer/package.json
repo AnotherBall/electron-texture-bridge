@@ -1,0 +1,54 @@
+{
+  "name": "@electron-texture-bridge/renderer",
+  "version": "0.1.0",
+  "description": "High-level factory API for GPU texture bridge (BrowserWindow + Preview + Sender)",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.cts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    },
+    "./client": {
+      "import": "./dist/client/index.mjs",
+      "require": "./dist/client/index.cjs"
+    },
+    "./client/worker-protocol": {
+      "import": "./dist/client/worker-protocol.mjs",
+      "require": "./dist/client/worker-protocol.cjs"
+    },
+    "./worker": {
+      "import": "./dist/client/worker-protocol.mjs",
+      "require": "./dist/client/worker-protocol.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts src/client/index.ts src/client/worker-protocol.ts --format cjs,esm --dts && cp -r src/assets dist/assets",
+    "typecheck": "tsgo --noEmit"
+  },
+  "dependencies": {
+    "@electron-texture-bridge/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "electron": ">=40.0.0"
+  },
+  "peerDependenciesMeta": {
+    "electron": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsdown": "^0.20.3",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ]
+}

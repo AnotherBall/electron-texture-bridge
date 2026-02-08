@@ -39,9 +39,9 @@ importers:
 
   packages/example:
     dependencies:
-      '@electron-texture-bridge/core':
+      '@electron-texture-bridge/renderer':
         specifier: workspace:*
-        version: link:../core
+        version: link:../renderer
       three:
         specifier: ^0.182.0
         version: 0.182.0
@@ -76,6 +76,25 @@ importers:
       '@types/node':
         specifier: ^25.2.0
         version: 25.2.1
+
+  packages/renderer:
+    dependencies:
+      '@electron-texture-bridge/core':
+        specifier: workspace:*
+        version: link:../core
+      electron:
+        specifier: '>=40.0.0'
+        version: 40.2.1
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.9
+      tsdown:
+        specifier: ^0.20.3
+        version: 0.20.3(@typescript/native-preview@7.0.0-dev.20260207.1)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
 
 packages:
 
@@ -3074,7 +3093,7 @@ snapshots:
     dependencies:
       '@types/http-cache-semantics': 4.2.0
       '@types/keyv': 3.1.4
-      '@types/node': 22.19.9
+      '@types/node': 25.2.1
       '@types/responselike': 1.0.3
 
   '@types/debug@4.1.12':
@@ -3085,7 +3104,7 @@ snapshots:
 
   '@types/fs-extra@9.0.13':
     dependencies:
-      '@types/node': 22.19.9
+      '@types/node': 25.2.1
 
   '@types/http-cache-semantics@4.2.0': {}
 
@@ -3093,7 +3112,7 @@ snapshots:
 
   '@types/keyv@3.1.4':
     dependencies:
-      '@types/node': 22.19.9
+      '@types/node': 25.2.1
 
   '@types/ms@2.1.0': {}
 
@@ -3111,13 +3130,13 @@ snapshots:
 
   '@types/plist@3.0.5':
     dependencies:
-      '@types/node': 22.19.9
+      '@types/node': 25.2.1
       xmlbuilder: 15.1.1
     optional: true
 
   '@types/responselike@1.0.3':
     dependencies:
-      '@types/node': 22.19.9
+      '@types/node': 25.2.1
 
   '@types/stats.js@0.17.4': {}
 
@@ -3138,7 +3157,7 @@ snapshots:
 
   '@types/yauzl@2.10.3':
     dependencies:
-      '@types/node': 22.19.9
+      '@types/node': 25.2.1
     optional: true
 
   '@typescript/native-preview-darwin-arm64@7.0.0-dev.20260207.1':
