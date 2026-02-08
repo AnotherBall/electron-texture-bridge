@@ -13,7 +13,8 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "tsdown src/index.ts --format cjs,esm --dts --exports"
+    "build": "tsdown src/index.ts --format cjs,esm --dts --exports",
+    "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
     "@electron-texture-bridge/native": "workspace:*"

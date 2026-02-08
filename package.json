@@ -4,11 +4,23 @@
     "build:native": "pnpm --filter @electron-texture-bridge/native run build",
     "build:core": "pnpm --filter @electron-texture-bridge/core run build",
     "build": "pnpm run build:native && pnpm run build:core",
-    "dev:example": "pnpm --filter @electron-texture-bridge/example run dev"
+    "dev:example": "pnpm --filter @electron-texture-bridge/example run dev",
+    "lint": "oxlint packages/*/src",
+    "fmt": "oxfmt --write packages/*/src",
+    "fmt:check": "oxfmt --check packages/*/src",
+    "typecheck": "pnpm -r --filter '!@electron-texture-bridge/native' run typecheck"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["electron", "esbuild", "electron-winstaller"]
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild",
+      "electron-winstaller"
+    ]
   },
-  "devDependencies": {},
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@typescript/native-preview": "7.0.0-dev.20260207.1",
+    "oxfmt": "^0.28.0",
+    "oxlint": "^1.43.0"
+  }
 }

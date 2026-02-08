@@ -1,6 +1,9 @@
+/** Supported pixel formats for shared textures */
+export type PixelFormat = "bgra" | "nv12" | "rgba" | "rgbaf16";
+
 /** Electron paint event texture info */
 export interface TextureInfo {
-  pixelFormat: string;
+  pixelFormat: PixelFormat;
   codedSize: { width: number; height: number };
   visibleRect: { x: number; y: number; width: number; height: number };
   handle: {

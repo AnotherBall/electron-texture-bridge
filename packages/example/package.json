@@ -13,7 +13,8 @@
     "build:unpack": "pnpm run build && electron-builder --dir",
     "build:win": "pnpm run build && electron-builder --win",
     "build:mac": "electron-vite build && electron-builder --mac",
-    "build:linux": "electron-vite build && electron-builder --linux"
+    "build:linux": "electron-vite build && electron-builder --linux",
+    "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
     "@electron-texture-bridge/core": "workspace:*",
