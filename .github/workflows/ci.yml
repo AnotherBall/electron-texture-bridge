@@ -73,13 +73,15 @@ jobs:
             BUILD_LIBRARY_FOR_DISTRIBUTION=YES
           cp -R build/Build/Products/Release/Syphon.framework ../Syphon.framework
 
-      # Windows: Fetch Spout2 SDK
+      # Windows: Fetch Spout2 SDK (preserve directory structure for relative includes)
       - name: Fetch Spout2 SDK
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
-          Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutDirectX/SpoutDX vendor/SpoutDX
+          New-Item -ItemType Directory -Force vendor/Spout2
+          Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutDirectX vendor/Spout2/SpoutDirectX
+          Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutGL vendor/Spout2/SpoutGL
           Remove-Item -Recurse -Force _spout2_tmp
 
       - run: pnpm install

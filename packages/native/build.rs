@@ -18,21 +18,26 @@ fn main() {
 
 #[cfg(target_os = "windows")]
 fn build_windows(vendor_dir: &std::path::Path) {
-    let spout_dir = vendor_dir.join("SpoutDX");
+    // vendor/Spout2/ に SPOUTSDK の構造を保持して配置:
+    //   Spout2/SpoutDirectX/SpoutDX/ — SpoutDX.cpp, SpoutDX.h
+    //   Spout2/SpoutGL/              — SpoutDirectX.cpp, SpoutCommon.h, etc.
+    // SpoutDX.h が ../../SpoutGL/ を相対参照するため構造の維持が必須
+    let spout2_dir = vendor_dir.join("Spout2");
+    let spout_dx_dir = spout2_dir.join("SpoutDirectX").join("SpoutDX");
+    let spout_gl_dir = spout2_dir.join("SpoutGL");
 
-    // SpoutDX の C++ ソースをビルド
-    // vendor/SpoutDX/ に Spout2 SDK のソースを配置すること
     cc::Build::new()
         .cpp(true)
         .file("cpp/win/spout_bridge.cpp")
-        .file(spout_dir.join("SpoutDX.cpp"))
-        .file(spout_dir.join("SpoutDirectX.cpp"))
-        .file(spout_dir.join("SpoutSenderNames.cpp"))
-        .file(spout_dir.join("SpoutFrameCount.cpp"))
-        .file(spout_dir.join("SpoutUtils.cpp"))
-        .file(spout_dir.join("SpoutCopy.cpp"))
-        .file(spout_dir.join("SpoutSharedMemory.cpp"))
-        .include(&spout_dir)
+        .file(spout_dx_dir.join("SpoutDX.cpp"))
+        .file(spout_gl_dir.join("SpoutDirectX.cpp"))
+        .file(spout_gl_dir.join("SpoutSenderNames.cpp"))
+        .file(spout_gl_dir.join("SpoutFrameCount.cpp"))
+        .file(spout_gl_dir.join("SpoutUtils.cpp"))
+        .file(spout_gl_dir.join("SpoutCopy.cpp"))
+        .file(spout_gl_dir.join("SpoutSharedMemory.cpp"))
+        .include(&spout_dx_dir)
+        .include(&spout_gl_dir)
         .include("cpp/win")
         .flag("/EHsc")
         .flag("/std:c++17")

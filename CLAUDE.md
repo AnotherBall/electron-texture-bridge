@@ -53,10 +53,12 @@ xcodebuild -project Syphon.xcodeproj -scheme Syphon -configuration Release \
 cp -R build/Build/Products/Release/Syphon.framework ../Syphon.framework
 ```
 
-**Windows:** Clone Spout2 SDK into vendor:
+**Windows:** Clone Spout2 SDK into vendor (directory structure must be preserved for relative includes):
 ```bash
 git clone --depth 1 https://github.com/leadedge/Spout2.git _tmp
-cp -r _tmp/SPOUTSDK/SpoutDirectX/SpoutDX vendor/SpoutDX
+mkdir -p vendor/Spout2
+cp -r _tmp/SPOUTSDK/SpoutDirectX vendor/Spout2/SpoutDirectX
+cp -r _tmp/SPOUTSDK/SpoutGL vendor/Spout2/SpoutGL
 rm -rf _tmp
 ```
 
