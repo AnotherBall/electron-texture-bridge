@@ -25,7 +25,8 @@ Electron のオフスクリーンレンダリング（`useSharedTexture`）か�
 - **クロスプラットフォーム**: macOS は Syphon Metal、Windows は Spout
 - **Electron ネイティブ対応**: Electron 40+ の `useSharedTexture` paint イベント API 向けに設計
 - **WebGPU プレビュー**: `importExternalTexture` を使用したゼロコピープレビューウィンドウ（オプション）
-- **高レベル API**: `sendTextureFromPaintEvent()` がプラットフォーム固有の処理をすべて抽象化
+- **ファクトリ API**: `createTextureBridge()` がオフスクリーンウィンドウ・paint イベント・プレビュー・FPS 計測をすべて自動化
+- **低レベル API**: `sendTextureFromPaintEvent()` でパイプラインの完全な制御も可能
 - **napi-rs**: 型安全な Rust → Node.js バインディング（プリビルドバイナリ付き）
 
 ## 対応プラットフォーム
@@ -56,15 +57,23 @@ Electron のオフスクリーンレンダリング（`useSharedTexture`）か�
 
 ## インストール
 
-### ライブラリとして使用
+> **詳細ガイド:** 前提条件、ソースからのビルド、プロジェクト統合、パッケージング、トラブルシューティングの詳細は [docs/ja/INSTALLATION.md](../../docs/ja/INSTALLATION.md) を参照してください。
+
+### ライブラリとして使用（推奨）
+
+```bash
+npm install @electron-texture-bridge/renderer
+# または
+pnpm add @electron-texture-bridge/renderer
+```
+
+`@electron-texture-bridge/renderer` がほとんどのユーザー向けの高レベルパッケージです。`@electron-texture-bridge/core` と `@electron-texture-bridge/native` を依存関係として含みます。
+
+パイプラインを直接制御したい場合：
 
 ```bash
 npm install @electron-texture-bridge/core
-# または
-pnpm add @electron-texture-bridge/core
 ```
-
-`@electron-texture-bridge/core` パッケージが高レベル TypeScript API を提供します。プラットフォーム固有のネイティブバイナリ（`@electron-texture-bridge/native-*`）はオプショナル依存関係として自動的にインストールされます。
 
 ### ソースからビルド
 
@@ -100,16 +109,56 @@ Remove-Item -Recurse -Force _spout2_tmp
 
 ```bash
 pnpm install
-pnpm build          # ネイティブアドオン + core TypeScript パッケージをビルド
+pnpm build          # ネイティブアドオン + core + renderer パッケージをビルド
 ```
 
 ## クイックスタート
 
+### 高レベル: ファクトリ API（推奨）
+
+electron-texture-bridge を最も簡単に使う方法です。ファクトリがオフスクリーンウィンドウの作成、paint イベントの接続、Syphon/Spout センダー、オプションのプレビューウィンドウをすべて1回の呼び出しで処理します。
+
 ```typescript
-import { BrowserWindow, sharedTexture } from "electron";
+// メインプロセス
+import { app } from "electron";
+import { createTextureBridge } from "@electron-texture-bridge/renderer";
+
+app.whenReady().then(async () => {
+  const bridge = await createTextureBridge({
+    name: "MyApp",
+    width: 1920,
+    height: 1080,
+    frameRate: 60,
+    rendererUrl: "path/to/index.html",  // Web Worker を含むレンダラーページ
+    preview: { enabled: true },
+  });
+
+  bridge.on("fps", (fps) => console.log(`FPS: ${fps.toFixed(1)}`));
+  bridge.resize(3840, 2160);  // 全レイヤーを自動リサイズ
+  // bridge.dispose();         // 終了時にクリーンアップ
+});
+```
+
+```html
+<!-- レンダラーページ (index.html) -->
+<canvas id="canvas" width="1920" height="1080"></canvas>
+<script type="module">
+  import MyWorker from './my-worker?worker';
+  const canvas = document.getElementById('canvas');
+  const offscreen = canvas.transferControlToOffscreen();
+  const worker = new MyWorker();
+  worker.postMessage({ type: 'init', canvas: offscreen }, [offscreen]);
+</script>
+```
+
+### 低レベル: Core API
+
+パイプラインを完全に制御する場合は `@electron-texture-bridge/core` を直接使用します。
+
+```typescript
+import { BrowserWindow } from "electron";
 import { TextureSender, sendTextureFromPaintEvent } from "@electron-texture-bridge/core";
 
-// 1. 共有テクスチャを有効にしたオフスクリーンウィンドウを作成
 const win = new BrowserWindow({
   width: 1920,
   height: 1080,
@@ -119,14 +168,11 @@ const win = new BrowserWindow({
   },
 });
 
-// 2. テクスチャセンダーを作成（Syphon/Spout レシーバーに表示される名前）
 const sender = new TextureSender("MyApp", 1920, 1080);
 
-// 3. paint イベントのテクスチャを Syphon/Spout に転送
 win.webContents.on("paint", (event) => {
   const texture = event.texture;
   if (!texture) return;
-
   try {
     sendTextureFromPaintEvent(sender, texture.textureInfo);
   } finally {
@@ -139,21 +185,91 @@ win.webContents.setFrameRate(60);
 
 ## API リファレンス
 
+### `@electron-texture-bridge/renderer`
+
+#### `createTextureBridge(options): Promise<TextureBridge>`
+
+完全に接続されたテクスチャブリッジを作成するファクトリ関数。`app.whenReady()` の後に呼び出す必要があります。
+
+```typescript
+interface TextureBridgeOptions {
+  name: string;            // Syphon/Spout センダー名
+  width: number;           // テクスチャ幅（ピクセル）
+  height: number;          // テクスチャ高さ（ピクセル）
+  frameRate?: number;      // 目標フレームレート（デフォルト: 60）
+  rendererUrl: string;     // 読み込む URL（ファイルパス、file://、http://）
+  preview?: PreviewOptions;
+  webPreferences?: Electron.WebPreferences;
+}
+
+interface PreviewOptions {
+  enabled?: boolean;       // プレビューウィンドウを開く（デフォルト: false）
+  width?: number;          // プレビューウィンドウ幅
+  height?: number;         // プレビューウィンドウ高さ
+  title?: string;          // プレビューウィンドウタイトル
+}
+```
+
+#### `TextureBridge`
+
+返されるハンドル：
+
+```typescript
+interface TextureBridge {
+  on(event: "fps", listener: (fps: number) => void): this;
+  on(event: "ready", listener: () => void): this;
+  on(event: "error", listener: (error: Error) => void): this;
+  on(event: "resize", listener: (width: number, height: number) => void): this;
+  on(event: "disposed", listener: () => void): this;
+
+  resize(width: number, height: number): void;  // 全レイヤー + Worker にカスケード
+  openPreview(): void;
+  closePreview(): void;
+  dispose(): void;
+
+  readonly renderWindow: BrowserWindow;
+  readonly previewWindow: BrowserWindow | null;
+  readonly isDisposed: boolean;
+}
+```
+
+#### `createWorkerRenderer(options)`（`renderer/client` から）
+
+キャンバスから Worker へのパイプラインを設定するレンダラープロセス用ヘルパー。ResizeObserver による自動リサイズ伝播付き。
+
+```typescript
+import { createWorkerRenderer } from "@electron-texture-bridge/renderer/client";
+
+createWorkerRenderer({
+  worker: new MyWorker(),
+  width: 1920,
+  height: 1080,
+});
+```
+
+#### Worker プロトコル型（`renderer/worker` から）
+
+```typescript
+import type { WorkerMessage } from "@electron-texture-bridge/renderer/worker";
+
+// Worker 内:
+self.onmessage = (e: MessageEvent<WorkerMessage>) => {
+  switch (e.data.type) {
+    case "init":   /* e.data.canvas: OffscreenCanvas */ break;
+    case "resize": /* e.data.width, e.data.height */   break;
+    case "dispose": break;
+  }
+};
+```
+
 ### `@electron-texture-bridge/core`
 
 #### `sendTextureFromPaintEvent(sender, textureInfo)`
 
-プラットフォーム固有のテクスチャハンドルの取得と転送を自動的に処理する高レベル関数です。
+プラットフォーム固有のテクスチャハンドルの取得と転送を自動的に処理する低レベル関数です。
 
 - **macOS**: `handle.ioSurface` バッファを読み取り → `sender.sendSurface()` を呼び出し
 - **Windows**: `handle.ntHandle` バッファを BigInt64LE として読み取り → `sender.send()` を呼び出し
-
-```typescript
-function sendTextureFromPaintEvent(
-  sender: TextureSender,
-  textureInfo: TextureInfo,
-): void;
-```
 
 #### `TextureSender`
 
@@ -161,29 +277,16 @@ Syphon/Spout レシーバーにテクスチャを送信するネイティブク�
 
 ```typescript
 class TextureSender {
-  // 指定した名前でセンダーを作成（レシーバーアプリに表示される）
   constructor(name: string, width: number, height: number);
-
-  // DXGI ハンドル（Windows）または IOSurfaceID（macOS）を送信 - GPU ゼロコピー
   send(handle: number, width: number, height: number): void;
-
-  // IOSurfaceRef ポインタを直接送信（macOS のみ）- GPU ゼロコピー
   sendSurface(surfaceBuffer: Buffer, width: number, height: number): void;
-
-  // 生の RGBA ピクセルデータを送信（フォールバック、CPU コピーを伴う）
   sendRgbaBuffer(data: Buffer, width: number, height: number, bytesPerRow?: number): void;
-
-  // プラットフォームプロトコル名を取得（"spout" | "syphon-metal"）
   platform(): string;
-
-  // リソースを解放
   stop(): void;
 }
 ```
 
 #### `getPlatform()`
-
-現在のプラットフォームのテクスチャ共有プロトコルを返します。
 
 ```typescript
 function getPlatform(): "spout" | "syphon-metal" | "unsupported";
@@ -219,26 +322,6 @@ type Platform = "spout" | "syphon-metal" | "unsupported";
 | Syphon / Spout | 0（ゼロコピー） | 1 フレーム未満 | 共有 GPU メモリ |
 | WebGPU プレビュー | 0（ゼロコピー） | 1 フレーム未満 | 共有 GPU メモリ |
 | RGBA バッファ（フォールバック） | 1（CPU → GPU） | 2-3 フレーム | CPU + GPU |
-
-## WebGPU プレビューウィンドウ
-
-Electron の `sharedTexture` API と WebGPU の `importExternalTexture` を使用したオプションの GPU ゼロコピープレビューパスをサポートしています：
-
-```typescript
-// メインプロセス: プレビューウィンドウにテクスチャを転送
-const imported = sharedTexture.importSharedTexture({ textureInfo });
-sharedTexture.sendSharedTexture({
-  frame: previewWin.webContents.mainFrame,
-  importedSharedTexture: imported,
-});
-
-// レンダラープロセス（プレビューウィンドウ）: WebGPU で受信・描画
-sharedTexture.setSharedTextureReceiver((data) => {
-  const videoFrame = data.importedSharedTexture.getVideoFrame();
-  const externalTexture = device.importExternalTexture({ source: videoFrame });
-  // ゼロコピー GPU テクスチャで描画...
-});
-```
 
 ## サンプルアプリケーション
 
@@ -286,11 +369,21 @@ electron-texture-bridge/
 │   │   └── src/
 │   │       ├── index.ts       # sendTextureFromPaintEvent + 再エクスポート
 │   │       └── types.ts       # TextureInfo, PaintTexture 型定義
+│   ├── renderer/              # @electron-texture-bridge/renderer (TypeScript)
+│   │   └── src/
+│   │       ├── index.ts       # createTextureBridge ファクトリ
+│   │       ├── bridge.ts      # ファクトリ実装（EventEmitter）
+│   │       ├── types.ts       # TextureBridgeOptions, TextureBridge
+│   │       ├── preview-manager.ts  # プレビューウィンドウのライフサイクル管理
+│   │       ├── fps-counter.ts # FPS 計測ユーティリティ
+│   │       ├── client/        # レンダラープロセス用ヘルパー
+│   │       │   ├── index.ts   # createWorkerRenderer
+│   │       │   └── worker-protocol.ts  # Worker メッセージ型
+│   │       └── assets/        # 静的ファイル（preview.html, preload）
 │   └── example/               # Electron VJ デモアプリ（プライベート）
 │       └── src/
-│           ├── main/          # Electron メインプロセス
-│           ├── preload/       # sharedTexture レシーバー設定
-│           └── renderer/      # Three.js + GLSL + WebGPU プレビュー
+│           ├── main/          # Electron メインプロセス（約 30 LOC）
+│           └── renderer/      # Three.js + GLSL + Web Worker
 ├── vendor/                    # サードパーティ SDK（gitignore、ローカルでビルド）
 │   ├── syphon-src/            # Syphon Framework ソース（git サブモジュール）
 │   ├── Syphon.framework/     # ビルド済みフレームワーク（macOS）
@@ -330,7 +423,8 @@ electron-texture-bridge/
 ### フリーズ / paint イベントが停止する
 
 - **テクスチャ処理後は必ず `texture.release()` を呼ぶこと。** テクスチャプールは数フレーム分しかありません。release を呼ばないとプールが枯渇し、paint イベントパイプラインが停止します。
-- `try/finally` で確実に release を呼ぶ：
+- `createTextureBridge()` 使用時は自動的に処理されます。
+- 低レベルの core API 使用時は `try/finally` で確実に release を呼ぶ：
 
 ```typescript
 win.webContents.on("paint", (event) => {

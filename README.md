@@ -25,7 +25,8 @@ The entire pipeline stays on the GPU. No CPU readback. Sub-frame latency.
 - **Cross-Platform**: Syphon Metal on macOS, Spout on Windows
 - **Electron Native**: Built for Electron 40+'s `useSharedTexture` paint event API
 - **WebGPU Preview**: Optional zero-copy preview window using `importExternalTexture`
-- **High-Level API**: `sendTextureFromPaintEvent()` handles all platform-specific details
+- **Factory API**: `createTextureBridge()` handles all boilerplate — offscreen window, paint events, preview, FPS tracking
+- **Low-Level API**: `sendTextureFromPaintEvent()` for full control over the pipeline
 - **napi-rs**: Type-safe Rust → Node.js bindings with prebuilt binaries
 
 ## Supported Platforms
@@ -56,15 +57,23 @@ The entire pipeline stays on the GPU. No CPU readback. Sub-frame latency.
 
 ## Installation
 
-### As a library
+> **Detailed guide:** See [docs/INSTALLATION.md](docs/INSTALLATION.md) for step-by-step instructions covering prerequisites, building from source, integration, packaging, and troubleshooting.
+
+### As a library (recommended)
+
+```bash
+npm install @electron-texture-bridge/renderer
+# or
+pnpm add @electron-texture-bridge/renderer
+```
+
+`@electron-texture-bridge/renderer` is the high-level package for most users. It includes `@electron-texture-bridge/core` and `@electron-texture-bridge/native` as dependencies.
+
+For advanced use cases that need direct control over the pipeline:
 
 ```bash
 npm install @electron-texture-bridge/core
-# or
-pnpm add @electron-texture-bridge/core
 ```
-
-The `@electron-texture-bridge/core` package provides the high-level TypeScript API. Platform-specific native binaries (`@electron-texture-bridge/native-*`) are installed automatically as optional dependencies.
 
 ### Building from source
 
@@ -100,16 +109,56 @@ Remove-Item -Recurse -Force _spout2_tmp
 
 ```bash
 pnpm install
-pnpm build          # Builds native addon + core TypeScript package
+pnpm build          # Builds native addon + core + renderer packages
 ```
 
 ## Quick Start
 
+### High-Level: Factory API (recommended)
+
+The simplest way to use electron-texture-bridge. The factory handles offscreen window creation, paint event wiring, Syphon/Spout sender, and optional preview window — all in one call.
+
 ```typescript
-import { BrowserWindow, sharedTexture } from "electron";
+// main process
+import { app } from "electron";
+import { createTextureBridge } from "@electron-texture-bridge/renderer";
+
+app.whenReady().then(async () => {
+  const bridge = await createTextureBridge({
+    name: "MyApp",
+    width: 1920,
+    height: 1080,
+    frameRate: 60,
+    rendererUrl: "path/to/index.html",  // Your renderer page with Web Worker
+    preview: { enabled: true },
+  });
+
+  bridge.on("fps", (fps) => console.log(`FPS: ${fps.toFixed(1)}`));
+  bridge.resize(3840, 2160);  // Resizes all layers automatically
+  // bridge.dispose();         // Clean up when done
+});
+```
+
+```html
+<!-- renderer page (index.html) -->
+<canvas id="canvas" width="1920" height="1080"></canvas>
+<script type="module">
+  import MyWorker from './my-worker?worker';
+  const canvas = document.getElementById('canvas');
+  const offscreen = canvas.transferControlToOffscreen();
+  const worker = new MyWorker();
+  worker.postMessage({ type: 'init', canvas: offscreen }, [offscreen]);
+</script>
+```
+
+### Low-Level: Core API
+
+For full control over the pipeline, use `@electron-texture-bridge/core` directly.
+
+```typescript
+import { BrowserWindow } from "electron";
 import { TextureSender, sendTextureFromPaintEvent } from "@electron-texture-bridge/core";
 
-// 1. Create an offscreen window with shared texture enabled
 const win = new BrowserWindow({
   width: 1920,
   height: 1080,
@@ -119,14 +168,11 @@ const win = new BrowserWindow({
   },
 });
 
-// 2. Create a texture sender (visible in Syphon/Spout receivers)
 const sender = new TextureSender("MyApp", 1920, 1080);
 
-// 3. Forward paint event textures to Syphon/Spout
 win.webContents.on("paint", (event) => {
   const texture = event.texture;
   if (!texture) return;
-
   try {
     sendTextureFromPaintEvent(sender, texture.textureInfo);
   } finally {
@@ -139,21 +185,91 @@ win.webContents.setFrameRate(60);
 
 ## API Reference
 
+### `@electron-texture-bridge/renderer`
+
+#### `createTextureBridge(options): Promise<TextureBridge>`
+
+Factory function that creates a fully-wired texture bridge. Must be called after `app.whenReady()`.
+
+```typescript
+interface TextureBridgeOptions {
+  name: string;            // Syphon/Spout sender name
+  width: number;           // Texture width in pixels
+  height: number;          // Texture height in pixels
+  frameRate?: number;      // Target frame rate (default: 60)
+  rendererUrl: string;     // URL to load (file path, file://, or http://)
+  preview?: PreviewOptions;
+  webPreferences?: Electron.WebPreferences;
+}
+
+interface PreviewOptions {
+  enabled?: boolean;       // Open preview window (default: false)
+  width?: number;          // Preview window width
+  height?: number;         // Preview window height
+  title?: string;          // Preview window title
+}
+```
+
+#### `TextureBridge`
+
+The returned handle provides:
+
+```typescript
+interface TextureBridge {
+  on(event: "fps", listener: (fps: number) => void): this;
+  on(event: "ready", listener: () => void): this;
+  on(event: "error", listener: (error: Error) => void): this;
+  on(event: "resize", listener: (width: number, height: number) => void): this;
+  on(event: "disposed", listener: () => void): this;
+
+  resize(width: number, height: number): void;  // Cascades to all layers + Worker
+  openPreview(): void;
+  closePreview(): void;
+  dispose(): void;
+
+  readonly renderWindow: BrowserWindow;
+  readonly previewWindow: BrowserWindow | null;
+  readonly isDisposed: boolean;
+}
+```
+
+#### `createWorkerRenderer(options)` (from `renderer/client`)
+
+Renderer-process helper for setting up a canvas-to-Worker pipeline with automatic resize propagation.
+
+```typescript
+import { createWorkerRenderer } from "@electron-texture-bridge/renderer/client";
+
+createWorkerRenderer({
+  worker: new MyWorker(),
+  width: 1920,
+  height: 1080,
+});
+```
+
+#### Worker Protocol Types (from `renderer/worker`)
+
+```typescript
+import type { WorkerMessage } from "@electron-texture-bridge/renderer/worker";
+
+// In your Worker:
+self.onmessage = (e: MessageEvent<WorkerMessage>) => {
+  switch (e.data.type) {
+    case "init":   /* e.data.canvas: OffscreenCanvas */ break;
+    case "resize": /* e.data.width, e.data.height */   break;
+    case "dispose": break;
+  }
+};
+```
+
 ### `@electron-texture-bridge/core`
 
 #### `sendTextureFromPaintEvent(sender, textureInfo)`
 
-High-level convenience function that handles platform-specific texture handle extraction and forwarding.
+Low-level convenience function that handles platform-specific texture handle extraction and forwarding.
 
 - **macOS**: Reads `handle.ioSurface` buffer → calls `sender.sendSurface()`
 - **Windows**: Reads `handle.ntHandle` buffer as BigInt64LE → calls `sender.send()`
-
-```typescript
-function sendTextureFromPaintEvent(
-  sender: TextureSender,
-  textureInfo: TextureInfo,
-): void;
-```
 
 #### `TextureSender`
 
@@ -161,29 +277,16 @@ Native class for sending textures to Syphon/Spout receivers.
 
 ```typescript
 class TextureSender {
-  // Create a sender with the given name (visible in receiver apps)
   constructor(name: string, width: number, height: number);
-
-  // Send DXGI handle (Windows) or IOSurfaceID (macOS) - GPU zero-copy
   send(handle: number, width: number, height: number): void;
-
-  // Send IOSurfaceRef pointer directly (macOS only) - GPU zero-copy
   sendSurface(surfaceBuffer: Buffer, width: number, height: number): void;
-
-  // Send raw RGBA pixel data (fallback, involves CPU copy)
   sendRgbaBuffer(data: Buffer, width: number, height: number, bytesPerRow?: number): void;
-
-  // Get the platform protocol name ("spout" | "syphon-metal")
   platform(): string;
-
-  // Release resources
   stop(): void;
 }
 ```
 
 #### `getPlatform()`
-
-Returns the current platform's texture sharing protocol.
 
 ```typescript
 function getPlatform(): "spout" | "syphon-metal" | "unsupported";
@@ -219,26 +322,6 @@ type Platform = "spout" | "syphon-metal" | "unsupported";
 | Syphon / Spout | 0 (zero-copy) | < 1 frame | Shared GPU memory |
 | WebGPU Preview | 0 (zero-copy) | < 1 frame | Shared GPU memory |
 | RGBA Buffer (fallback) | 1 (CPU → GPU) | 2-3 frames | CPU + GPU |
-
-## WebGPU Preview Window
-
-The library supports an optional GPU zero-copy preview path using Electron's `sharedTexture` API and WebGPU's `importExternalTexture`:
-
-```typescript
-// Main process: forward texture to preview window
-const imported = sharedTexture.importSharedTexture({ textureInfo });
-sharedTexture.sendSharedTexture({
-  frame: previewWin.webContents.mainFrame,
-  importedSharedTexture: imported,
-});
-
-// Renderer process (preview window): receive and render with WebGPU
-sharedTexture.setSharedTextureReceiver((data) => {
-  const videoFrame = data.importedSharedTexture.getVideoFrame();
-  const externalTexture = device.importExternalTexture({ source: videoFrame });
-  // Render with zero-copy GPU texture...
-});
-```
 
 ## Example Application
 
@@ -286,11 +369,21 @@ electron-texture-bridge/
 │   │   └── src/
 │   │       ├── index.ts       # sendTextureFromPaintEvent + re-exports
 │   │       └── types.ts       # TextureInfo, PaintTexture types
+│   ├── renderer/              # @electron-texture-bridge/renderer (TypeScript)
+│   │   └── src/
+│   │       ├── index.ts       # createTextureBridge factory
+│   │       ├── bridge.ts      # Factory implementation (EventEmitter)
+│   │       ├── types.ts       # TextureBridgeOptions, TextureBridge
+│   │       ├── preview-manager.ts  # Preview window lifecycle
+│   │       ├── fps-counter.ts # FPS measurement utility
+│   │       ├── client/        # Renderer-process helpers
+│   │       │   ├── index.ts   # createWorkerRenderer
+│   │       │   └── worker-protocol.ts  # Worker message types
+│   │       └── assets/        # Static files (preview.html, preload)
 │   └── example/               # Electron VJ demo app (private)
 │       └── src/
-│           ├── main/          # Electron main process
-│           ├── preload/       # sharedTexture receiver setup
-│           └── renderer/      # Three.js + GLSL + WebGPU preview
+│           ├── main/          # Electron main process (~30 LOC)
+│           └── renderer/      # Three.js + GLSL + Web Worker
 ├── vendor/                    # Third-party SDKs (gitignored, built locally)
 │   ├── syphon-src/            # Syphon Framework source (git submodule)
 │   ├── Syphon.framework/     # Built framework (macOS)
@@ -330,7 +423,8 @@ electron-texture-bridge/
 ### Freezing / paint events stop
 
 - **Always call `texture.release()`** after processing. The texture pool is small (a few frames). Failing to release will exhaust the pool and stall the paint event pipeline.
-- Use `try/finally` to guarantee release:
+- When using `createTextureBridge()`, this is handled automatically.
+- When using the low-level core API, use `try/finally`:
 
 ```typescript
 win.webContents.on("paint", (event) => {
