@@ -93,7 +93,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: bindings-${{ matrix.name }}
-          path: packages/native/texture-bridge.*.node
+          path: packages/native/index.*.node
           if-no-files-found: error
 
       # macOS: Upload Syphon.framework for bundling in platform packages
