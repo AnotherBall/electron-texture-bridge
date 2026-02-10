@@ -5,7 +5,7 @@
   "main": "index.js",
   "types": "index.d.ts",
   "napi": {
-    "binaryName": "texture-bridge",
+    "binaryName": "index",
     "targets": [
       "aarch64-apple-darwin",
       "x86_64-apple-darwin",
