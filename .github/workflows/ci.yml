@@ -127,6 +127,9 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
+      # npm >= 11.5.1 required for OIDC trusted publishing
+      - run: npm install -g npm@latest
+
       - run: pnpm install
 
       - uses: actions/download-artifact@v4
@@ -179,6 +182,7 @@ jobs:
             fi
           done
 
+      # All packages use npm publish with OIDC trusted publishing (no NPM_TOKEN needed)
       - name: Publish platform packages
         working-directory: packages/native
         run: |
@@ -190,28 +194,22 @@ jobs:
               cd -
             fi
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish @electron-texture-bridge/native
         working-directory: packages/native
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      # core/renderer use pnpm publish to resolve workspace:* dependencies
+      # core/renderer: pnpm pack resolves workspace:* deps, then npm publish via OIDC
       - name: Build and publish @electron-texture-bridge/core
         run: |
           pnpm --filter @electron-texture-bridge/core run build
           cd packages/core
-          pnpm publish --access public --no-git-checks --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          pnpm pack
+          npm publish *.tgz --access public --provenance
 
       - name: Build and publish @electron-texture-bridge/renderer
         run: |
           pnpm --filter @electron-texture-bridge/renderer run build
           cd packages/renderer
-          pnpm publish --access public --no-git-checks --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          pnpm pack
+          npm publish *.tgz --access public --provenance
