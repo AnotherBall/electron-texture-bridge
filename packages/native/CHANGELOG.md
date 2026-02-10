@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.3.0...native-v0.3.1) (2026-02-10)
+
+
+### Bug Fixes
+
+* align napi binaryName with .node filename for CI artifacts ([92756b1](https://github.com/naporin0624/electron-texture-bridge/commit/92756b18b606f914a28870ccd9f0e3ac04b2ed25))
+
 ## [0.3.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.2.0...native-v0.3.0) (2026-02-10)
 
 
