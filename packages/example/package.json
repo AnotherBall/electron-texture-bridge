@@ -1,5 +1,5 @@
 {
-  "name": "@electron-texture-bridge/example",
+  "name": "@napolab/texture-bridge-example",
   "version": "0.1.0",
   "description": "Three.js raymarching VJ example with GPU texture bridge to Syphon",
   "author": "naporin0624",
@@ -17,7 +17,7 @@
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
-    "@electron-texture-bridge/renderer": "workspace:*",
+    "@napolab/texture-bridge-renderer": "workspace:*",
     "three": "^0.182.0"
   },
   "devDependencies": {

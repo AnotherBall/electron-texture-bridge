@@ -4,7 +4,7 @@ import {
   TextureSender,
   sendTextureFromPaintEvent,
   type PaintTexture,
-} from "@electron-texture-bridge/core";
+} from "@napolab/texture-bridge-core";
 import { PreviewManager } from "./preview-manager";
 import { FpsCounter } from "./fps-counter";
 import type { TextureBridgeOptions, TextureBridge } from "./types";

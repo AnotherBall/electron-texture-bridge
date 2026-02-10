@@ -13,7 +13,7 @@ files:
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
 asarUnpack:
   - resources/**
-  - node_modules/@electron-texture-bridge/**
+  - node_modules/@napolab/**
 win:
   executableName: TextureBridgeExample
 nsis:

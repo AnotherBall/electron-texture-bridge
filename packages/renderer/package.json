@@ -1,5 +1,5 @@
 {
-  "name": "@electron-texture-bridge/renderer",
+  "name": "@napolab/texture-bridge-renderer",
   "version": "0.2.0",
   "description": "High-level factory API for GPU texture bridge (BrowserWindow + Preview + Sender)",
   "main": "./dist/index.cjs",
@@ -29,7 +29,7 @@
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
-    "@electron-texture-bridge/core": "workspace:*"
+    "@napolab/texture-bridge-core": "workspace:*"
   },
   "peerDependencies": {
     "electron": ">=40.0.0"

@@ -1,5 +1,5 @@
 {
-  "name": "@electron-texture-bridge/core",
+  "name": "@napolab/texture-bridge-core",
   "version": "0.2.0",
   "description": "High-level GPU texture sharing for Electron (Spout + Syphon Metal)",
   "main": "./dist/index.cjs",
@@ -17,7 +17,7 @@
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
-    "@electron-texture-bridge/native": "workspace:*"
+    "@napolab/texture-bridge": "workspace:*"
   },
   "peerDependencies": {
     "electron": ">=40.0.0"

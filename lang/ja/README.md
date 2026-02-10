@@ -62,17 +62,17 @@ Electron のオフスクリーンレンダリング（`useSharedTexture`）か�
 ### ライブラリとして使用（推奨）
 
 ```bash
-npm install @electron-texture-bridge/renderer
+npm install @napolab/texture-bridge-renderer
 # または
-pnpm add @electron-texture-bridge/renderer
+pnpm add @napolab/texture-bridge-renderer
 ```
 
-`@electron-texture-bridge/renderer` がほとんどのユーザー向けの高レベルパッケージです。`@electron-texture-bridge/core` と `@electron-texture-bridge/native` を依存関係として含みます。
+`@napolab/texture-bridge-renderer` がほとんどのユーザー向けの高レベルパッケージです。`@napolab/texture-bridge-core` と `@napolab/texture-bridge` を依存関係として含みます。
 
 パイプラインを直接制御したい場合：
 
 ```bash
-npm install @electron-texture-bridge/core
+npm install @napolab/texture-bridge-core
 ```
 
 ### ソースからビルド
@@ -121,7 +121,7 @@ electron-texture-bridge を最も簡単に使う方法です。ファクトリ�
 ```typescript
 // メインプロセス
 import { app } from "electron";
-import { createTextureBridge } from "@electron-texture-bridge/renderer";
+import { createTextureBridge } from "@napolab/texture-bridge-renderer";
 
 app.whenReady().then(async () => {
   const bridge = await createTextureBridge({
@@ -153,11 +153,11 @@ app.whenReady().then(async () => {
 
 ### 低レベル: Core API
 
-パイプラインを完全に制御する場合は `@electron-texture-bridge/core` を直接使用します。
+パイプラインを完全に制御する場合は `@napolab/texture-bridge-core` を直接使用します。
 
 ```typescript
 import { BrowserWindow } from "electron";
-import { TextureSender, sendTextureFromPaintEvent } from "@electron-texture-bridge/core";
+import { TextureSender, sendTextureFromPaintEvent } from "@napolab/texture-bridge-core";
 
 const win = new BrowserWindow({
   width: 1920,
@@ -185,7 +185,7 @@ win.webContents.setFrameRate(60);
 
 ## API リファレンス
 
-### `@electron-texture-bridge/renderer`
+### `@napolab/texture-bridge-renderer`
 
 #### `createTextureBridge(options): Promise<TextureBridge>`
 
@@ -238,7 +238,7 @@ interface TextureBridge {
 キャンバスから Worker へのパイプラインを設定するレンダラープロセス用ヘルパー。ResizeObserver による自動リサイズ伝播付き。
 
 ```typescript
-import { createWorkerRenderer } from "@electron-texture-bridge/renderer/client";
+import { createWorkerRenderer } from "@napolab/texture-bridge-renderer/client";
 
 createWorkerRenderer({
   worker: new MyWorker(),
@@ -250,7 +250,7 @@ createWorkerRenderer({
 #### Worker プロトコル型（`renderer/worker` から）
 
 ```typescript
-import type { WorkerMessage } from "@electron-texture-bridge/renderer/worker";
+import type { WorkerMessage } from "@napolab/texture-bridge-renderer/worker";
 
 // Worker 内:
 self.onmessage = (e: MessageEvent<WorkerMessage>) => {
@@ -262,7 +262,7 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
 };
 ```
 
-### `@electron-texture-bridge/core`
+### `@napolab/texture-bridge-core`
 
 #### `sendTextureFromPaintEvent(sender, textureInfo)`
 
@@ -343,10 +343,10 @@ Syphon/Spout レシーバーアプリで「ElectronVJ-ThreeJS」が表示され�
 
 ```bash
 # macOS
-pnpm --filter @electron-texture-bridge/example run build:mac
+pnpm --filter @napolab/texture-bridge-example run build:mac
 
 # Windows
-pnpm --filter @electron-texture-bridge/example run build:win
+pnpm --filter @napolab/texture-bridge-example run build:win
 ```
 
 ## プロジェクト構成
@@ -354,7 +354,7 @@ pnpm --filter @electron-texture-bridge/example run build:win
 ```
 electron-texture-bridge/
 ├── packages/
-│   ├── native/                # @electron-texture-bridge/native (napi-rs)
+│   ├── native/                # @napolab/texture-bridge (napi-rs)
 │   │   ├── src/
 │   │   │   ├── lib.rs         # napi-rs エントリポイント、TextureSender API
 │   │   │   ├── types.rs       # RawTextureHandle 型エイリアス
@@ -365,11 +365,11 @@ electron-texture-bridge/
 │   │   │   └── win/           # C++ Spout ブリッジ
 │   │   ├── build.rs           # プラットフォーム固有のビルド設定
 │   │   └── Cargo.toml
-│   ├── core/                  # @electron-texture-bridge/core (TypeScript)
+│   ├── core/                  # @napolab/texture-bridge-core (TypeScript)
 │   │   └── src/
 │   │       ├── index.ts       # sendTextureFromPaintEvent + 再エクスポート
 │   │       └── types.ts       # TextureInfo, PaintTexture 型定義
-│   ├── renderer/              # @electron-texture-bridge/renderer (TypeScript)
+│   ├── renderer/              # @napolab/texture-bridge-renderer (TypeScript)
 │   │   └── src/
 │   │       ├── index.ts       # createTextureBridge ファクトリ
 │   │       ├── bridge.ts      # ファクトリ実装（EventEmitter）

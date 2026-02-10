@@ -195,21 +195,21 @@ jobs:
             fi
           done
 
-      - name: Publish @electron-texture-bridge/native
+      - name: Publish @napolab/texture-bridge
         working-directory: packages/native
         run: npm publish --access public --provenance
 
       # core/renderer: pnpm pack resolves workspace:* deps, then npm publish via OIDC
-      - name: Build and publish @electron-texture-bridge/core
+      - name: Build and publish @napolab/texture-bridge-core
         run: |
-          pnpm --filter @electron-texture-bridge/core run build
+          pnpm --filter @napolab/texture-bridge-core run build
           cd packages/core
           pnpm pack
           npm publish *.tgz --access public --provenance
 
-      - name: Build and publish @electron-texture-bridge/renderer
+      - name: Build and publish @napolab/texture-bridge-renderer
         run: |
-          pnpm --filter @electron-texture-bridge/renderer run build
+          pnpm --filter @napolab/texture-bridge-renderer run build
           cd packages/renderer
           pnpm pack
           npm publish *.tgz --access public --provenance

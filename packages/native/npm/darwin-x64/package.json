@@ -1,0 +1,28 @@
+{
+  "name": "@napolab/texture-bridge-darwin-x64",
+  "version": "0.2.0",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "index.darwin-x64.node",
+  "files": [
+    "index.darwin-x64.node",
+    "README.md"
+  ],
+  "description": "Native bindings for cross-platform GPU texture sharing (Spout/Syphon)",
+  "keywords": [
+    "napi-rs",
+    "electron",
+    "gpu",
+    "spout",
+    "syphon",
+    "texture-sharing"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}

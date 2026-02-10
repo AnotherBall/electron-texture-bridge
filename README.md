@@ -62,17 +62,17 @@ The entire pipeline stays on the GPU. No CPU readback. Sub-frame latency.
 ### As a library (recommended)
 
 ```bash
-npm install @electron-texture-bridge/renderer
+npm install @napolab/texture-bridge-renderer
 # or
-pnpm add @electron-texture-bridge/renderer
+pnpm add @napolab/texture-bridge-renderer
 ```
 
-`@electron-texture-bridge/renderer` is the high-level package for most users. It includes `@electron-texture-bridge/core` and `@electron-texture-bridge/native` as dependencies.
+`@napolab/texture-bridge-renderer` is the high-level package for most users. It includes `@napolab/texture-bridge-core` and `@napolab/texture-bridge` as dependencies.
 
 For advanced use cases that need direct control over the pipeline:
 
 ```bash
-npm install @electron-texture-bridge/core
+npm install @napolab/texture-bridge-core
 ```
 
 ### Building from source
@@ -121,7 +121,7 @@ The simplest way to use electron-texture-bridge. The factory handles offscreen w
 ```typescript
 // main process
 import { app } from "electron";
-import { createTextureBridge } from "@electron-texture-bridge/renderer";
+import { createTextureBridge } from "@napolab/texture-bridge-renderer";
 
 app.whenReady().then(async () => {
   const bridge = await createTextureBridge({
@@ -153,11 +153,11 @@ app.whenReady().then(async () => {
 
 ### Low-Level: Core API
 
-For full control over the pipeline, use `@electron-texture-bridge/core` directly.
+For full control over the pipeline, use `@napolab/texture-bridge-core` directly.
 
 ```typescript
 import { BrowserWindow } from "electron";
-import { TextureSender, sendTextureFromPaintEvent } from "@electron-texture-bridge/core";
+import { TextureSender, sendTextureFromPaintEvent } from "@napolab/texture-bridge-core";
 
 const win = new BrowserWindow({
   width: 1920,
@@ -185,7 +185,7 @@ win.webContents.setFrameRate(60);
 
 ## API Reference
 
-### `@electron-texture-bridge/renderer`
+### `@napolab/texture-bridge-renderer`
 
 #### `createTextureBridge(options): Promise<TextureBridge>`
 
@@ -238,7 +238,7 @@ interface TextureBridge {
 Renderer-process helper for setting up a canvas-to-Worker pipeline with automatic resize propagation.
 
 ```typescript
-import { createWorkerRenderer } from "@electron-texture-bridge/renderer/client";
+import { createWorkerRenderer } from "@napolab/texture-bridge-renderer/client";
 
 createWorkerRenderer({
   worker: new MyWorker(),
@@ -250,7 +250,7 @@ createWorkerRenderer({
 #### Worker Protocol Types (from `renderer/worker`)
 
 ```typescript
-import type { WorkerMessage } from "@electron-texture-bridge/renderer/worker";
+import type { WorkerMessage } from "@napolab/texture-bridge-renderer/worker";
 
 // In your Worker:
 self.onmessage = (e: MessageEvent<WorkerMessage>) => {
@@ -262,7 +262,7 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
 };
 ```
 
-### `@electron-texture-bridge/core`
+### `@napolab/texture-bridge-core`
 
 #### `sendTextureFromPaintEvent(sender, textureInfo)`
 
@@ -343,10 +343,10 @@ Look for "ElectronVJ-ThreeJS" in your Syphon/Spout receiver application.
 
 ```bash
 # macOS
-pnpm --filter @electron-texture-bridge/example run build:mac
+pnpm --filter @napolab/texture-bridge-example run build:mac
 
 # Windows
-pnpm --filter @electron-texture-bridge/example run build:win
+pnpm --filter @napolab/texture-bridge-example run build:win
 ```
 
 ## Project Structure
@@ -354,7 +354,7 @@ pnpm --filter @electron-texture-bridge/example run build:win
 ```
 electron-texture-bridge/
 ├── packages/
-│   ├── native/                # @electron-texture-bridge/native (napi-rs)
+│   ├── native/                # @napolab/texture-bridge (napi-rs)
 │   │   ├── src/
 │   │   │   ├── lib.rs         # napi-rs entry point, TextureSender API
 │   │   │   ├── types.rs       # RawTextureHandle type alias
@@ -365,11 +365,11 @@ electron-texture-bridge/
 │   │   │   └── win/           # C++ Spout bridge
 │   │   ├── build.rs           # Platform-specific build configuration
 │   │   └── Cargo.toml
-│   ├── core/                  # @electron-texture-bridge/core (TypeScript)
+│   ├── core/                  # @napolab/texture-bridge-core (TypeScript)
 │   │   └── src/
 │   │       ├── index.ts       # sendTextureFromPaintEvent + re-exports
 │   │       └── types.ts       # TextureInfo, PaintTexture types
-│   ├── renderer/              # @electron-texture-bridge/renderer (TypeScript)
+│   ├── renderer/              # @napolab/texture-bridge-renderer (TypeScript)
 │   │   └── src/
 │   │       ├── index.ts       # createTextureBridge factory
 │   │       ├── bridge.ts      # Factory implementation (EventEmitter)

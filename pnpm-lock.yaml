@@ -20,7 +20,7 @@ importers:
 
   packages/core:
     dependencies:
-      '@electron-texture-bridge/native':
+      '@napolab/texture-bridge':
         specifier: workspace:*
         version: link:../native
       electron:
@@ -39,7 +39,7 @@ importers:
 
   packages/example:
     dependencies:
-      '@electron-texture-bridge/renderer':
+      '@napolab/texture-bridge-renderer':
         specifier: workspace:*
         version: link:../renderer
       three:
@@ -77,9 +77,15 @@ importers:
         specifier: ^25.2.0
         version: 25.2.1
 
+  packages/native/npm/darwin-arm64: {}
+
+  packages/native/npm/darwin-x64: {}
+
+  packages/native/npm/win32-x64-msvc: {}
+
   packages/renderer:
     dependencies:
-      '@electron-texture-bridge/core':
+      '@napolab/texture-bridge-core':
         specifier: workspace:*
         version: link:../core
       electron:

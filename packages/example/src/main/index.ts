@@ -1,13 +1,13 @@
 /**
  * Electron Main Process - GPU Zero-Copy Texture Bridge
  *
- * Uses @electron-texture-bridge/renderer to handle all boilerplate:
+ * Uses @napolab/texture-bridge-renderer to handle all boilerplate:
  * offscreen window, paint events, Syphon/Spout sender, and preview.
  */
 
 import { app, BrowserWindow, globalShortcut } from "electron";
 import path from "path";
-import { createTextureBridge } from "@electron-texture-bridge/renderer";
+import { createTextureBridge } from "@napolab/texture-bridge-renderer";
 
 // GPU acceleration flags
 app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer");

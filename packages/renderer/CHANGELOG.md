@@ -12,4 +12,4 @@
 
 * The following workspace dependencies were updated
   * dependencies
-    * @electron-texture-bridge/core bumped to 0.2.0
+    * @napolab/texture-bridge-core bumped to 0.2.0

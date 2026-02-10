@@ -35,15 +35,15 @@ electron-texture-bridge を**ライブラリとして利用する**場合と、*
 
 ```bash
 # 推奨: 高レベル API (core + native を含む)
-npm install @electron-texture-bridge/renderer
+npm install @napolab/texture-bridge-renderer
 # または
-pnpm add @electron-texture-bridge/renderer
+pnpm add @napolab/texture-bridge-renderer
 ```
 
 ファクトリを使わずパイプラインを直接制御したい場合：
 
 ```bash
-npm install @electron-texture-bridge/core
+npm install @napolab/texture-bridge-core
 ```
 
 > **Note:** プリビルドのネイティブバイナリは `optionalDependencies` で自動解決されます。npm からのインストールでは Rust ツールチェーンは不要です。
@@ -290,7 +290,7 @@ Syphon/Spout レシーバーアプリを開いて **「ElectronVJ-ThreeJS」** �
 # 新しい Electron プロジェクトを作成（既存のものでも OK）
 mkdir my-vj-app && cd my-vj-app
 pnpm init
-pnpm add electron@latest @electron-texture-bridge/renderer
+pnpm add electron@latest @napolab/texture-bridge-renderer
 ```
 
 Electron のバージョンが 40.0.0+ であることを確認：
@@ -308,7 +308,7 @@ npx electron -v
 // src/main.ts
 import { app, BrowserWindow, globalShortcut } from "electron";
 import path from "path";
-import { createTextureBridge } from "@electron-texture-bridge/renderer";
+import { createTextureBridge } from "@napolab/texture-bridge-renderer";
 
 app.whenReady().then(async () => {
   const bridge = await createTextureBridge({
@@ -353,7 +353,7 @@ app.on("window-all-closed", () => app.quit());
 ```typescript
 // src/main.ts
 import { BrowserWindow } from "electron";
-import { TextureSender, sendTextureFromPaintEvent } from "@electron-texture-bridge/core";
+import { TextureSender, sendTextureFromPaintEvent } from "@napolab/texture-bridge-core";
 
 const win = new BrowserWindow({
   width: 1920,
@@ -404,7 +404,7 @@ win.loadFile("renderer/index.html");
 
 ```typescript
 // renderer/index.ts
-import { createWorkerRenderer } from "@electron-texture-bridge/renderer/client";
+import { createWorkerRenderer } from "@napolab/texture-bridge-renderer/client";
 import MyWorker from "./worker?worker";
 
 createWorkerRenderer({
@@ -418,7 +418,7 @@ createWorkerRenderer({
 
 ```typescript
 // renderer/worker.ts
-import type { WorkerMessage } from "@electron-texture-bridge/renderer/worker";
+import type { WorkerMessage } from "@napolab/texture-bridge-renderer/worker";
 
 let canvas: OffscreenCanvas;
 let ctx: OffscreenCanvasRenderingContext2D;
@@ -458,12 +458,12 @@ function render() {
 
 ```yaml
 asarUnpack:
-  - node_modules/@electron-texture-bridge/**
+  - node_modules/@napolab/texture-bridge*
 
 # macOS: Syphon.framework をバンドル
 mac:
   extraResources:
-    - from: node_modules/@electron-texture-bridge/native/Syphon.framework
+    - from: node_modules/@napolab/texture-bridge/Syphon.framework
       to: Frameworks/Syphon.framework
 ```
 
@@ -477,11 +477,11 @@ mac:
 module.exports = {
   packagerConfig: {
     asar: {
-      unpack: "**/node_modules/@electron-texture-bridge/**",
+      unpack: "**/node_modules/@napolab/texture-bridge*/**",
     },
     // macOS: Syphon.framework をコピー
     extraResource: [
-      "./node_modules/@electron-texture-bridge/native/Syphon.framework",
+      "./node_modules/@napolab/texture-bridge/Syphon.framework",
     ],
   },
 };
@@ -505,7 +505,7 @@ codesign --deep --force --sign "Developer ID Application: Your Name" \
 ### 1. ネイティブアドオンの読み込み確認
 
 ```bash
-node -e "const n = require('@electron-texture-bridge/native'); console.log('Platform:', n.getPlatform())"
+node -e "const n = require('@napolab/texture-bridge'); console.log('Platform:', n.getPlatform())"
 ```
 
 期待される出力：

@@ -10,10 +10,10 @@ electron-texture-bridge is a napi-rs native addon that enables GPU zero-copy tex
 
 pnpm workspace monorepo with four packages:
 
-- **`packages/native`** (`@electron-texture-bridge/native`) — napi-rs Rust addon. Contains Rust src, C++/ObjC++ bridge code in `cpp/`, and `build.rs` for platform-specific compilation. Generates `.node` binary files.
-- **`packages/core`** (`@electron-texture-bridge/core`) — TypeScript wrapper. Re-exports native bindings and adds `sendTextureFromPaintEvent()` helper that handles platform-specific handle extraction. Dual CJS+ESM output via tsdown.
-- **`packages/renderer`** (`@electron-texture-bridge/renderer`) — High-level factory API. `createTextureBridge()` automates BrowserWindow creation, paint event handling, preview window, and FPS tracking. Also exports `./client` (renderer-process helper) and `./worker` (protocol types). Dual CJS+ESM output via tsdown + static assets.
-- **`packages/example`** (`@electron-texture-bridge/example`, private) — Electron VJ demo app using Three.js raymarching in a Web Worker, with WebGPU preview window.
+- **`packages/native`** (`@napolab/texture-bridge`) — napi-rs Rust addon. Contains Rust src, C++/ObjC++ bridge code in `cpp/`, and `build.rs` for platform-specific compilation. Generates `.node` binary files.
+- **`packages/core`** (`@napolab/texture-bridge-core`) — TypeScript wrapper. Re-exports native bindings and adds `sendTextureFromPaintEvent()` helper that handles platform-specific handle extraction. Dual CJS+ESM output via tsdown.
+- **`packages/renderer`** (`@napolab/texture-bridge-renderer`) — High-level factory API. `createTextureBridge()` automates BrowserWindow creation, paint event handling, preview window, and FPS tracking. Also exports `./client` (renderer-process helper) and `./worker` (protocol types). Dual CJS+ESM output via tsdown + static assets.
+- **`packages/example`** (`@napolab/texture-bridge-example`, private) — Electron VJ demo app using Three.js raymarching in a Web Worker, with WebGPU preview window.
 
 `vendor/` at repo root contains third-party SDKs (Syphon.framework, SpoutDX) — these are gitignored and must be built/fetched before compiling native addon.
 
@@ -107,8 +107,8 @@ Three send methods exist at the native level:
 - Returns `TextureBridge` handle with `on('fps')`, `resize()`, `openPreview()`, `dispose()`
 
 Sub-exports:
-- `@electron-texture-bridge/renderer/client` — `createWorkerRenderer()` for renderer process (canvas → OffscreenCanvas → Worker, with ResizeObserver)
-- `@electron-texture-bridge/renderer/worker` — `WorkerMessage` types for type-safe worker communication
+- `@napolab/texture-bridge-renderer/client` — `createWorkerRenderer()` for renderer process (canvas → OffscreenCanvas → Worker, with ResizeObserver)
+- `@napolab/texture-bridge-renderer/worker` — `WorkerMessage` types for type-safe worker communication
 
 ## Key Technical Constraints
 

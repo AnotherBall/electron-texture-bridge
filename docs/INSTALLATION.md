@@ -35,15 +35,15 @@ If prebuilt binaries are published to npm, this is all you need:
 
 ```bash
 # Recommended: high-level API (includes core + native)
-npm install @electron-texture-bridge/renderer
+npm install @napolab/texture-bridge-renderer
 # or
-pnpm add @electron-texture-bridge/renderer
+pnpm add @napolab/texture-bridge-renderer
 ```
 
 For direct pipeline control without the factory:
 
 ```bash
-npm install @electron-texture-bridge/core
+npm install @napolab/texture-bridge-core
 ```
 
 > **Note:** Prebuilt native binaries are automatically resolved via `optionalDependencies`. No Rust toolchain is needed when installing from npm.
@@ -290,7 +290,7 @@ Open your Syphon/Spout receiver app and look for **"ElectronVJ-ThreeJS"**.
 # Create a new Electron project (or use your existing one)
 mkdir my-vj-app && cd my-vj-app
 pnpm init
-pnpm add electron@latest @electron-texture-bridge/renderer
+pnpm add electron@latest @napolab/texture-bridge-renderer
 ```
 
 Ensure your Electron version is 40.0.0+:
@@ -308,7 +308,7 @@ The recommended approach uses the factory API which handles all boilerplate:
 // src/main.ts
 import { app, BrowserWindow, globalShortcut } from "electron";
 import path from "path";
-import { createTextureBridge } from "@electron-texture-bridge/renderer";
+import { createTextureBridge } from "@napolab/texture-bridge-renderer";
 
 app.whenReady().then(async () => {
   const bridge = await createTextureBridge({
@@ -353,7 +353,7 @@ For full control over the pipeline:
 ```typescript
 // src/main.ts
 import { BrowserWindow } from "electron";
-import { TextureSender, sendTextureFromPaintEvent } from "@electron-texture-bridge/core";
+import { TextureSender, sendTextureFromPaintEvent } from "@napolab/texture-bridge-core";
 
 const win = new BrowserWindow({
   width: 1920,
@@ -404,7 +404,7 @@ Or use the renderer helper for automatic resize propagation:
 
 ```typescript
 // renderer/index.ts
-import { createWorkerRenderer } from "@electron-texture-bridge/renderer/client";
+import { createWorkerRenderer } from "@napolab/texture-bridge-renderer/client";
 import MyWorker from "./worker?worker";
 
 createWorkerRenderer({
@@ -418,7 +418,7 @@ createWorkerRenderer({
 
 ```typescript
 // renderer/worker.ts
-import type { WorkerMessage } from "@electron-texture-bridge/renderer/worker";
+import type { WorkerMessage } from "@napolab/texture-bridge-renderer/worker";
 
 let canvas: OffscreenCanvas;
 let ctx: OffscreenCanvasRenderingContext2D;
@@ -458,12 +458,12 @@ Add to your `electron-builder.yml` (or equivalent config):
 
 ```yaml
 asarUnpack:
-  - node_modules/@electron-texture-bridge/**
+  - node_modules/@napolab/texture-bridge*
 
 # macOS: bundle Syphon.framework
 mac:
   extraResources:
-    - from: node_modules/@electron-texture-bridge/native/Syphon.framework
+    - from: node_modules/@napolab/texture-bridge/Syphon.framework
       to: Frameworks/Syphon.framework
 ```
 
@@ -477,11 +477,11 @@ In `forge.config.js`:
 module.exports = {
   packagerConfig: {
     asar: {
-      unpack: "**/node_modules/@electron-texture-bridge/**",
+      unpack: "**/node_modules/@napolab/texture-bridge*/**",
     },
     // macOS: copy Syphon.framework
     extraResource: [
-      "./node_modules/@electron-texture-bridge/native/Syphon.framework",
+      "./node_modules/@napolab/texture-bridge/Syphon.framework",
     ],
   },
 };
@@ -505,7 +505,7 @@ codesign --deep --force --sign "Developer ID Application: Your Name" \
 ### 1. Check the native addon loads
 
 ```bash
-node -e "const n = require('@electron-texture-bridge/native'); console.log('Platform:', n.getPlatform())"
+node -e "const n = require('@napolab/texture-bridge'); console.log('Platform:', n.getPlatform())"
 ```
 
 Expected output:

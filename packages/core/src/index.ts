@@ -1,4 +1,4 @@
-import { TextureSender, getPlatform } from "@electron-texture-bridge/native";
+import { TextureSender, getPlatform } from "@napolab/texture-bridge";
 import type { TextureInfo, PaintTexture, Platform, PixelFormat } from "./types";
 
 export { TextureSender, getPlatform };
