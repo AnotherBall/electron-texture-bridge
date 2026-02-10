@@ -33,5 +33,5 @@
     "@electron-texture-bridge/native-darwin-x64": "0.1.0",
     "@electron-texture-bridge/native-win32-x64-msvc": "0.1.0"
   },
-  "files": ["index.js", "index.d.ts"]
+  "files": ["index.js", "index.d.ts", "THIRD-PARTY-NOTICES"]
 }

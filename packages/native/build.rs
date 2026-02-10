@@ -76,8 +76,10 @@ fn build_macos(vendor_dir: &std::path::Path) {
     println!("cargo:rustc-link-search=framework={vendor_str}");
 
     // rpath を設定（ランタイムでフレームワークを見つけられるように）
-    // @loader_path/../../vendor: .node は packages/native/ にあり、vendor/ はリポジトリルート
+    // @loader_path: npm パッケージ内（.node と同じディレクトリに Syphon.framework）
+    // @loader_path/../../vendor: 開発時（packages/native/ → ../../vendor/）
     // @executable_path/../Frameworks: Electron アプリバンドル用
+    println!("cargo:rustc-cdylib-link-arg=-Wl,-rpath,@loader_path");
     println!("cargo:rustc-cdylib-link-arg=-Wl,-rpath,@loader_path/../../vendor");
     println!("cargo:rustc-cdylib-link-arg=-Wl,-rpath,@executable_path/../Frameworks");
 }

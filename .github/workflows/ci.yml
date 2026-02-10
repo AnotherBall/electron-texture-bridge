@@ -3,15 +3,27 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
   id-token: write
 
 jobs:
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
   build:
     strategy:
       fail-fast: false
@@ -84,9 +96,19 @@ jobs:
           path: packages/native/texture-bridge.*.node
           if-no-files-found: error
 
+      # macOS: Upload Syphon.framework for bundling in platform packages
+      # Only from ARM build (framework is universal via ONLY_ACTIVE_ARCH=NO)
+      - name: Upload Syphon.framework
+        if: matrix.name == 'darwin-arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: syphon-framework
+          path: vendor/Syphon.framework
+          if-no-files-found: error
+
   publish:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [release-please, build]
+    if: always() && !cancelled() && needs.build.result == 'success' && needs.release-please.outputs.releases_created == 'true'
     runs-on: ubuntu-latest
     name: Publish
 
@@ -117,6 +139,44 @@ jobs:
         working-directory: packages/native
         run: pnpm run prepublish
 
+      # Bundle Syphon.framework + THIRD-PARTY-NOTICES into platform packages
+      - name: Prepare platform packages
+        working-directory: packages/native
+        run: |
+          # Bundle Syphon.framework into darwin packages
+          for darwin_pkg in npm/darwin-*/; do
+            if [ -d "$darwin_pkg" ]; then
+              echo "Bundling Syphon.framework into $darwin_pkg..."
+              cp -R artifacts/syphon-framework "$darwin_pkg/Syphon.framework"
+              node -e "
+                const fs = require('fs');
+                const pkgPath = process.argv[1] + '/package.json';
+                const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+                pkg.files = pkg.files || [];
+                if (!pkg.files.includes('Syphon.framework')) {
+                  pkg.files.push('Syphon.framework');
+                }
+                fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+              " "$darwin_pkg"
+            fi
+          done
+          # Copy THIRD-PARTY-NOTICES into all platform packages
+          for pkg_dir in npm/*/; do
+            if [ -d "$pkg_dir" ]; then
+              cp THIRD-PARTY-NOTICES "$pkg_dir/"
+              node -e "
+                const fs = require('fs');
+                const pkgPath = process.argv[1] + '/package.json';
+                const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+                pkg.files = pkg.files || [];
+                if (!pkg.files.includes('THIRD-PARTY-NOTICES')) {
+                  pkg.files.push('THIRD-PARTY-NOTICES');
+                }
+                fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+              " "$pkg_dir"
+            fi
+          done
+
       - name: Publish platform packages
         working-directory: packages/native
         run: |
@@ -137,10 +197,19 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      # core/renderer use pnpm publish to resolve workspace:* dependencies
       - name: Build and publish @electron-texture-bridge/core
         run: |
           pnpm --filter @electron-texture-bridge/core run build
           cd packages/core
-          npm publish --access public --provenance
+          pnpm publish --access public --no-git-checks --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build and publish @electron-texture-bridge/renderer
+        run: |
+          pnpm --filter @electron-texture-bridge/renderer run build
+          cd packages/renderer
+          pnpm publish --access public --no-git-checks --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
