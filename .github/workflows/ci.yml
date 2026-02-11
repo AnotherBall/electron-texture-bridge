@@ -136,13 +136,32 @@ jobs:
         with:
           path: packages/native/artifacts
 
+      # Generate npm/ platform dirs, then move .node binaries into them
+      - name: Create platform package dirs
+        working-directory: packages/native
+        run: napi create-npm-dir -t .
+
       - name: Move artifacts
         working-directory: packages/native
-        run: pnpm run artifacts
+        run: napi artifacts
 
-      - name: Generate platform packages
+      # Inject optionalDependencies so native package resolves platform binaries
+      - name: Inject optionalDependencies
         working-directory: packages/native
-        run: pnpm run prepublish
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const name = pkg.napi.package.name;
+            const ver = pkg.version;
+            pkg.optionalDependencies = {};
+            for (const dir of fs.readdirSync('npm', { withFileTypes: true })) {
+              if (dir.isDirectory()) {
+                pkg.optionalDependencies[name + '-' + dir.name] = ver;
+              }
+            }
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
 
       # Bundle Syphon.framework + THIRD-PARTY-NOTICES into platform packages
       - name: Prepare platform packages
