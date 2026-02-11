@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.3.1...native-v0.3.2) (2026-02-11)
+
+
+### Bug Fixes
+
+* use napi triples config and create-npm-dir for CI artifacts ([e39e8e2](https://github.com/naporin0624/electron-texture-bridge/commit/e39e8e23029c44df9cb42fcdec2e941cd69fd721))
+
 ## [0.3.1](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.3.0...native-v0.3.1) (2026-02-10)
 
 
