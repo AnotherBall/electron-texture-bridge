@@ -139,11 +139,11 @@ jobs:
       # Generate npm/ platform dirs, then move .node binaries into them
       - name: Create platform package dirs
         working-directory: packages/native
-        run: napi create-npm-dir -t .
+        run: npx napi create-npm-dir -t .
 
       - name: Move artifacts
         working-directory: packages/native
-        run: napi artifacts
+        run: npx napi artifacts
 
       # Inject optionalDependencies so native package resolves platform binaries
       - name: Inject optionalDependencies
