@@ -32,6 +32,10 @@
     "syphon",
     "texture-sharing"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/naporin0624/electron-texture-bridge"
+  },
   "license": "MIT",
   "publishConfig": {
     "access": "public"

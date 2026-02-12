@@ -184,7 +184,7 @@ jobs:
               " "$darwin_pkg"
             fi
           done
-          # Copy THIRD-PARTY-NOTICES into all platform packages
+          # Copy THIRD-PARTY-NOTICES and add repository field to all platform packages
           for pkg_dir in npm/*/; do
             if [ -d "$pkg_dir" ]; then
               cp THIRD-PARTY-NOTICES "$pkg_dir/"
@@ -196,6 +196,10 @@ jobs:
                 if (!pkg.files.includes('THIRD-PARTY-NOTICES')) {
                   pkg.files.push('THIRD-PARTY-NOTICES');
                 }
+                pkg.repository = {
+                  type: 'git',
+                  url: 'https://github.com/naporin0624/electron-texture-bridge'
+                };
                 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
               " "$pkg_dir"
             fi

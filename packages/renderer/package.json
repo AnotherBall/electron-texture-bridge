@@ -44,6 +44,10 @@
     "tsdown": "^0.20.3",
     "typescript": "^5.7.0"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/naporin0624/electron-texture-bridge"
+  },
   "license": "MIT",
   "publishConfig": {
     "access": "public"
