@@ -21,8 +21,8 @@
   "scripts": {
     "build": "napi build --platform --release --js index.js --dts index.d.ts",
     "build:debug": "napi build --platform --js index.js --dts index.d.ts",
-    "prepublish": "napi prepublish --skip-gh-release",
-    "artifacts": "napi artifacts"
+    "artifacts": "napi artifacts",
+    "create-npm-dir": "napi create-npm-dir -t ."
   },
   "keywords": [
     "napi-rs",
