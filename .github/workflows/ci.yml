@@ -98,6 +98,18 @@ jobs:
           path: packages/native/index.*.node
           if-no-files-found: error
 
+      # Upload napi-rs generated loader (index.js + index.d.ts) from one build
+      # These are platform-independent so we only need them once
+      - name: Upload JS loader
+        if: matrix.name == 'darwin-arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: js-loader
+          path: |
+            packages/native/index.js
+            packages/native/index.d.ts
+          if-no-files-found: error
+
       # macOS: Upload Syphon.framework for bundling in platform packages
       # Only from ARM build (framework is universal via ONLY_ACTIVE_ARCH=NO)
       - name: Upload Syphon.framework
@@ -135,6 +147,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: packages/native/artifacts
+
+      # Copy napi-rs generated loader files (index.js + index.d.ts) to package root
+      - name: Copy JS loader
+        working-directory: packages/native
+        run: cp artifacts/js-loader/index.js artifacts/js-loader/index.d.ts .
 
       # Generate npm/ platform dirs, then move .node binaries into them
       - name: Create platform package dirs
