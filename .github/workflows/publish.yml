@@ -1,0 +1,254 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      releases_created: ${{ steps.release.outputs.releases_created }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  build:
+    needs: [release-please]
+    if: needs.release-please.outputs.releases_created == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            name: darwin-arm64
+          - os: macos-14
+            target: x86_64-apple-darwin
+            name: darwin-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: win32-x64-msvc
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.name }})
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # macOS: Build Syphon.framework from source
+      - name: Build Syphon.framework
+        if: runner.os == 'macOS'
+        run: |
+          cd vendor/syphon-src
+          xcodebuild -project Syphon.xcodeproj \
+            -scheme Syphon \
+            -configuration Release \
+            -derivedDataPath build \
+            ONLY_ACTIVE_ARCH=NO \
+            BUILD_LIBRARY_FOR_DISTRIBUTION=YES
+          cp -R build/Build/Products/Release/Syphon.framework ../Syphon.framework
+
+      # Windows: Fetch Spout2 SDK (preserve directory structure for relative includes)
+      - name: Fetch Spout2 SDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
+          New-Item -ItemType Directory -Force vendor/Spout2
+          Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutDirectX vendor/Spout2/SpoutDirectX
+          Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutGL vendor/Spout2/SpoutGL
+          Remove-Item -Recurse -Force _spout2_tmp
+
+      - run: pnpm install
+
+      - name: Build native addon
+        working-directory: packages/native
+        run: pnpm run build
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.name }}
+          path: packages/native/index.*.node
+          if-no-files-found: error
+
+      # Upload napi-rs generated loader (index.js + index.d.ts) from one build
+      # These are platform-independent so we only need them once
+      - name: Upload JS loader
+        if: matrix.name == 'darwin-arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: js-loader
+          path: |
+            packages/native/index.js
+            packages/native/index.d.ts
+          if-no-files-found: error
+
+      # macOS: Upload Syphon.framework for bundling in platform packages
+      # Only from ARM build (framework is universal via ONLY_ACTIVE_ARCH=NO)
+      - name: Upload Syphon.framework
+        if: matrix.name == 'darwin-arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: syphon-framework
+          path: vendor/Syphon.framework
+          if-no-files-found: error
+
+  publish:
+    needs: [release-please, build]
+    if: always() && !cancelled() && needs.build.result == 'success' && needs.release-please.outputs.releases_created == 'true'
+    runs-on: ubuntu-latest
+    name: Publish
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      # npm >= 11.5.1 required for OIDC trusted publishing
+      - run: npm install -g npm@latest
+
+      - run: pnpm install
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages/native/artifacts
+
+      # Copy napi-rs generated loader files (index.js + index.d.ts) to package root
+      - name: Copy JS loader
+        working-directory: packages/native
+        run: cp artifacts/js-loader/index.js artifacts/js-loader/index.d.ts .
+
+      # Generate npm/ platform dirs, then move .node binaries into them
+      - name: Create platform package dirs
+        working-directory: packages/native
+        run: npx napi create-npm-dir -t .
+
+      - name: Move artifacts
+        working-directory: packages/native
+        run: npx napi artifacts
+
+      # Inject optionalDependencies so native package resolves platform binaries
+      - name: Inject optionalDependencies
+        working-directory: packages/native
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            const name = pkg.napi.package.name;
+            const ver = pkg.version;
+            pkg.optionalDependencies = {};
+            for (const dir of fs.readdirSync('npm', { withFileTypes: true })) {
+              if (dir.isDirectory()) {
+                pkg.optionalDependencies[name + '-' + dir.name] = ver;
+              }
+            }
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      # Bundle Syphon.framework + THIRD-PARTY-NOTICES into platform packages
+      - name: Prepare platform packages
+        working-directory: packages/native
+        run: |
+          # Bundle Syphon.framework into darwin packages
+          for darwin_pkg in npm/darwin-*/; do
+            if [ -d "$darwin_pkg" ]; then
+              echo "Bundling Syphon.framework into $darwin_pkg..."
+              cp -R artifacts/syphon-framework "$darwin_pkg/Syphon.framework"
+              node -e "
+                const fs = require('fs');
+                const pkgPath = process.argv[1] + '/package.json';
+                const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+                pkg.files = pkg.files || [];
+                if (!pkg.files.includes('Syphon.framework')) {
+                  pkg.files.push('Syphon.framework');
+                }
+                fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+              " "$darwin_pkg"
+            fi
+          done
+          # Copy THIRD-PARTY-NOTICES and add repository field to all platform packages
+          for pkg_dir in npm/*/; do
+            if [ -d "$pkg_dir" ]; then
+              cp THIRD-PARTY-NOTICES "$pkg_dir/"
+              node -e "
+                const fs = require('fs');
+                const pkgPath = process.argv[1] + '/package.json';
+                const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+                pkg.files = pkg.files || [];
+                if (!pkg.files.includes('THIRD-PARTY-NOTICES')) {
+                  pkg.files.push('THIRD-PARTY-NOTICES');
+                }
+                pkg.repository = {
+                  type: 'git',
+                  url: 'https://github.com/naporin0624/electron-texture-bridge'
+                };
+                fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+              " "$pkg_dir"
+            fi
+          done
+
+      # All packages use npm publish with OIDC trusted publishing (no NPM_TOKEN needed)
+      - name: Publish platform packages
+        working-directory: packages/native
+        run: |
+          for dir in npm/*/; do
+            if [ -f "$dir/package.json" ]; then
+              echo "Publishing $dir..."
+              cd "$dir"
+              npm publish --access public --provenance
+              cd -
+            fi
+          done
+
+      - name: Publish @napolab/texture-bridge
+        working-directory: packages/native
+        run: npm publish --access public --provenance
+
+      # core/renderer: pnpm pack resolves workspace:* deps, then npm publish via OIDC
+      - name: Build and publish @napolab/texture-bridge-core
+        run: |
+          pnpm --filter @napolab/texture-bridge-core run build
+          cd packages/core
+          pnpm pack
+          npm publish *.tgz --access public --provenance
+
+      - name: Build and publish @napolab/texture-bridge-renderer
+        run: |
+          pnpm --filter @napolab/texture-bridge-renderer run build
+          cd packages/renderer
+          pnpm pack
+          npm publish *.tgz --access public --provenance

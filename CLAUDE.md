@@ -118,6 +118,13 @@ Sub-exports:
 - The `release()` callback on paint textures must be called to prevent GPU memory leaks
 - napi-rs `binaryName` is `texture-bridge`, generating files like `texture-bridge.darwin-arm64.node`
 
+## Release (release-please)
+
+- Uses `release-please` with `linked-versions` plugin — all three packages share the same version
+- Config: `release-please-config.json`, manifest: `.release-please-manifest.json`
+- **Path-based detection:** release-please only creates a release PR when Conventional Commits (`fix:`, `feat:`, etc.) touch files **inside** a configured package path (`packages/native/`, `packages/core/`, `packages/renderer/`). Changes to root-level files (`.github/workflows/ci.yml`, root `package.json`, etc.) are **ignored** and will not trigger a release PR.
+- To trigger a release for CI-only or root-level fixes, make a change (e.g. bump comment or changelog entry) inside one of the package directories, or create the release PR manually.
+
 ## Tooling Notes
 
 - **TypeScript:** Uses `tsgo` (native TS compiler preview) for type checking, `tsdown` for bundling core
