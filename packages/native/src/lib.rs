@@ -20,9 +20,9 @@ use napi_derive::napi;
 #[napi]
 pub struct TextureSender {
     #[cfg(target_os = "windows")]
-    inner: win::Sender,
+    inner: Option<win::Sender>,
     #[cfg(target_os = "macos")]
-    inner: mac::Sender,
+    inner: Option<mac::Sender>,
 
     width: u32,
     height: u32,
@@ -45,7 +45,7 @@ impl TextureSender {
         let inner = mac::Sender::new(&name)
             .map_err(|e| Error::from_reason(e))?;
 
-        Ok(Self { inner, width, height })
+        Ok(Self { inner: Some(inner), width, height })
     }
 
     /// Send a shared texture to Spout (Win) or Syphon (Mac).
@@ -57,18 +57,20 @@ impl TextureSender {
     /// - `height`: Texture height (from `textureInfo.codedSize.height`)
     #[napi]
     pub fn send(&mut self, handle: i64, width: u32, height: u32) -> Result<()> {
+        let inner = self.inner.as_mut()
+            .ok_or_else(|| Error::from_reason("TextureSender has been stopped"))?;
         self.width = width;
         self.height = height;
 
         #[cfg(target_os = "windows")]
         {
-            self.inner.send(handle)
+            inner.send(handle)
                 .map_err(|e| Error::from_reason(e))?;
         }
 
         #[cfg(target_os = "macos")]
         {
-            self.inner.send(handle, width, height)
+            inner.send(handle, width, height)
                 .map_err(|e| Error::from_reason(e))?;
         }
 
@@ -88,6 +90,8 @@ impl TextureSender {
         width: u32,
         height: u32,
     ) -> Result<()> {
+        let inner = self.inner.as_mut()
+            .ok_or_else(|| Error::from_reason("TextureSender has been stopped"))?;
         self.width = width;
         self.height = height;
 
@@ -101,28 +105,27 @@ impl TextureSender {
                 .map_err(|_| Error::from_reason("Failed to read surface pointer"))?;
             let surface_ptr = u64::from_le_bytes(ptr_bytes);
 
-            self.inner.send_surface(surface_ptr, width, height)
+            inner.send_surface(surface_ptr, width, height)
                 .map_err(|e| Error::from_reason(e))?;
         }
 
         #[cfg(target_os = "windows")]
         {
+            let _ = inner;
             return Err(Error::from_reason("send_surface is macOS only"));
         }
 
         Ok(())
     }
 
-    /// Stop the sender and release resources.
-    /// After calling this, the sender cannot be reused.
+    /// Stop the sender and release native resources immediately.
+    /// This is a terminal operation — the sender cannot be reused afterward.
+    /// Repeated calls are safe and idempotent.
     #[napi]
     pub fn stop(&mut self) -> Result<()> {
-        // Drop が呼ばれるように inner を再構築する方法もあるが、
-        // ここでは JS 側で sender = null して GC に任せる想定。
-        // 明示的に止めたい場合のための API。
-        //
-        // 実際の解放は Drop trait で行われる。
-        // ここでは何もしない（二重解放を防ぐ）。
+        // Drop the inner sender immediately, releasing native resources.
+        // Subsequent calls are idempotent (inner is already None).
+        self.inner.take();
         Ok(())
     }
 
@@ -141,14 +144,22 @@ impl TextureSender {
         height: u32,
         bytes_per_row: Option<u32>,
     ) -> Result<()> {
+        let inner = self.inner.as_mut()
+            .ok_or_else(|| Error::from_reason("TextureSender has been stopped"))?;
         let stride = bytes_per_row.unwrap_or(width * 4);
 
         self.width = width;
         self.height = height;
 
-        self.inner
+        inner
             .send_rgba(data.as_ref(), width, height, stride)
             .map_err(|e| Error::from_reason(e))
+    }
+
+    /// Returns true if native resources have been released via `stop()`.
+    #[cfg(test)]
+    pub fn is_stopped(&self) -> bool {
+        self.inner.is_none()
     }
 
     /// Get the current platform name.
@@ -272,13 +283,14 @@ impl TextureReceiver {
     }
 
     /// Returns true if the server has output a new frame since the last receive.
+    /// Returns false if `stop()` has been called.
     #[napi]
     pub fn has_new_frame(&self) -> bool {
         self.inner.as_ref().map_or(false, |r| r.has_new_frame())
     }
 
     /// Receive the current frame as RGBA pixel data.
-    /// Returns null if no frame is available or if stop() has been called.
+    /// Returns null if no frame is available or if `stop()` has been called.
     #[napi]
     pub fn receive_frame(&self) -> Result<Option<ReceivedFrame>> {
         let inner = match &self.inner {
@@ -297,6 +309,7 @@ impl TextureReceiver {
     }
 
     /// Returns true if the receiver has a valid connection to a server.
+    /// Returns false if `stop()` has been called.
     #[napi]
     pub fn is_connected(&self) -> bool {
         match &self.inner {
@@ -311,25 +324,34 @@ impl TextureReceiver {
     }
 
     /// Get the width of the last received texture.
+    /// Returns 0 if `stop()` has been called.
     #[napi]
     pub fn get_width(&self) -> u32 {
         self.inner.as_ref().map_or(0, |r| r.width())
     }
 
     /// Get the height of the last received texture.
+    /// Returns 0 if `stop()` has been called.
     #[napi]
     pub fn get_height(&self) -> u32 {
         self.inner.as_ref().map_or(0, |r| r.height())
     }
 
     /// Stop the receiver and release native resources immediately.
-    /// After calling this, has_new_frame() returns false and receive_frame() returns null.
+    /// This is a terminal operation — the receiver cannot be reused afterward.
+    /// Repeated calls are safe and idempotent.
     #[napi]
     pub fn stop(&mut self) -> Result<()> {
         if let Some(mut r) = self.inner.take() {
             r.destroy();
         }
         Ok(())
+    }
+
+    /// Returns true if native resources have been released via `stop()`.
+    #[cfg(test)]
+    pub fn is_stopped(&self) -> bool {
+        self.inner.is_none()
     }
 
     /// Get the current platform name.
@@ -372,6 +394,22 @@ pub fn list_senders() -> Result<Vec<JsSenderInfo>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Disposal lifecycle tests ----
+    //
+    // Note: TextureSender and TextureReceiver types link platform-specific C++
+    // bridge code (Syphon/Spout). Constructing instances in pure Rust tests
+    // pulls in C++ runtime symbols that are unavailable in the test binary
+    // linker context. The full lifecycle (stop → error on use, idempotent stop)
+    // is tested at the integration level via TypeScript tests in the core and
+    // renderer packages.
+    //
+    // The compile-time contract is enforced by the Option<Inner> pattern:
+    // - `stop()` calls `self.inner.take()` → deterministic drop
+    // - Operational methods call `self.inner.as_mut().ok_or_else(...)` → error after stop
+    // - Read-only methods call `self.inner.as_ref().map_or(default, ...)` → safe defaults
+
+    // ---- parse_senders_json tests ----
 
     #[test]
     fn parse_senders_json_valid_array() {
