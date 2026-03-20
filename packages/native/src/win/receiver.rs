@@ -39,17 +39,15 @@ impl Receiver {
         let mut width: u32 = 0;
         let mut height: u32 = 0;
 
-        // Use cached dimensions for initial buffer allocation.
-        // If dimensions are unknown (first call), use a reasonable default;
-        // the C API will return -1 with updated out_width/out_height if the
-        // buffer is too small, and we retry with the correct size.
+        // Use cached dimensions to allocate the buffer.
         let cached_w = self.width() as usize;
         let cached_h = self.height() as usize;
-        let estimated_size = cached_w * cached_h * 4;
-
-        // Allocate buffer — use cached size if available, otherwise a small
-        // probe buffer that will trigger a resize-retry path.
-        let alloc_size = if estimated_size > 0 { estimated_size } else { 4 };
+        let alloc_size = if cached_w > 0 && cached_h > 0 {
+            cached_w * cached_h * 4
+        } else {
+            // First call: no cached dimensions yet. Allocate 1080p as default.
+            1920 * 1080 * 4
+        };
         let mut buffer: Vec<u8> = vec![0u8; alloc_size];
 
         let ret = unsafe {
@@ -62,36 +60,21 @@ impl Receiver {
             )
         };
 
-        if ret == 0 {
-            let actual_size = (width as usize) * (height as usize) * 4;
-            buffer.truncate(actual_size);
-            return Ok(Some((buffer, width, height)));
+        // C API return codes:
+        //  0 = frame received
+        //  1 = no new frame (poll again)
+        //  2 = buffer too small / dimensions changed (next poll will use updated size)
+        // -1 = not connected
+        // -2 = ReceiveImage failed
+        match ret {
+            0 => {
+                let actual_size = (width as usize) * (height as usize) * 4;
+                buffer.truncate(actual_size);
+                Ok(Some((buffer, width, height)))
+            }
+            1 | 2 => Ok(None), // No new frame or dimensions changed — poll again
+            _ => Ok(None),     // Not connected or error — don't throw, just return None
         }
-
-        // ret != 0: either no sender, or buffer was too small.
-        // The C API wrote the real dimensions into width/height.
-        if width == 0 || height == 0 {
-            return Ok(None);
-        }
-
-        // Retry with correctly-sized buffer.
-        let correct_size = (width as usize) * (height as usize) * 4;
-        let mut buffer = vec![0u8; correct_size];
-        let ret = unsafe {
-            ffi::spout_receiver_receive_rgba(
-                handle,
-                buffer.as_mut_ptr(),
-                correct_size as u32,
-                &mut width,
-                &mut height,
-            )
-        };
-        if ret != 0 {
-            return Err("Spout receive failed: D3D11 readback error after buffer retry".into());
-        }
-        let actual_size = (width as usize) * (height as usize) * 4;
-        buffer.truncate(actual_size);
-        Ok(Some((buffer, width, height)))
     }
 
     pub fn is_connected(&self) -> bool {

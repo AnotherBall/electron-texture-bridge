@@ -133,9 +133,6 @@ int32_t spout_bridge_resize(void* handle, uint32_t width, uint32_t height) {
 
 struct SpoutReceiverBridge {
     spoutDX receiver;
-    ID3D11Device* device;
-    ID3D11DeviceContext* context;
-    ID3D11Texture2D* staging;
     unsigned int width;
     unsigned int height;
     bool connected;
@@ -144,9 +141,6 @@ struct SpoutReceiverBridge {
 
 void* spout_receiver_create(const char* sender_name) {
     SpoutReceiverBridge* bridge = new SpoutReceiverBridge();
-    bridge->device = nullptr;
-    bridge->context = nullptr;
-    bridge->staging = nullptr;
     bridge->width = 0;
     bridge->height = 0;
     bridge->connected = false;
@@ -162,9 +156,6 @@ void* spout_receiver_create(const char* sender_name) {
         return nullptr;
     }
 
-    bridge->device = bridge->receiver.GetDX11Device();
-    bridge->context = bridge->receiver.GetDX11Context();
-
     // Set the sender name to connect to (empty = first available)
     bridge->receiver.SetReceiverName(bridge->senderName);
 
@@ -176,10 +167,6 @@ void spout_receiver_destroy(void* handle) {
 
     SpoutReceiverBridge* bridge = static_cast<SpoutReceiverBridge*>(handle);
     bridge->receiver.ReleaseReceiver();
-    if (bridge->staging) {
-        bridge->staging->Release();
-        bridge->staging = nullptr;
-    }
     bridge->receiver.CloseDirectX11();
     delete bridge;
 }
@@ -190,32 +177,12 @@ int32_t spout_receiver_has_new_frame(void* handle) {
     return bridge->receiver.IsFrameNew() ? 1 : 0;
 }
 
-// Helper: ensure staging texture matches current dimensions.
-// Checks actual texture desc (not cached bridge dimensions) to avoid stale size bugs.
-static bool ensure_staging(SpoutReceiverBridge* bridge, uint32_t w, uint32_t h) {
-    if (bridge->staging) {
-        D3D11_TEXTURE2D_DESC existing = {};
-        bridge->staging->GetDesc(&existing);
-        if (existing.Width == w && existing.Height == h) {
-            return true;
-        }
-        bridge->staging->Release();
-        bridge->staging = nullptr;
-    }
-
-    D3D11_TEXTURE2D_DESC desc = {};
-    desc.Width = w;
-    desc.Height = h;
-    desc.MipLevels = 1;
-    desc.ArraySize = 1;
-    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    desc.SampleDesc.Count = 1;
-    desc.Usage = D3D11_USAGE_STAGING;
-    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-
-    HRESULT hr = bridge->device->CreateTexture2D(&desc, nullptr, &bridge->staging);
-    return SUCCEEDED(hr) && bridge->staging;
-}
+// Return codes for spout_receiver_receive_rgba:
+//   0 = frame received successfully
+//   1 = no new frame (poll again later)
+//   2 = buffer too small (out_width/out_height contain required dimensions)
+//  -1 = not connected / no sender
+//  -2 = ReceiveImage failed
 
 int32_t spout_receiver_receive_rgba(void* handle,
                                      uint8_t* out_buffer, uint32_t buffer_size,
@@ -224,67 +191,61 @@ int32_t spout_receiver_receive_rgba(void* handle,
 
     SpoutReceiverBridge* bridge = static_cast<SpoutReceiverBridge*>(handle);
 
-    // Option 2 pattern from SpoutDX Tutorial07:
-    //   1. ReceiveTexture() (no args) — receive to class-managed internal texture
-    //   2. IsFrameNew() — check if new data arrived
-    //   3. GetSenderTexture() — get the internal texture pointer for readback
-    if (!bridge->receiver.ReceiveTexture()) {
-        return -1;
+    // Use ReceiveImage() — the official SpoutDX API for CPU pixel readback.
+    // This handles connection, texture sharing, and GPU→CPU copy internally.
+    // Format: GL_RGBA (0x1908) for RGBA byte order.
+    unsigned int w = bridge->width;
+    unsigned int h = bridge->height;
+
+    // ReceiveImage needs valid dimensions. On first call (w=0, h=0),
+    // call ReceiveTexture() once to establish connection and get sender dimensions.
+    if (w == 0 || h == 0) {
+        if (!bridge->receiver.ReceiveTexture()) {
+            return -1;  // No sender connected
+        }
+        w = bridge->receiver.GetSenderWidth();
+        h = bridge->receiver.GetSenderHeight();
+        if (w == 0 || h == 0) return -1;
+        bridge->width = w;
+        bridge->height = h;
+        *out_width = w;
+        *out_height = h;
+        return 2;  // Buffer too small (caller needs to allocate with these dimensions)
     }
 
-    unsigned int w = bridge->receiver.GetSenderWidth();
-    unsigned int h = bridge->receiver.GetSenderHeight();
-    if (w == 0 || h == 0) return -1;
-
-    bridge->connected = true;
-    bridge->width = w;
-    bridge->height = h;
-
-    // Must set out dimensions BEFORE the buffer size check —
-    // caller uses these to allocate the correct buffer on retry.
     *out_width = w;
     *out_height = h;
 
-    // No new frame data — return -1 but with valid dimensions
-    if (!bridge->receiver.IsFrameNew()) {
-        return -1;
-    }
-
     uint32_t requiredSize = w * h * 4;
     if (buffer_size < requiredSize) {
-        return -1;
+        return 2;  // Buffer too small
     }
 
-    // Get class-managed texture (received by ReceiveTexture above)
-    ID3D11Texture2D* sharedTexture = bridge->receiver.GetSenderTexture();
-    if (!sharedTexture) {
-        return -1;
+    // ReceiveImage: receives directly into CPU buffer.
+    // GL_RGBA = 0x1908, bInvert = false (no vertical flip)
+    if (!bridge->receiver.ReceiveImage(out_buffer, 0x1908, false, 0)) {
+        // Check if sender dimensions changed
+        unsigned int newW = bridge->receiver.GetSenderWidth();
+        unsigned int newH = bridge->receiver.GetSenderHeight();
+        if (newW != w || newH != h) {
+            bridge->width = newW;
+            bridge->height = newH;
+            *out_width = newW;
+            *out_height = newH;
+            return 2;  // Dimensions changed, retry with new buffer
+        }
+        // Not connected or no new frame
+        if (!bridge->receiver.IsConnected()) return -1;
+        return 1;  // No new frame
     }
 
-    // Ensure staging texture matches current dimensions
-    if (!ensure_staging(bridge, w, h)) {
-        return -1;
-    }
-
-    // Copy shared texture to staging texture (GPU → GPU)
-    bridge->context->CopyResource(bridge->staging, sharedTexture);
-
-    // Map staging texture for CPU read (GPU → CPU readback)
-    D3D11_MAPPED_SUBRESOURCE mapped = {};
-    HRESULT hr = bridge->context->Map(bridge->staging, 0, D3D11_MAP_READ, 0, &mapped);
-    if (FAILED(hr)) {
-        return -1;
-    }
-
-    // Copy row by row (mapped pitch may differ from w*4)
-    const uint8_t* src = static_cast<const uint8_t*>(mapped.pData);
-    uint32_t dstPitch = w * 4;
-    for (unsigned int y = 0; y < h; y++) {
-        memcpy(out_buffer + y * dstPitch, src + y * mapped.RowPitch, dstPitch);
-    }
-
-    bridge->context->Unmap(bridge->staging, 0);
-    return 0;
+    // Update dimensions in case sender resized
+    bridge->width = bridge->receiver.GetSenderWidth();
+    bridge->height = bridge->receiver.GetSenderHeight();
+    bridge->connected = true;
+    *out_width = bridge->width;
+    *out_height = bridge->height;
+    return 0;  // Frame received successfully
 }
 
 int32_t spout_receiver_is_connected(void* handle) {
