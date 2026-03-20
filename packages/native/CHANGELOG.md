@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.1...native-v0.6.2) (2026-03-20)
+
+
+### Bug Fixes
+
+* **spout:** use ReceiveTexture() + GetSenderTexture() pattern ([5ed3382](https://github.com/naporin0624/electron-texture-bridge/commit/5ed338299ad39c56245d27ddc6361f32cdb04cd2))
+
 ## [0.6.1](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.0...native-v0.6.1) (2026-03-20)
 
 
