@@ -224,11 +224,11 @@ int32_t spout_receiver_receive_rgba(void* handle,
 
     SpoutReceiverBridge* bridge = static_cast<SpoutReceiverBridge*>(handle);
 
-    // Single call: updates connection + retrieves texture pointer.
-    // Do NOT split into ReceiveTexture() + ReceiveTexture(&pTexture) —
-    // the first call consumes the frame, making the second fail.
-    ID3D11Texture2D* sharedTexture = nullptr;
-    if (!bridge->receiver.ReceiveTexture(&sharedTexture) || !sharedTexture) {
+    // Option 2 pattern from SpoutDX Tutorial07:
+    //   1. ReceiveTexture() (no args) — receive to class-managed internal texture
+    //   2. IsFrameNew() — check if new data arrived
+    //   3. GetSenderTexture() — get the internal texture pointer for readback
+    if (!bridge->receiver.ReceiveTexture()) {
         return -1;
     }
 
@@ -245,8 +245,19 @@ int32_t spout_receiver_receive_rgba(void* handle,
     *out_width = w;
     *out_height = h;
 
+    // No new frame data — return -1 but with valid dimensions
+    if (!bridge->receiver.IsFrameNew()) {
+        return -1;
+    }
+
     uint32_t requiredSize = w * h * 4;
     if (buffer_size < requiredSize) {
+        return -1;
+    }
+
+    // Get class-managed texture (received by ReceiveTexture above)
+    ID3D11Texture2D* sharedTexture = bridge->receiver.GetSenderTexture();
+    if (!sharedTexture) {
         return -1;
     }
 
