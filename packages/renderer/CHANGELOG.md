@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.1](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.6.0...renderer-v0.6.1) (2026-03-20)
+
+
+### Bug Fixes
+
+* **spout:** fix receiver never delivering frames on Windows ([a595b43](https://github.com/naporin0624/electron-texture-bridge/commit/a595b437bd654d4eb4a27894cf1629d8bf8f7012))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @napolab/texture-bridge-core bumped to 0.6.1
+
 ## [0.6.0](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.5.1...renderer-v0.6.0) (2026-03-18)
 
 
