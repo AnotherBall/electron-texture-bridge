@@ -60,70 +60,41 @@ impl Receiver {
         let mut width: u32 = 0;
         let mut height: u32 = 0;
 
-        let estimated_size = self.width() as usize * self.height() as usize * 4;
-
-        if estimated_size == 0 {
-            // First call: probe for dimensions with a minimal buffer.
-            // The C API sets out_width/out_height even on buffer-too-small (-1).
-            let mut probe = vec![0u8; 4];
-            unsafe {
-                ffi::syphon_receiver_receive_rgba(
-                    handle,
-                    probe.as_mut_ptr(),
-                    4,
-                    &mut width,
-                    &mut height,
-                );
-            }
-            if width == 0 || height == 0 {
-                // No server connected yet
-                return Ok(None);
-            }
-            // Fall through to allocate correct size below
+        // Use cached dimensions to pre-allocate, or default to 1080p on first call.
+        let cached_w = self.width() as usize;
+        let cached_h = self.height() as usize;
+        let alloc_size = if cached_w > 0 && cached_h > 0 {
+            cached_w * cached_h * 4
         } else {
-            // Have cached dimensions — allocate exact size
-            let mut buffer: Vec<u8> = vec![0u8; estimated_size];
-            let ret = unsafe {
-                ffi::syphon_receiver_receive_rgba(
-                    handle,
-                    buffer.as_mut_ptr(),
-                    estimated_size as u32,
-                    &mut width,
-                    &mut height,
-                )
-            };
+            // First call: no cached dimensions yet. Allocate 1080p as default.
+            1920 * 1080 * 4
+        };
+        let mut buffer: Vec<u8> = vec![0u8; alloc_size];
 
-            if ret == 0 {
-                let actual_size = (width as usize) * (height as usize) * 4;
-                buffer.truncate(actual_size);
-                return Ok(Some((buffer, width, height)));
-            }
-
-            // Dimensions changed — width/height updated by C API
-            if width == 0 || height == 0 {
-                return Ok(None);
-            }
-            // Fall through to retry with new dimensions
-        }
-
-        // Allocate with actual dimensions and retry
-        let correct_size = (width as usize) * (height as usize) * 4;
-        let mut buffer = vec![0u8; correct_size];
         let ret = unsafe {
             ffi::syphon_receiver_receive_rgba(
                 handle,
                 buffer.as_mut_ptr(),
-                correct_size as u32,
+                alloc_size as u32,
                 &mut width,
                 &mut height,
             )
         };
-        if ret != 0 {
-            return Err("Syphon receive failed: Metal readback error after buffer retry".into());
+
+        // C API return codes:
+        //  0 = frame received
+        //  1 = no new frame (poll again)
+        //  2 = buffer too small — dimensions updated, next poll will allocate correctly
+        // -1 = error (not connected, etc.)
+        match ret {
+            0 => {
+                let actual_size = (width as usize) * (height as usize) * 4;
+                buffer.truncate(actual_size);
+                Ok(Some((buffer, width, height)))
+            }
+            1 | 2 => Ok(None), // No new frame or buffer too small — next poll uses updated dimensions
+            _ => Ok(None),     // Error or not connected — return None
         }
-        let actual_size = (width as usize) * (height as usize) * 4;
-        buffer.truncate(actual_size);
-        Ok(Some((buffer, width, height)))
     }
 
     pub fn is_valid(&self) -> bool {

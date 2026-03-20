@@ -3,6 +3,7 @@
 #import <IOSurface/IOSurface.h>
 #import <Syphon/Syphon.h>
 #import <Cocoa/Cocoa.h>
+#import <atomic>
 
 // Syphon Metal Server のヘッダー（framework 内）
 // SyphonMetalServer は Syphon v5+ で利用可能
@@ -238,6 +239,9 @@ struct SyphonReceiverBridge {
     SyphonMetalClient*  client;
     uint32_t            lastWidth;
     uint32_t            lastHeight;
+    std::atomic<bool>   hasNewFrameFlag{false};
+    id<MTLBuffer>       stagingBuffer;
+    uint32_t            stagingSize;
 };
 
 SyphonReceiverHandle syphon_receiver_create(const char* server_uuid,
@@ -280,6 +284,8 @@ SyphonReceiverHandle syphon_receiver_create(const char* server_uuid,
         auto* bridge = new SyphonReceiverBridge();
         bridge->lastWidth = 0;
         bridge->lastHeight = 0;
+        bridge->stagingBuffer = nil;
+        bridge->stagingSize = 0;
 
         bridge->device = MTLCreateSystemDefaultDevice();
         if (!bridge->device) {
@@ -290,10 +296,16 @@ SyphonReceiverHandle syphon_receiver_create(const char* server_uuid,
 
         bridge->commandQueue = [bridge->device newCommandQueue];
 
+        // Capture a raw pointer for the newFrameHandler block.
+        // The block is invoked on Syphon's background thread, so we use
+        // std::atomic<bool> for thread-safe flag access.
+        auto* bridgePtr = bridge;
         bridge->client = [[SyphonMetalClient alloc] initWithServerDescription:serverDesc
                                                                        device:bridge->device
                                                                       options:nil
-                                                              newFrameHandler:nil];
+                                                              newFrameHandler:^(SyphonMetalClient* __unused client) {
+            bridgePtr->hasNewFrameFlag.store(true, std::memory_order_release);
+        }];
 
         if (!bridge->client) {
             NSLog(@"[SyphonReceiver] ERROR: Failed to create SyphonMetalClient");
@@ -314,28 +326,37 @@ void syphon_receiver_destroy(SyphonReceiverHandle handle) {
     @autoreleasepool {
         auto* bridge = static_cast<SyphonReceiverBridge*>(handle);
         [bridge->client stop];
-        bridge->client       = nil;
-        bridge->commandQueue = nil;
-        bridge->device       = nil;
+        bridge->client        = nil;
+        bridge->stagingBuffer = nil;
+        bridge->commandQueue  = nil;
+        bridge->device        = nil;
         delete bridge;
     }
 }
 
 int syphon_receiver_has_new_frame(SyphonReceiverHandle handle) {
     if (!handle) return 0;
-    @autoreleasepool {
-        auto* bridge = static_cast<SyphonReceiverBridge*>(handle);
-        return bridge->client.hasNewFrame ? 1 : 0;
-    }
+    auto* bridge = static_cast<SyphonReceiverBridge*>(handle);
+    return bridge->hasNewFrameFlag.load(std::memory_order_acquire) ? 1 : 0;
 }
 
 int syphon_receiver_receive_rgba(SyphonReceiverHandle handle,
                                   uint8_t* out_buffer, uint32_t buffer_size,
                                   uint32_t* out_width, uint32_t* out_height) {
     if (!handle || !out_buffer || !out_width || !out_height) return -1;
-    @autoreleasepool {
-        auto* bridge = static_cast<SyphonReceiverBridge*>(handle);
 
+    auto* bridge = static_cast<SyphonReceiverBridge*>(handle);
+
+    // Fast path: atomically consume the new-frame flag.
+    // Using exchange instead of separate load+store prevents a race where
+    // the newFrameHandler sets the flag between our load and store.
+    if (!bridge->hasNewFrameFlag.exchange(false, std::memory_order_acq_rel)) {
+        *out_width = bridge->lastWidth;
+        *out_height = bridge->lastHeight;
+        return 1; // no new frame
+    }
+
+    @autoreleasepool {
         id<MTLTexture> texture = [bridge->client newFrameImage];
         if (!texture) return -1;
 
@@ -344,28 +365,32 @@ int syphon_receiver_receive_rgba(SyphonReceiverHandle handle,
         uint32_t bytesPerRow = w * 4;
         uint32_t requiredSize = bytesPerRow * h;
 
-        if (buffer_size < requiredSize) {
-            // Caller needs to know the dimensions to allocate a bigger buffer
-            *out_width = w;
-            *out_height = h;
-            return -1;
-        }
-
+        // Always update cached dimensions so the next poll allocates correctly.
+        *out_width = w;
+        *out_height = h;
         bridge->lastWidth = w;
         bridge->lastHeight = h;
 
-        // GPU readback: blit texture contents to a staging buffer
-        id<MTLCommandBuffer> cmdBuf = [bridge->commandQueue commandBuffer];
-        id<MTLBuffer> staging = [bridge->device newBufferWithLength:requiredSize
-                                                            options:MTLResourceStorageModeShared];
+        if (buffer_size < requiredSize) {
+            return 2; // Buffer too small — dimensions updated for next call
+        }
 
+        // Reuse staging buffer — only reallocate when frame size changes.
+        if (bridge->stagingBuffer == nil || bridge->stagingSize < requiredSize) {
+            bridge->stagingBuffer = [bridge->device newBufferWithLength:requiredSize
+                                                                options:MTLResourceStorageModeShared];
+            bridge->stagingSize = requiredSize;
+        }
+
+        // GPU readback: blit texture contents to the staging buffer
+        id<MTLCommandBuffer> cmdBuf = [bridge->commandQueue commandBuffer];
         id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
         [blit copyFromTexture:texture
                   sourceSlice:0
                   sourceLevel:0
                  sourceOrigin:MTLOriginMake(0, 0, 0)
                    sourceSize:MTLSizeMake(w, h, 1)
-                     toBuffer:staging
+                     toBuffer:bridge->stagingBuffer
             destinationOffset:0
        destinationBytesPerRow:bytesPerRow
      destinationBytesPerImage:requiredSize];
@@ -374,10 +399,9 @@ int syphon_receiver_receive_rgba(SyphonReceiverHandle handle,
         [cmdBuf waitUntilCompleted];
 
         // Copy from staging buffer to output
-        memcpy(out_buffer, staging.contents, requiredSize);
+        memcpy(out_buffer, bridge->stagingBuffer.contents, requiredSize);
 
-        *out_width = w;
-        *out_height = h;
+        // Flag was already consumed by exchange() at the top — no need to clear.
 
         return 0;
     }
