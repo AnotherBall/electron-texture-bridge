@@ -222,8 +222,9 @@ int32_t spout_receiver_receive_rgba(void* handle,
     }
 
     // ReceiveImage: receives directly into CPU buffer.
-    // GL_RGBA = 0x1908, bInvert = false (no vertical flip)
-    if (!bridge->receiver.ReceiveImage(out_buffer, 0x1908, false, 0)) {
+    // SpoutDX uses DXGI formats, not GL enums.
+    // DXGI_FORMAT_B8G8R8A8_UNORM (87) = BGRA byte order, matches Chromium's default.
+    if (!bridge->receiver.ReceiveImage(out_buffer, DXGI_FORMAT_B8G8R8A8_UNORM, false, 0)) {
         // Check if sender dimensions changed
         unsigned int newW = bridge->receiver.GetSenderWidth();
         unsigned int newH = bridge->receiver.GetSenderHeight();
