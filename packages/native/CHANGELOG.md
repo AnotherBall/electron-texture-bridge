@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.4](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.3...native-v0.6.4) (2026-03-20)
+
+
+### Performance Improvements
+
+* **syphon:** skip redundant GPU readback + reuse staging buffer ([e405761](https://github.com/naporin0624/electron-texture-bridge/commit/e405761e6e631b1ce9d34a891c6bb5417a2eb784))
+
 ## [0.6.3](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.2...native-v0.6.3) (2026-03-20)
 
 
