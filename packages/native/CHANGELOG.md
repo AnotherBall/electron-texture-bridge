@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.5](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.4...native-v0.6.5) (2026-03-20)
+
+
+### Bug Fixes
+
+* **spout:** use DXGI_FORMAT for ReceiveImage instead of GL_RGBA ([0a91a4a](https://github.com/naporin0624/electron-texture-bridge/commit/0a91a4adc18d44311698d70391222674c1330e28))
+
 ## [0.6.4](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.3...native-v0.6.4) (2026-03-20)
 
 
