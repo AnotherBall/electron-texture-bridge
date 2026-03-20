@@ -29,7 +29,6 @@ describe("TextureReceiverBridge", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
-    mockReceiver.hasNewFrame.mockReturnValue(false);
     mockReceiver.receiveFrame.mockReturnValue(null);
     mockReceiver.isConnected.mockReturnValue(true);
   });
@@ -50,7 +49,7 @@ describe("TextureReceiverBridge", () => {
     bridge.start();
 
     vi.advanceTimersByTime(20);
-    expect(mockReceiver.hasNewFrame).toHaveBeenCalled();
+    expect(mockReceiver.receiveFrame).toHaveBeenCalled();
 
     bridge.dispose();
   });
@@ -61,7 +60,6 @@ describe("TextureReceiverBridge", () => {
     bridge.on("frame", handler);
     bridge.start();
 
-    mockReceiver.hasNewFrame.mockReturnValue(true);
     mockReceiver.receiveFrame.mockReturnValue({
       data: Buffer.from([1, 2, 3, 4]),
       width: 100,
@@ -86,7 +84,6 @@ describe("TextureReceiverBridge", () => {
     bridge.start();
 
     // Simulate frames for > 1 second
-    mockReceiver.hasNewFrame.mockReturnValue(true);
     mockReceiver.receiveFrame.mockReturnValue({
       data: Buffer.from([0]),
       width: 1,
@@ -114,9 +111,9 @@ describe("TextureReceiverBridge", () => {
     expect(bridge.isDisposed).toBe(true);
 
     // No more polling after dispose
-    const callCount = mockReceiver.hasNewFrame.mock.calls.length;
+    const callCount = mockReceiver.receiveFrame.mock.calls.length;
     vi.advanceTimersByTime(100);
-    expect(mockReceiver.hasNewFrame.mock.calls.length).toBe(callCount);
+    expect(mockReceiver.receiveFrame.mock.calls.length).toBe(callCount);
   });
 
   it("dispose() is idempotent", () => {
@@ -131,7 +128,6 @@ describe("TextureReceiverBridge", () => {
     const bridge = createTextureReceiver({ senderName: "TestSender" });
     bridge.on("fps", fpsHandler);
 
-    mockReceiver.hasNewFrame.mockReturnValue(true);
     mockReceiver.receiveFrame.mockReturnValue({
       data: Buffer.from([0]),
       width: 1,
@@ -176,9 +172,9 @@ describe("TextureReceiverBridge", () => {
 
     // start() after dispose should not begin polling
     bridge.start();
-    mockReceiver.hasNewFrame.mockReturnValue(true);
+    mockReceiver.receiveFrame.mockReturnValue({ data: Buffer.from([0]), width: 1, height: 1 });
     vi.advanceTimersByTime(100);
-    expect(mockReceiver.hasNewFrame).not.toHaveBeenCalled();
+    expect(mockReceiver.receiveFrame).not.toHaveBeenCalled();
   });
 
   it("emits 'error' when stopped receiver throws during poll", () => {
@@ -187,8 +183,8 @@ describe("TextureReceiverBridge", () => {
     bridge.on("error", handler);
     bridge.start();
 
-    // Simulate a stopped receiver that throws on hasNewFrame
-    mockReceiver.hasNewFrame.mockImplementation(() => {
+    // Simulate a stopped receiver that throws on receiveFrame
+    mockReceiver.receiveFrame.mockImplementation(() => {
       throw new Error("TextureReceiver has been stopped");
     });
 
@@ -228,13 +224,52 @@ describe("TextureReceiverBridge", () => {
     expect(mockReceiver.stop).toHaveBeenCalledTimes(1);
   });
 
+  it("emits 'frame' even when hasNewFrame returns false", () => {
+    const handler = vi.fn();
+    const bridge = createTextureReceiver({ senderName: "TestSender" });
+    bridge.on("frame", handler);
+    bridge.start();
+
+    // hasNewFrame returns false, but receiveFrame returns a valid frame
+    mockReceiver.hasNewFrame.mockReturnValue(false);
+    mockReceiver.receiveFrame.mockReturnValue({
+      data: Buffer.from([10, 20, 30]),
+      width: 64,
+      height: 64,
+    });
+
+    vi.advanceTimersByTime(20);
+
+    expect(handler).toHaveBeenCalledWith({
+      data: Buffer.from([10, 20, 30]),
+      width: 64,
+      height: 64,
+    });
+
+    bridge.dispose();
+  });
+
+  it("does not emit 'frame' when receiveFrame returns null", () => {
+    const handler = vi.fn();
+    const bridge = createTextureReceiver({ senderName: "TestSender" });
+    bridge.on("frame", handler);
+    bridge.start();
+
+    mockReceiver.receiveFrame.mockReturnValue(null);
+
+    vi.advanceTimersByTime(20);
+
+    expect(handler).not.toHaveBeenCalled();
+
+    bridge.dispose();
+  });
+
   it("emits 'error' when receiveFrame throws", () => {
     const handler = vi.fn();
     const bridge = createTextureReceiver({ senderName: "TestSender" });
     bridge.on("error", handler);
     bridge.start();
 
-    mockReceiver.hasNewFrame.mockReturnValue(true);
     mockReceiver.receiveFrame.mockImplementation(() => {
       throw new Error("GPU error");
     });
