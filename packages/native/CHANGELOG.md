@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.2...native-v0.6.3) (2026-03-20)
+
+
+### Bug Fixes
+
+* **spout:** use ReceiveImage() for CPU pixel readback ([d290981](https://github.com/naporin0624/electron-texture-bridge/commit/d290981507610d124683b2bc89f01979e2428342))
+
 ## [0.6.2](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.1...native-v0.6.2) (2026-03-20)
 
 
