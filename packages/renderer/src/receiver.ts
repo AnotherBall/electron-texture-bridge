@@ -87,8 +87,6 @@ class TextureReceiverBridgeImpl extends EventEmitter implements TextureReceiverB
     if (this._disposed) return;
 
     try {
-      if (!this.receiver.hasNewFrame()) return;
-
       const frame = this.receiver.receiveFrame();
       if (!frame) return;
 

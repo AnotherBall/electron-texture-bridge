@@ -39,53 +39,42 @@ impl Receiver {
         let mut width: u32 = 0;
         let mut height: u32 = 0;
 
-        let estimated_size = self.width() as usize * self.height() as usize * 4;
+        // Use cached dimensions for initial buffer allocation.
+        // If dimensions are unknown (first call), use a reasonable default;
+        // the C API will return -1 with updated out_width/out_height if the
+        // buffer is too small, and we retry with the correct size.
+        let cached_w = self.width() as usize;
+        let cached_h = self.height() as usize;
+        let estimated_size = cached_w * cached_h * 4;
 
-        if estimated_size == 0 {
-            // First call: probe for dimensions with a minimal buffer.
-            // The C API sets out_width/out_height even on buffer-too-small (-1).
-            let mut probe = vec![0u8; 4];
-            unsafe {
-                ffi::spout_receiver_receive_rgba(
-                    handle,
-                    probe.as_mut_ptr(),
-                    4,
-                    &mut width,
-                    &mut height,
-                );
-            }
-            if width == 0 || height == 0 {
-                // No sender connected yet
-                return Ok(None);
-            }
-            // Fall through to retry with correct size
-        } else {
-            // Have cached dimensions — allocate exact size
-            let mut buffer: Vec<u8> = vec![0u8; estimated_size];
-            let ret = unsafe {
-                ffi::spout_receiver_receive_rgba(
-                    handle,
-                    buffer.as_mut_ptr(),
-                    estimated_size as u32,
-                    &mut width,
-                    &mut height,
-                )
-            };
+        // Allocate buffer — use cached size if available, otherwise a small
+        // probe buffer that will trigger a resize-retry path.
+        let alloc_size = if estimated_size > 0 { estimated_size } else { 4 };
+        let mut buffer: Vec<u8> = vec![0u8; alloc_size];
 
-            if ret == 0 {
-                let actual_size = (width as usize) * (height as usize) * 4;
-                buffer.truncate(actual_size);
-                return Ok(Some((buffer, width, height)));
-            }
+        let ret = unsafe {
+            ffi::spout_receiver_receive_rgba(
+                handle,
+                buffer.as_mut_ptr(),
+                alloc_size as u32,
+                &mut width,
+                &mut height,
+            )
+        };
 
-            // Dimensions changed — width/height updated by C API
-            if width == 0 || height == 0 {
-                return Ok(None);
-            }
-            // Fall through to retry with new dimensions
+        if ret == 0 {
+            let actual_size = (width as usize) * (height as usize) * 4;
+            buffer.truncate(actual_size);
+            return Ok(Some((buffer, width, height)));
         }
 
-        // Allocate with actual dimensions and retry
+        // ret != 0: either no sender, or buffer was too small.
+        // The C API wrote the real dimensions into width/height.
+        if width == 0 || height == 0 {
+            return Ok(None);
+        }
+
+        // Retry with correctly-sized buffer.
         let correct_size = (width as usize) * (height as usize) * 4;
         let mut buffer = vec![0u8; correct_size];
         let ret = unsafe {

@@ -224,9 +224,11 @@ int32_t spout_receiver_receive_rgba(void* handle,
 
     SpoutReceiverBridge* bridge = static_cast<SpoutReceiverBridge*>(handle);
 
-    // Single ReceiveTexture() call to update connection state and dimensions.
-    // Do NOT call ReceiveTexture() twice — it has frame-consume semantics.
-    if (!bridge->receiver.ReceiveTexture()) {
+    // Single call: updates connection + retrieves texture pointer.
+    // Do NOT split into ReceiveTexture() + ReceiveTexture(&pTexture) —
+    // the first call consumes the frame, making the second fail.
+    ID3D11Texture2D* sharedTexture = nullptr;
+    if (!bridge->receiver.ReceiveTexture(&sharedTexture) || !sharedTexture) {
         return -1;
     }
 
@@ -250,13 +252,6 @@ int32_t spout_receiver_receive_rgba(void* handle,
 
     // Ensure staging texture matches current dimensions
     if (!ensure_staging(bridge, w, h)) {
-        return -1;
-    }
-
-    // Get spoutDX's internal shared texture via double-pointer API.
-    // ReceiveTexture(&pTexture) provides access to the already-received frame.
-    ID3D11Texture2D* sharedTexture = nullptr;
-    if (!bridge->receiver.ReceiveTexture(&sharedTexture) || !sharedTexture) {
         return -1;
     }
 
