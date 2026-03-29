@@ -221,6 +221,140 @@ where
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- ReceiverListener lifecycle tests ----
+
+    #[test]
+    fn listener_stop_flag_initially_false() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let listener = ReceiverListener {
+            stop_flag: flag.clone(),
+            thread: None,
+        };
+        assert!(!flag.load(Ordering::Acquire));
+        drop(listener);
+    }
+
+    #[test]
+    fn listener_stop_sets_flag_and_joins_thread() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = flag.clone();
+
+        let thread = thread::spawn(move || {
+            while !flag_clone.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        let mut listener = ReceiverListener {
+            stop_flag: flag.clone(),
+            thread: Some(thread),
+        };
+
+        assert!(!flag.load(Ordering::Acquire));
+        listener.stop();
+        assert!(flag.load(Ordering::Acquire));
+        assert!(listener.thread.is_none());
+    }
+
+    #[test]
+    fn listener_drop_stops_thread() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = flag.clone();
+        let flag_check = flag.clone();
+
+        let thread = thread::spawn(move || {
+            while !flag_clone.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        let listener = ReceiverListener {
+            stop_flag: flag,
+            thread: Some(thread),
+        };
+
+        drop(listener);
+        assert!(flag_check.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn listener_double_stop_is_idempotent() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag_clone = flag.clone();
+
+        let thread = thread::spawn(move || {
+            while !flag_clone.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        let mut listener = ReceiverListener {
+            stop_flag: flag,
+            thread: Some(thread),
+        };
+
+        listener.stop();
+        listener.stop(); // should not panic
+    }
+
+    #[test]
+    fn listener_stop_flag_accessor_returns_shared_flag() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let listener = ReceiverListener {
+            stop_flag: flag.clone(),
+            thread: None,
+        };
+
+        let shared = listener.stop_flag();
+        shared.store(true, Ordering::Release);
+        assert!(flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn listener_callback_receives_frames_until_stopped() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let stop = flag.clone();
+        let count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let count_clone = count.clone();
+
+        let thread = thread::spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                count_clone.fetch_add(1, Ordering::Relaxed);
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        let mut listener = ReceiverListener {
+            stop_flag: flag,
+            thread: Some(thread),
+        };
+
+        thread::sleep(Duration::from_millis(20));
+        listener.stop();
+
+        let final_count = count.load(Ordering::Relaxed);
+        assert!(
+            final_count > 0,
+            "callback should have been invoked at least once"
+        );
+
+        // After stop, count should not increase
+        let after_stop = count.load(Ordering::Relaxed);
+        thread::sleep(Duration::from_millis(10));
+        assert_eq!(count.load(Ordering::Relaxed), after_stop);
+    }
+
+    #[test]
+    fn start_listening_rejects_null_byte_in_name() {
+        let result = start_listening("bad\0name", |_, _, _| {});
+        assert!(result.is_err());
+    }
+}
+
 /// List available Spout senders.
 pub fn list_senders_json() -> Result<String, String> {
     unsafe {
