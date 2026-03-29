@@ -35,12 +35,16 @@ impl Receiver {
             return Err("Failed to create Syphon receiver (no matching server?)".into());
         }
 
-        Ok(Self { handle: Some(handle) })
+        Ok(Self {
+            handle: Some(handle),
+        })
     }
 
     pub fn destroy(&mut self) {
         if let Some(h) = self.handle.take() {
-            unsafe { ffi::syphon_receiver_destroy(h); }
+            unsafe {
+                ffi::syphon_receiver_destroy(h);
+            }
         }
     }
 
