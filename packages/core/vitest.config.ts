@@ -7,7 +7,7 @@ export default defineConfig({
 	},
 	resolve: {
 		alias: {
-			"@napolab/texture-bridge": path.resolve(__dirname, "../native/index.js"),
+			"@napolab/texture-bridge": path.resolve(__dirname, "../native/index.stub.js"),
 		},
 	},
 });

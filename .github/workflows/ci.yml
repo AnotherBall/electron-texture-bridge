@@ -27,3 +27,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm build:core && pnpm build:renderer
       - run: pnpm typecheck
+
+      - name: TypeScript tests (core + renderer)
+        run: |
+          pnpm --filter @napolab/texture-bridge-core run test
+          pnpm --filter @napolab/texture-bridge-renderer run test

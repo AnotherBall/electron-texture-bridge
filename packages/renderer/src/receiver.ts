@@ -1,5 +1,5 @@
 import { EventEmitter } from "events";
-import { TextureReceiver } from "@napolab/texture-bridge-core";
+import { TextureReceiver, getPlatform } from "@napolab/texture-bridge-core";
 import type { ReceivedFrame } from "@napolab/texture-bridge-core";
 import { FpsCounter } from "./fps-counter";
 
@@ -7,6 +7,7 @@ export interface TextureReceiverBridgeOptions {
   senderName: string;
   appName?: string;
   serverUuid?: string;
+  /** Polling interval in ms (only used on platforms without event-driven support). */
   pollIntervalMs?: number;
 }
 
@@ -44,13 +45,17 @@ class TextureReceiverBridgeImpl extends EventEmitter implements TextureReceiverB
   private receiver: InstanceType<typeof TextureReceiver>;
   private fpsCounter = new FpsCounter();
   private _disposed = false;
+  private _started = false;
   private _timer: ReturnType<typeof setInterval> | null = null;
   private pollIntervalMs: number;
+  private useEventDriven: boolean;
 
   constructor(receiver: InstanceType<typeof TextureReceiver>, pollIntervalMs: number) {
     super();
     this.receiver = receiver;
     this.pollIntervalMs = pollIntervalMs;
+    // Event-driven via startListening is available on Windows (Spout)
+    this.useEventDriven = getPlatform() === "spout";
   }
 
   get isDisposed(): boolean {
@@ -58,12 +63,22 @@ class TextureReceiverBridgeImpl extends EventEmitter implements TextureReceiverB
   }
 
   start(): void {
-    if (this._disposed || this._timer) return;
+    if (this._disposed || this._started) return;
+    this._started = true;
     this.fpsCounter.reset();
-    this._timer = setInterval(() => this._poll(), this.pollIntervalMs);
+
+    if (this.useEventDriven) {
+      this.receiver.startListening((frame: ReceivedFrame) => {
+        if (this._disposed) return;
+        this._onFrame(frame);
+      });
+    } else {
+      this._timer = setInterval(() => this._poll(), this.pollIntervalMs);
+    }
   }
 
   stop(): void {
+    this._started = false;
     if (this._timer) {
       clearInterval(this._timer);
       this._timer = null;
@@ -83,19 +98,26 @@ class TextureReceiverBridgeImpl extends EventEmitter implements TextureReceiverB
     this.dispose();
   }
 
+  private _onFrame(frame: ReceivedFrame): void {
+    try {
+      this.emit("frame", frame);
+      const fps = this.fpsCounter.tick();
+      if (fps !== null) {
+        this.emit("fps", fps);
+      }
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.emit("error", error);
+    }
+  }
+
   private _poll(): void {
     if (this._disposed) return;
 
     try {
       const frame = this.receiver.receiveFrame();
       if (!frame) return;
-
-      this.emit("frame", frame);
-
-      const fps = this.fpsCounter.tick();
-      if (fps !== null) {
-        this.emit("fps", fps);
-      }
+      this._onFrame(frame);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       this.emit("error", error);

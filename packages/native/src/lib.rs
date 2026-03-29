@@ -8,6 +8,11 @@ mod win;
 use napi::*;
 use napi_derive::napi;
 
+#[cfg(target_os = "windows")]
+use napi::threadsafe_function::{
+    ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
+};
+
 // ============================================================
 // JS API: TextureSender
 //
@@ -262,6 +267,11 @@ pub struct TextureReceiver {
     inner: Option<mac::receiver::Receiver>,
     #[cfg(target_os = "windows")]
     inner: Option<win::receiver::Receiver>,
+
+    sender_name: String,
+
+    #[cfg(target_os = "windows")]
+    listener: Option<win::receiver::ReceiverListener>,
 }
 
 #[napi]
@@ -289,7 +299,15 @@ impl TextureReceiver {
         let inner =
             win::receiver::Receiver::new(&sender_name).map_err(|e| Error::from_reason(e))?;
 
-        Ok(Self { inner: Some(inner) })
+        #[allow(unused_mut)]
+        let mut result = Self {
+            inner: Some(inner),
+            sender_name,
+            #[cfg(target_os = "windows")]
+            listener: None,
+        };
+
+        Ok(result)
     }
 
     /// Returns true if the server has output a new frame since the last receive.
@@ -347,11 +365,50 @@ impl TextureReceiver {
         self.inner.as_ref().map_or(0, |r| r.height())
     }
 
+    /// Start event-driven frame reception.
+    /// Spawns a native thread that receives frames and delivers them via callback.
+    /// The callback receives a `ReceivedFrame` object for each new frame.
+    /// Call `stop()` to terminate the listener thread.
+    #[cfg(target_os = "windows")]
+    #[napi(
+        ts_args_type = "callback: (frame: ReceivedFrame) => void",
+        ts_return_type = "void"
+    )]
+    pub fn start_listening(&mut self, callback: JsFunction) -> Result<()> {
+        if self.listener.is_some() {
+            return Err(Error::from_reason("Listener already started"));
+        }
+
+        let tsfn: ThreadsafeFunction<(Vec<u8>, u32, u32), ErrorStrategy::Fatal> = callback
+            .create_threadsafe_function(0, |ctx: ThreadSafeCallContext<(Vec<u8>, u32, u32)>| {
+                let (data, width, height) = ctx.value;
+                let mut obj = ctx.env.create_object()?;
+                let buf = ctx.env.create_buffer_with_data(data)?;
+                obj.set_named_property("data", buf.into_raw())?;
+                obj.set_named_property("width", ctx.env.create_uint32(width)?)?;
+                obj.set_named_property("height", ctx.env.create_uint32(height)?)?;
+                Ok(vec![obj.into_unknown()])
+            })?;
+
+        let listener = win::receiver::start_listening(&self.sender_name, move |data, w, h| {
+            tsfn.call((data, w, h), ThreadsafeFunctionCallMode::NonBlocking);
+        })
+        .map_err(|e| Error::from_reason(e))?;
+
+        self.listener = Some(listener);
+
+        Ok(())
+    }
+
     /// Stop the receiver and release native resources immediately.
     /// This is a terminal operation — the receiver cannot be reused afterward.
     /// Repeated calls are safe and idempotent.
     #[napi]
     pub fn stop(&mut self) -> Result<()> {
+        #[cfg(target_os = "windows")]
+        if let Some(mut l) = self.listener.take() {
+            l.stop();
+        }
         if let Some(mut r) = self.inner.take() {
             r.destroy();
         }

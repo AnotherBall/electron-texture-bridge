@@ -177,31 +177,10 @@ int32_t spout_receiver_has_new_frame(void* handle) {
     return bridge->receiver.IsFrameNew() ? 1 : 0;
 }
 
-// Return codes for spout_receiver_receive_rgba:
-//   0 = frame received successfully
-//   1 = no new frame (poll again later)
-//   2 = buffer too small (out_width/out_height contain required dimensions)
-//  -1 = not connected / no sender
-//  -2 = ReceiveImage failed
-
-// Following the official SpoutDX ReceiveImage pattern (see WinSpoutDX.cpp sample):
-//
-//   if (receiver.ReceiveImage(pixels, width, height, bRGB, bInvert)) {
-//       if (receiver.IsUpdated()) {
-//           width = receiver.GetSenderWidth();
-//           height = receiver.GetSenderHeight();
-//           // re-allocate buffer
-//       }
-//       // else: frame data is in pixels
-//   }
-//
-// ReceiveImage can be called with nullptr/0 initially — it returns true with
-// IsUpdated()=true on first connection, signalling the caller to allocate.
-//
 // Return codes:
 //   0 = frame received successfully
 //   1 = no new frame (poll again later)
-//   2 = buffer too small / dimensions changed (out_width/out_height have new dims)
+//   2 = dimensions changed (out_width/out_height have new dims, caller must re-allocate)
 //  -1 = not connected / no sender
 int32_t spout_receiver_receive_rgba(void* handle,
                                      uint8_t* out_buffer, uint32_t buffer_size,
