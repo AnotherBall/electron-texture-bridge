@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.7.0](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.6.6...renderer-v0.7.0) (2026-03-29)
+
+
+### Features
+
+* **spout:** event-driven receiver via native thread ([aa24f9e](https://github.com/naporin0624/electron-texture-bridge/commit/aa24f9ea3f638f8f91998c4b6472b8c5f6d17ee8))
+* **spout:** event-driven receiver via native thread + ThreadsafeFunction ([70fbe9e](https://github.com/naporin0624/electron-texture-bridge/commit/70fbe9e775ce9b13e85ab9b879f112227b3882cb))
+* **syphon:** event-driven receiver via native listener thread ([be34204](https://github.com/naporin0624/electron-texture-bridge/commit/be34204add6467df914c05a10b7fb0996d894171))
+* **syphon:** event-driven receiver via native listener thread ([358fb41](https://github.com/naporin0624/electron-texture-bridge/commit/358fb41dcdc3615d6f92af96172c34ff2409e86d))
+
+
+### Bug Fixes
+
+* **ci:** use stub module for native package in vitest ([86eccfa](https://github.com/naporin0624/electron-texture-bridge/commit/86eccfacdf568940650eec9b350d2cb581fe89c6))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @napolab/texture-bridge-core bumped to 0.7.0
+
 ## [0.6.6](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.6.5...renderer-v0.6.6) (2026-03-29)
 
 
