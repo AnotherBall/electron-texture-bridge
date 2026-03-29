@@ -54,8 +54,9 @@ class TextureReceiverBridgeImpl extends EventEmitter implements TextureReceiverB
     super();
     this.receiver = receiver;
     this.pollIntervalMs = pollIntervalMs;
-    // Event-driven via startListening is available on Windows (Spout)
-    this.useEventDriven = getPlatform() === "spout";
+    // Event-driven via startListening is available on both platforms
+    const platform = getPlatform();
+    this.useEventDriven = platform === "spout" || platform === "syphon-metal";
   }
 
   get isDisposed(): boolean {
