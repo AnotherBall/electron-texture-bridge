@@ -9,7 +9,7 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    name: Lint & Typecheck
+    name: Lint & Typecheck & TS Tests
     steps:
       - uses: actions/checkout@v4
 
@@ -28,24 +28,7 @@ jobs:
       - run: pnpm build:core && pnpm build:renderer
       - run: pnpm typecheck
 
-  test-ts:
-    runs-on: ubuntu-latest
-    name: TypeScript Tests
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install
-
-      - name: Run TypeScript tests (core + renderer)
+      - name: TypeScript tests (core + renderer)
         run: |
           cd packages/core && npx vitest run
           cd ../renderer && npx vitest run
@@ -58,9 +41,19 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~\.cargo\registry
+            ~\.cargo\git
+            target
+          key: rust-windows-${{ hashFiles('packages/native/Cargo.lock', 'packages/native/Cargo.toml') }}
+          restore-keys: rust-windows-
+
       - name: Fetch Spout2 SDK
         shell: pwsh
         run: |
+          if (Test-Path vendor/Spout2/SpoutDirectX) { exit 0 }
           git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
           New-Item -ItemType Directory -Force vendor/Spout2
           Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutDirectX vendor/Spout2/SpoutDirectX
@@ -80,8 +73,18 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-macos-arm64-${{ hashFiles('packages/native/Cargo.lock', 'packages/native/Cargo.toml') }}
+          restore-keys: rust-macos-arm64-
+
       - name: Build Syphon.framework
         run: |
+          if [ -d vendor/Syphon.framework ]; then exit 0; fi
           cd vendor/syphon-src
           xcodebuild -project Syphon.xcodeproj \
             -scheme Syphon \
