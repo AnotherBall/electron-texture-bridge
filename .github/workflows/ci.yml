@@ -9,7 +9,7 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    name: Lint & Typecheck & TS Tests
+    name: Lint & Typecheck
     steps:
       - uses: actions/checkout@v4
 
