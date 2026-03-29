@@ -15,12 +15,17 @@ impl Receiver {
         if handle.is_null() {
             return Err("Failed to create Spout receiver".into());
         }
-        Ok(Self { handle: Some(handle), buffer: Vec::new() })
+        Ok(Self {
+            handle: Some(handle),
+            buffer: Vec::new(),
+        })
     }
 
     pub fn destroy(&mut self) {
         if let Some(h) = self.handle.take() {
-            unsafe { ffi::spout_receiver_destroy(h); }
+            unsafe {
+                ffi::spout_receiver_destroy(h);
+            }
         }
     }
 

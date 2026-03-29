@@ -37,12 +37,7 @@ impl Sender {
     }
 
     /// Send IOSurface via direct pointer (from Electron's shared texture handle)
-    pub fn send_surface(
-        &self,
-        surface_ptr: u64,
-        width: u32,
-        height: u32,
-    ) -> Result<(), String> {
+    pub fn send_surface(&self, surface_ptr: u64, width: u32, height: u32) -> Result<(), String> {
         let surface = surface_ptr as ffi::IOSurfaceRef;
         let ret = unsafe { ffi::syphon_bridge_send_surface(self.handle, surface, width, height) };
         if ret != 0 {
@@ -61,13 +56,7 @@ impl Sender {
         bytes_per_row: u32,
     ) -> Result<(), String> {
         let ret = unsafe {
-            ffi::syphon_bridge_send_rgba(
-                self.handle,
-                data.as_ptr(),
-                width,
-                height,
-                bytes_per_row,
-            )
+            ffi::syphon_bridge_send_rgba(self.handle, data.as_ptr(), width, height, bytes_per_row)
         };
         if ret != 0 {
             Err("Failed to send RGBA buffer via Syphon".into())

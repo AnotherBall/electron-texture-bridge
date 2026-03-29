@@ -1,9 +1,9 @@
 mod types;
 
-#[cfg(target_os = "windows")]
-mod win;
 #[cfg(target_os = "macos")]
 mod mac;
+#[cfg(target_os = "windows")]
+mod win;
 
 use napi::*;
 use napi_derive::napi;
@@ -38,14 +38,16 @@ impl TextureSender {
     #[napi(constructor)]
     pub fn new(name: String, width: u32, height: u32) -> Result<Self> {
         #[cfg(target_os = "windows")]
-        let inner = win::Sender::new(&name, width, height)
-            .map_err(|e| Error::from_reason(e))?;
+        let inner = win::Sender::new(&name, width, height).map_err(|e| Error::from_reason(e))?;
 
         #[cfg(target_os = "macos")]
-        let inner = mac::Sender::new(&name)
-            .map_err(|e| Error::from_reason(e))?;
+        let inner = mac::Sender::new(&name).map_err(|e| Error::from_reason(e))?;
 
-        Ok(Self { inner: Some(inner), width, height })
+        Ok(Self {
+            inner: Some(inner),
+            width,
+            height,
+        })
     }
 
     /// Send a shared texture to Spout (Win) or Syphon (Mac).
@@ -57,20 +59,22 @@ impl TextureSender {
     /// - `height`: Texture height (from `textureInfo.codedSize.height`)
     #[napi]
     pub fn send(&mut self, handle: i64, width: u32, height: u32) -> Result<()> {
-        let inner = self.inner.as_mut()
+        let inner = self
+            .inner
+            .as_mut()
             .ok_or_else(|| Error::from_reason("TextureSender has been stopped"))?;
         self.width = width;
         self.height = height;
 
         #[cfg(target_os = "windows")]
         {
-            inner.send(handle)
-                .map_err(|e| Error::from_reason(e))?;
+            inner.send(handle).map_err(|e| Error::from_reason(e))?;
         }
 
         #[cfg(target_os = "macos")]
         {
-            inner.send(handle, width, height)
+            inner
+                .send(handle, width, height)
                 .map_err(|e| Error::from_reason(e))?;
         }
 
@@ -90,7 +94,9 @@ impl TextureSender {
         width: u32,
         height: u32,
     ) -> Result<()> {
-        let inner = self.inner.as_mut()
+        let inner = self
+            .inner
+            .as_mut()
             .ok_or_else(|| Error::from_reason("TextureSender has been stopped"))?;
         self.width = width;
         self.height = height;
@@ -101,11 +107,13 @@ impl TextureSender {
             if surface_buffer.len() < 8 {
                 return Err(Error::from_reason("Surface buffer too small"));
             }
-            let ptr_bytes: [u8; 8] = surface_buffer[..8].try_into()
+            let ptr_bytes: [u8; 8] = surface_buffer[..8]
+                .try_into()
                 .map_err(|_| Error::from_reason("Failed to read surface pointer"))?;
             let surface_ptr = u64::from_le_bytes(ptr_bytes);
 
-            inner.send_surface(surface_ptr, width, height)
+            inner
+                .send_surface(surface_ptr, width, height)
                 .map_err(|e| Error::from_reason(e))?;
         }
 
@@ -144,7 +152,9 @@ impl TextureSender {
         height: u32,
         bytes_per_row: Option<u32>,
     ) -> Result<()> {
-        let inner = self.inner.as_mut()
+        let inner = self
+            .inner
+            .as_mut()
             .ok_or_else(|| Error::from_reason("TextureSender has been stopped"))?;
         let stride = bytes_per_row.unwrap_or(width * 4);
 
@@ -276,8 +286,8 @@ impl TextureReceiver {
         .map_err(|e| Error::from_reason(e))?;
 
         #[cfg(target_os = "windows")]
-        let inner = win::receiver::Receiver::new(&sender_name)
-            .map_err(|e| Error::from_reason(e))?;
+        let inner =
+            win::receiver::Receiver::new(&sender_name).map_err(|e| Error::from_reason(e))?;
 
         Ok(Self { inner: Some(inner) })
     }
@@ -368,18 +378,15 @@ impl TextureReceiver {
 #[napi]
 pub fn list_senders() -> Result<Vec<JsSenderInfo>> {
     #[cfg(target_os = "macos")]
-    let json = mac::receiver::list_servers_json()
-        .map_err(|e| Error::from_reason(e))?;
+    let json = mac::receiver::list_servers_json().map_err(|e| Error::from_reason(e))?;
 
     #[cfg(target_os = "windows")]
-    let json = win::receiver::list_senders_json()
-        .map_err(|e| Error::from_reason(e))?;
+    let json = win::receiver::list_senders_json().map_err(|e| Error::from_reason(e))?;
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let json = "[]".to_string();
 
-    let infos = parse_senders_json(&json)
-        .map_err(|e| Error::from_reason(e))?;
+    let infos = parse_senders_json(&json).map_err(|e| Error::from_reason(e))?;
 
     Ok(infos
         .into_iter()
