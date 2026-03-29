@@ -292,8 +292,8 @@ impl TextureReceiver {
     /// Receive the current frame as RGBA pixel data.
     /// Returns null if no frame is available or if `stop()` has been called.
     #[napi]
-    pub fn receive_frame(&self) -> Result<Option<ReceivedFrame>> {
-        let inner = match &self.inner {
+    pub fn receive_frame(&mut self) -> Result<Option<ReceivedFrame>> {
+        let inner = match &mut self.inner {
             Some(r) => r,
             None => return Ok(None),
         };

@@ -184,65 +184,70 @@ int32_t spout_receiver_has_new_frame(void* handle) {
 //  -1 = not connected / no sender
 //  -2 = ReceiveImage failed
 
+// Following the official SpoutDX ReceiveImage pattern (see WinSpoutDX.cpp sample):
+//
+//   if (receiver.ReceiveImage(pixels, width, height, bRGB, bInvert)) {
+//       if (receiver.IsUpdated()) {
+//           width = receiver.GetSenderWidth();
+//           height = receiver.GetSenderHeight();
+//           // re-allocate buffer
+//       }
+//       // else: frame data is in pixels
+//   }
+//
+// ReceiveImage can be called with nullptr/0 initially — it returns true with
+// IsUpdated()=true on first connection, signalling the caller to allocate.
+//
+// Return codes:
+//   0 = frame received successfully
+//   1 = no new frame (poll again later)
+//   2 = buffer too small / dimensions changed (out_width/out_height have new dims)
+//  -1 = not connected / no sender
 int32_t spout_receiver_receive_rgba(void* handle,
                                      uint8_t* out_buffer, uint32_t buffer_size,
                                      uint32_t* out_width, uint32_t* out_height) {
-    if (!handle || !out_buffer || !out_width || !out_height) return -1;
+    if (!handle || !out_width || !out_height) return -1;
 
     SpoutReceiverBridge* bridge = static_cast<SpoutReceiverBridge*>(handle);
 
-    // Use ReceiveImage() — the official SpoutDX API for CPU pixel readback.
-    // This handles connection, texture sharing, and GPU→CPU copy internally.
-    // Format: GL_RGBA (0x1908) for RGBA byte order.
+    // Call ReceiveImage following the official pattern.
+    // On first call (width=0, height=0, pixels=nullptr), it establishes connection.
+    // Pass current cached dimensions; pixels can be null if not yet allocated.
     unsigned int w = bridge->width;
     unsigned int h = bridge->height;
 
-    // ReceiveImage needs valid dimensions. On first call (w=0, h=0),
-    // call ReceiveTexture() once to establish connection and get sender dimensions.
-    if (w == 0 || h == 0) {
-        if (!bridge->receiver.ReceiveTexture()) {
-            return -1;  // No sender connected
-        }
-        w = bridge->receiver.GetSenderWidth();
-        h = bridge->receiver.GetSenderHeight();
-        if (w == 0 || h == 0) return -1;
-        bridge->width = w;
-        bridge->height = h;
+    // Determine if we have a valid buffer to receive into
+    uint32_t requiredSize = w * h * 4;
+    bool hasValidBuffer = out_buffer && w > 0 && h > 0 && buffer_size >= requiredSize;
+
+    // ReceiveImage: handles connection, sender detection, and pixel copy.
+    // bRGB=false → native BGRA, bInvert=false → top-down.
+    if (!bridge->receiver.ReceiveImage(
+            hasValidBuffer ? out_buffer : nullptr, w, h, false, false)) {
+        // ReceiveImage returns false when no sender found or sender closed
+        bridge->connected = false;
+        return -1;
+    }
+
+    // ReceiveImage returned true — check if this is an update notification
+    if (bridge->receiver.IsUpdated()) {
+        // First connection or sender changed — update dimensions
+        bridge->width = bridge->receiver.GetSenderWidth();
+        bridge->height = bridge->receiver.GetSenderHeight();
+        bridge->connected = true;
+        *out_width = bridge->width;
+        *out_height = bridge->height;
+        return 2;  // Signal caller to (re-)allocate buffer with new dimensions
+    }
+
+    // Normal frame — pixels were copied if we had a valid buffer
+    if (!hasValidBuffer) {
+        // We didn't have a buffer; shouldn't normally happen after initial handshake
         *out_width = w;
         *out_height = h;
-        return 2;  // Buffer too small (caller needs to allocate with these dimensions)
+        return 2;
     }
 
-    *out_width = w;
-    *out_height = h;
-
-    uint32_t requiredSize = w * h * 4;
-    if (buffer_size < requiredSize) {
-        return 2;  // Buffer too small
-    }
-
-    // ReceiveImage: receives directly into CPU buffer.
-    // SpoutDX uses DXGI formats, not GL enums.
-    // DXGI_FORMAT_B8G8R8A8_UNORM (87) = BGRA byte order, matches Chromium's default.
-    if (!bridge->receiver.ReceiveImage(out_buffer, DXGI_FORMAT_B8G8R8A8_UNORM, false, 0)) {
-        // Check if sender dimensions changed
-        unsigned int newW = bridge->receiver.GetSenderWidth();
-        unsigned int newH = bridge->receiver.GetSenderHeight();
-        if (newW != w || newH != h) {
-            bridge->width = newW;
-            bridge->height = newH;
-            *out_width = newW;
-            *out_height = newH;
-            return 2;  // Dimensions changed, retry with new buffer
-        }
-        // Not connected or no new frame
-        if (!bridge->receiver.IsConnected()) return -1;
-        return 1;  // No new frame
-    }
-
-    // Update dimensions in case sender resized
-    bridge->width = bridge->receiver.GetSenderWidth();
-    bridge->height = bridge->receiver.GetSenderHeight();
     bridge->connected = true;
     *out_width = bridge->width;
     *out_height = bridge->height;

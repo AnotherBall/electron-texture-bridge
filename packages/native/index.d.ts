@@ -36,8 +36,6 @@ export declare class TextureSender {
    *   - macOS: `texture.textureInfo.handle` (IOSurfaceID as number)
    * - `width`: Texture width (from `textureInfo.codedSize.width`)
    * - `height`: Texture height (from `textureInfo.codedSize.height`)
-   *
-   * @throws Error if `stop()` has been called
    */
   send(handle: number, width: number, height: number): void
   /**
@@ -47,8 +45,6 @@ export declare class TextureSender {
    * - `surface_buffer`: Buffer containing IOSurfaceRef pointer (8 bytes on 64-bit)
    * - `width`: Texture width
    * - `height`: Texture height
-   *
-   * @throws Error if `stop()` has been called
    */
   sendSurface(surfaceBuffer: Buffer, width: number, height: number): void
   /**
@@ -65,17 +61,10 @@ export declare class TextureSender {
    * - `width`: Texture width in pixels
    * - `height`: Texture height in pixels
    * - `bytes_per_row`: Optional stride in bytes. Defaults to width * 4 if not provided.
-   *
-   * @throws Error if `stop()` has been called
    */
   sendRgbaBuffer(data: Buffer, width: number, height: number, bytesPerRow?: number | undefined | null): void
   /** Get the current platform name. */
   platform(): string
-  /**
-   * Alias for `stop()` — enables `using` declarations.
-   * Requires importing via `@napolab/texture-bridge-core` which patches the prototype at runtime.
-   */
-  [Symbol.dispose](): void
 }
 export declare class TextureReceiver {
   /**
@@ -119,9 +108,4 @@ export declare class TextureReceiver {
   stop(): void
   /** Get the current platform name. */
   platform(): string
-  /**
-   * Alias for `stop()` — enables `using` declarations.
-   * Requires importing via `@napolab/texture-bridge-core` which patches the prototype at runtime.
-   */
-  [Symbol.dispose](): void
 }

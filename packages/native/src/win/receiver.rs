@@ -3,6 +3,7 @@ use std::ffi::CString;
 
 pub struct Receiver {
     handle: Option<ffi::SpoutReceiverHandle>,
+    buffer: Vec<u8>,
 }
 
 unsafe impl Send for Receiver {}
@@ -14,7 +15,7 @@ impl Receiver {
         if handle.is_null() {
             return Err("Failed to create Spout receiver".into());
         }
-        Ok(Self { handle: Some(handle) })
+        Ok(Self { handle: Some(handle), buffer: Vec::new() })
     }
 
     pub fn destroy(&mut self) {
@@ -30,7 +31,7 @@ impl Receiver {
         }
     }
 
-    pub fn receive_rgba(&self) -> Result<Option<(Vec<u8>, u32, u32)>, String> {
+    pub fn receive_rgba(&mut self) -> Result<Option<(Vec<u8>, u32, u32)>, String> {
         let handle = match self.handle {
             Some(h) => h,
             None => return Ok(None),
@@ -39,22 +40,20 @@ impl Receiver {
         let mut width: u32 = 0;
         let mut height: u32 = 0;
 
-        // Use cached dimensions to allocate the buffer.
+        // Ensure buffer matches current sender dimensions.
+        // On first call (dimensions unknown), pass empty buffer — C++ handles nullptr.
         let cached_w = self.width() as usize;
         let cached_h = self.height() as usize;
-        let alloc_size = if cached_w > 0 && cached_h > 0 {
-            cached_w * cached_h * 4
-        } else {
-            // First call: no cached dimensions yet. Allocate 1080p as default.
-            1920 * 1080 * 4
-        };
-        let mut buffer: Vec<u8> = vec![0u8; alloc_size];
+        let required = cached_w * cached_h * 4;
+        if self.buffer.len() != required {
+            self.buffer.resize(required, 0);
+        }
 
         let ret = unsafe {
             ffi::spout_receiver_receive_rgba(
                 handle,
-                buffer.as_mut_ptr(),
-                alloc_size as u32,
+                self.buffer.as_mut_ptr(),
+                self.buffer.len() as u32,
                 &mut width,
                 &mut height,
             )
@@ -63,17 +62,16 @@ impl Receiver {
         // C API return codes:
         //  0 = frame received
         //  1 = no new frame (poll again)
-        //  2 = buffer too small / dimensions changed (next poll will use updated size)
+        //  2 = dimensions changed (next poll will use updated size)
         // -1 = not connected
-        // -2 = ReceiveImage failed
         match ret {
             0 => {
                 let actual_size = (width as usize) * (height as usize) * 4;
-                buffer.truncate(actual_size);
-                Ok(Some((buffer, width, height)))
+                let frame = self.buffer[..actual_size].to_vec();
+                Ok(Some((frame, width, height)))
             }
-            1 | 2 => Ok(None), // No new frame or dimensions changed — poll again
-            _ => Ok(None),     // Not connected or error — don't throw, just return None
+            1 | 2 => Ok(None),
+            _ => Ok(None),
         }
     }
 
