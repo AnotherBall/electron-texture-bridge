@@ -70,6 +70,9 @@ fn build_macos(vendor_dir: &std::path::Path) {
         .flag(vendor_str)
         .compile("syphon_bridge");
 
+    // C++ runtime (required for test binaries linking ObjC++ code)
+    println!("cargo:rustc-link-lib=c++");
+
     // フレームワークリンク
     println!("cargo:rustc-link-lib=framework=Syphon");
     println!("cargo:rustc-link-lib=framework=Metal");
