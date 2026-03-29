@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.6](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.5...native-v0.6.6) (2026-03-29)
+
+
+### Bug Fixes
+
+* **spout:** fix ReceiveImage API misuse and cache receiver buffer ([a0efd77](https://github.com/naporin0624/electron-texture-bridge/commit/a0efd779e4c381b95e3bdbd08290ceec97ece7e4))
+* **spout:** format Rust code with cargo fmt ([3f3af54](https://github.com/naporin0624/electron-texture-bridge/commit/3f3af5413e9240bcad0df6adb848a324d5d2734f))
+* **spout:** format Rust code with cargo fmt ([0f31e66](https://github.com/naporin0624/electron-texture-bridge/commit/0f31e667e1e6f76bcfeba7bc2f09f5389a71a43c))
+
 ## [0.6.5](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.4...native-v0.6.5) (2026-03-20)
 
 
