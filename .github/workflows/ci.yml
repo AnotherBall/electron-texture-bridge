@@ -27,3 +27,69 @@ jobs:
       - run: pnpm lint
       - run: pnpm build:core && pnpm build:renderer
       - run: pnpm typecheck
+
+  test-ts:
+    runs-on: ubuntu-latest
+    name: TypeScript Tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install
+
+      - name: Run TypeScript tests (core + renderer)
+        run: |
+          cd packages/core && npx vitest run
+          cd ../renderer && npx vitest run
+
+  test-rust:
+    runs-on: windows-latest
+    name: Rust & C++ Tests (Windows)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Fetch Spout2 SDK
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
+          New-Item -ItemType Directory -Force vendor/Spout2
+          Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutDirectX vendor/Spout2/SpoutDirectX
+          Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutGL vendor/Spout2/SpoutGL
+          Remove-Item -Recurse -Force _spout2_tmp
+
+      - name: Run Rust tests (includes C++ bridge compilation)
+        run: cargo test --manifest-path packages/native/Cargo.toml
+
+  test-rust-mac:
+    runs-on: macos-14
+    name: Rust & C++ Tests (macOS)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Syphon.framework
+        run: |
+          cd vendor/syphon-src
+          xcodebuild -project Syphon.xcodeproj \
+            -scheme Syphon \
+            -configuration Release \
+            -derivedDataPath build \
+            ONLY_ACTIVE_ARCH=NO \
+            BUILD_LIBRARY_FOR_DISTRIBUTION=YES
+          cp -R build/Build/Products/Release/Syphon.framework ../Syphon.framework
+
+      - name: Run Rust tests (includes C++ bridge compilation)
+        run: cargo test --manifest-path packages/native/Cargo.toml
