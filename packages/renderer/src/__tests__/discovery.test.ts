@@ -7,7 +7,6 @@ vi.mock("@napolab/texture-bridge-core", () => ({
 import { listSenders } from "@napolab/texture-bridge-core";
 const mockListSenders = vi.mocked(listSenders);
 
-// Will be implemented
 import { SenderDiscovery } from "../discovery";
 
 describe("SenderDiscovery", () => {

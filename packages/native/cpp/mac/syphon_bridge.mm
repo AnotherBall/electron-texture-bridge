@@ -27,8 +27,6 @@ SyphonBridgeHandle syphon_bridge_create(const char* name) {
             delete bridge;
             return nullptr;
         }
-        NSLog(@"[SyphonBridge] Metal device: %@", bridge->device.name);
-
         bridge->commandQueue = [bridge->device newCommandQueue];
 
         // Syphon Metal Server 作成
@@ -43,7 +41,6 @@ SyphonBridgeHandle syphon_bridge_create(const char* name) {
             return nullptr;
         }
 
-        NSLog(@"[SyphonBridge] Created server '%@' (hasClients: %d)", serverName, bridge->server.hasClients);
         return static_cast<SyphonBridgeHandle>(bridge);
     }
 }
@@ -141,29 +138,14 @@ int syphon_bridge_send_surface(SyphonBridgeHandle handle,
     }
 }
 
-// Frame counter for periodic logging (avoid spamming logs at 60fps)
-static uint64_t g_frameCount = 0;
-
 int syphon_bridge_send_rgba(SyphonBridgeHandle handle,
                             const uint8_t* data,
                             uint32_t width,
                             uint32_t height,
                             uint32_t bytes_per_row) {
-    if (!handle || !data) {
-        NSLog(@"[SyphonBridge] ERROR: send_rgba called with null handle or data");
-        return -1;
-    }
+    if (!handle || !data) return -1;
     @autoreleasepool {
         auto* bridge = static_cast<SyphonBridge*>(handle);
-        g_frameCount++;
-
-        // Log every 60 frames (~1 second at 60fps)
-        bool shouldLog = (g_frameCount % 60 == 1);
-
-        if (shouldLog) {
-            NSLog(@"[SyphonBridge] send_rgba frame #%llu: %ux%u, stride=%u, hasClients=%d",
-                  g_frameCount, width, height, bytes_per_row, bridge->server.hasClients);
-        }
 
         // Create IOSurface from RGBA buffer
         NSDictionary* surfaceProps = @{
@@ -312,10 +294,6 @@ SyphonReceiverHandle syphon_receiver_create(const char* server_uuid,
             delete bridge;
             return nullptr;
         }
-
-        NSLog(@"[SyphonReceiver] Connected to server: %@ (%@)",
-              serverDesc[SyphonServerDescriptionNameKey],
-              serverDesc[SyphonServerDescriptionAppNameKey]);
 
         return static_cast<SyphonReceiverHandle>(bridge);
     }
