@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.7.0...native-v0.7.1) (2026-04-02)
+
+
+### Bug Fixes
+
+* **syphon:** correct color and orientation in sender/receiver ([882c87d](https://github.com/naporin0624/electron-texture-bridge/commit/882c87d483d7ae745790ee5c34d149ac14f7af62))
+* **syphon:** correct pixel format detection, color swap, and vertical flip in sender/receiver ([041de0c](https://github.com/naporin0624/electron-texture-bridge/commit/041de0ce8db36bff550db73033510d422b148875))
+
 ## [0.7.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.6...native-v0.7.0) (2026-03-29)
 
 
