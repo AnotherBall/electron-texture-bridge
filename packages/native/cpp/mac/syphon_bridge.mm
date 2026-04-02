@@ -93,7 +93,7 @@ int syphon_bridge_send(SyphonBridgeHandle handle,
         [bridge->server publishFrameTexture:texture
                             onCommandBuffer:cmdBuf
                                 imageRegion:NSMakeRect(0, 0, width, height)
-                                    flipped:NO];
+                                    flipped:YES];
         [cmdBuf commit];
 
         return 0;
@@ -137,7 +137,7 @@ int syphon_bridge_send_surface(SyphonBridgeHandle handle,
         [bridge->server publishFrameTexture:texture
                             onCommandBuffer:cmdBuf
                                 imageRegion:NSMakeRect(0, 0, width, height)
-                                    flipped:NO];
+                                    flipped:YES];
         [cmdBuf commit];
 
         return 0;
@@ -210,7 +210,7 @@ int syphon_bridge_send_rgba(SyphonBridgeHandle handle,
         [bridge->server publishFrameTexture:texture
                             onCommandBuffer:cmdBuf
                                 imageRegion:NSMakeRect(0, 0, width, height)
-                                    flipped:NO];
+                                    flipped:YES];
         [cmdBuf commit];
 
         return 0;
