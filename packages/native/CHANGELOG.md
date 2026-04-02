@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.7.1...native-v0.8.0) (2026-04-02)
+
+
+### Features
+
+* **syphon:** event-driven receiver with vertical flip fix ([2d62f02](https://github.com/naporin0624/electron-texture-bridge/commit/2d62f0251ffefc735654ef1ba77223cfc59a41e9))
+
+
+### Bug Fixes
+
+* **syphon:** set flipped:YES for correct vertical orientation in Syphon output ([83cf3f6](https://github.com/naporin0624/electron-texture-bridge/commit/83cf3f63f8fb61b95730e0bc7a3666ba3c9bbf27))
+
 ## [0.7.1](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.7.0...native-v0.7.1) (2026-04-02)
 
 
