@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Syphon Receiver Test</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { background: #111; color: #eee; font-family: monospace; display: flex; flex-direction: column; align-items: center; padding: 16px; gap: 8px; }
+      h1 { font-size: 16px; }
+      #controls { display: flex; gap: 8px; align-items: center; }
+      select { background: #222; color: #eee; border: 1px solid #555; padding: 4px 8px; font-family: monospace; font-size: 13px; }
+      button { background: #333; color: #eee; border: 1px solid #555; padding: 4px 12px; cursor: pointer; font-family: monospace; font-size: 13px; }
+      button:hover { background: #444; }
+      button:disabled { opacity: 0.4; cursor: default; }
+      #info { font-size: 12px; color: #aaa; }
+      canvas { border: 1px solid #444; max-width: 100%; }
+    </style>
+  </head>
+  <body>
+    <h1>Syphon Receiver Test</h1>
+    <div id="controls">
+      <select id="senderList"><option value="">-- Select Sender --</option></select>
+      <button id="refreshBtn">Refresh</button>
+      <button id="connectBtn" disabled>Connect</button>
+      <button id="disconnectBtn" disabled>Disconnect</button>
+    </div>
+    <div id="info">Select a Syphon server to connect</div>
+    <canvas id="canvas"></canvas>
+    <script>
+      const canvas = document.getElementById('canvas');
+      const ctx = canvas.getContext('2d');
+      const info = document.getElementById('info');
+      const senderList = document.getElementById('senderList');
+      const refreshBtn = document.getElementById('refreshBtn');
+      const connectBtn = document.getElementById('connectBtn');
+      const disconnectBtn = document.getElementById('disconnectBtn');
+
+      let frameCount = 0;
+      let lastFpsTime = performance.now();
+      let connected = false;
+
+      // Frame handler
+      window.electronAPI.onFrame((frame) => {
+        const { data, width, height } = frame;
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+        }
+        const imageData = new ImageData(
+          new Uint8ClampedArray(data.buffer, data.byteOffset, data.byteLength),
+          width, height
+        );
+        ctx.putImageData(imageData, 0, 0);
+
+        frameCount++;
+        const now = performance.now();
+        if (now - lastFpsTime >= 1000) {
+          const fps = (frameCount * 1000) / (now - lastFpsTime);
+          info.textContent = `${width}x${height} | ${fps.toFixed(1)} FPS`;
+          frameCount = 0;
+          lastFpsTime = now;
+        }
+      });
+
+      // Refresh sender list
+      async function refreshSenders() {
+        const senders = await window.electronAPI.listSenders();
+        senderList.innerHTML = '<option value="">-- Select Sender --</option>';
+        for (const s of senders) {
+          const opt = document.createElement('option');
+          const label = s.appName ? `${s.name} (${s.appName})` : s.name;
+          opt.value = s.name;
+          opt.textContent = label;
+          senderList.appendChild(opt);
+        }
+      }
+
+      senderList.addEventListener('change', () => {
+        connectBtn.disabled = !senderList.value || connected;
+      });
+
+      refreshBtn.addEventListener('click', refreshSenders);
+
+      connectBtn.addEventListener('click', async () => {
+        const name = senderList.value;
+        if (!name) return;
+        info.textContent = `Connecting to "${name}"...`;
+        try {
+          await window.electronAPI.connectReceiver(name);
+          connected = true;
+          connectBtn.disabled = true;
+          disconnectBtn.disabled = false;
+          senderList.disabled = true;
+          info.textContent = `Connected to "${name}", waiting for frames...`;
+        } catch (err) {
+          info.textContent = `Error: ${err.message}`;
+        }
+      });
+
+      disconnectBtn.addEventListener('click', async () => {
+        await window.electronAPI.disconnectReceiver();
+        connected = false;
+        connectBtn.disabled = !senderList.value;
+        disconnectBtn.disabled = true;
+        senderList.disabled = false;
+        info.textContent = 'Disconnected';
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      });
+
+      // Initial load
+      refreshSenders();
+    </script>
+  </body>
+</html>
