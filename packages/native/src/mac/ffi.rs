@@ -49,6 +49,12 @@ extern "C" {
     // ---- Discovery ----
     pub fn syphon_discovery_list_servers() -> *mut c_char;
     pub fn syphon_discovery_free_string(str: *mut c_char);
+
+    // ---- Pixel format utilities (used by C++ internally + Rust tests) ----
+    #[allow(dead_code)]
+    pub fn syphon_convert_bgra_to_rgba(src: *const u8, dst: *mut u8, pixel_count: u32);
+    #[allow(dead_code)]
+    pub fn syphon_map_pixel_format(iosurface_pixel_format: u32) -> u64;
 }
 
 pub type SyphonReceiverHandle = *mut std::ffi::c_void;

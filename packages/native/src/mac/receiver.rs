@@ -434,4 +434,108 @@ mod tests {
         let result = start_listening(None, None, Some("bad\0app"), |_, _, _| {});
         assert!(result.is_err());
     }
+
+    // ---- Pixel format utility tests ----
+
+    #[test]
+    fn convert_bgra_to_rgba_single_pixel() {
+        let bgra: [u8; 4] = [10, 20, 30, 255]; // B=10, G=20, R=30, A=255
+        let mut rgba = [0u8; 4];
+        unsafe { ffi::syphon_convert_bgra_to_rgba(bgra.as_ptr(), rgba.as_mut_ptr(), 1) };
+        assert_eq!(rgba, [30, 20, 10, 255]); // R=30, G=20, B=10, A=255
+    }
+
+    #[test]
+    fn convert_bgra_to_rgba_multiple_pixels() {
+        let bgra: [u8; 12] = [
+            0, 128, 255, 200, // pixel 0: B=0, G=128, R=255, A=200
+            50, 100, 150, 0,  // pixel 1: B=50, G=100, R=150, A=0
+            1, 2, 3, 4,       // pixel 2: B=1, G=2, R=3, A=4
+        ];
+        let mut rgba = [0u8; 12];
+        unsafe { ffi::syphon_convert_bgra_to_rgba(bgra.as_ptr(), rgba.as_mut_ptr(), 3) };
+        assert_eq!(
+            rgba,
+            [
+                255, 128, 0, 200,  // R=255, G=128, B=0, A=200
+                150, 100, 50, 0,   // R=150, G=100, B=50, A=0
+                3, 2, 1, 4,        // R=3, G=2, B=1, A=4
+            ]
+        );
+    }
+
+    #[test]
+    fn convert_bgra_to_rgba_zero_pixels() {
+        let bgra: [u8; 0] = [];
+        let mut rgba: [u8; 0] = [];
+        // Should not crash
+        unsafe { ffi::syphon_convert_bgra_to_rgba(bgra.as_ptr(), rgba.as_mut_ptr(), 0) };
+    }
+
+    #[test]
+    fn convert_bgra_to_rgba_in_place() {
+        let mut data: [u8; 8] = [
+            10, 20, 30, 40,  // pixel 0: B=10, G=20, R=30, A=40
+            50, 60, 70, 80,  // pixel 1: B=50, G=60, R=70, A=80
+        ];
+        unsafe {
+            ffi::syphon_convert_bgra_to_rgba(data.as_ptr(), data.as_mut_ptr(), 2);
+        }
+        assert_eq!(data, [30, 20, 10, 40, 70, 60, 50, 80]);
+    }
+
+    #[test]
+    fn convert_bgra_to_rgba_preserves_alpha() {
+        // Test with fully transparent and fully opaque
+        let bgra: [u8; 8] = [
+            100, 100, 100, 0,    // fully transparent
+            100, 100, 100, 255,  // fully opaque
+        ];
+        let mut rgba = [0u8; 8];
+        unsafe { ffi::syphon_convert_bgra_to_rgba(bgra.as_ptr(), rgba.as_mut_ptr(), 2) };
+        assert_eq!(rgba[3], 0);   // alpha preserved as 0
+        assert_eq!(rgba[7], 255); // alpha preserved as 255
+    }
+
+    // OSType FourCC values used in IOSurface
+    const FOURCC_BGRA: u32 = u32::from_be_bytes(*b"BGRA");
+    const FOURCC_RGBA: u32 = u32::from_be_bytes(*b"RGBA");
+
+    #[test]
+    fn map_pixel_format_bgra_to_metal_bgra() {
+        let result = unsafe { ffi::syphon_map_pixel_format(FOURCC_BGRA) };
+        assert_eq!(result, 80); // MTLPixelFormatBGRA8Unorm
+    }
+
+    #[test]
+    fn map_pixel_format_rgba_to_metal_rgba() {
+        let result = unsafe { ffi::syphon_map_pixel_format(FOURCC_RGBA) };
+        assert_eq!(result, 70); // MTLPixelFormatRGBA8Unorm
+    }
+
+    #[test]
+    fn map_pixel_format_unknown_defaults_to_bgra() {
+        let result = unsafe { ffi::syphon_map_pixel_format(0x12345678) };
+        assert_eq!(result, 80); // MTLPixelFormatBGRA8Unorm (safe default)
+    }
+
+    #[test]
+    fn map_pixel_format_zero_defaults_to_bgra() {
+        let result = unsafe { ffi::syphon_map_pixel_format(0) };
+        assert_eq!(result, 80); // MTLPixelFormatBGRA8Unorm
+    }
+
+    #[test]
+    fn convert_bgra_to_rgba_roundtrip() {
+        // BGRA→RGBA→BGRA should give back the original
+        let original: [u8; 8] = [10, 20, 30, 40, 50, 60, 70, 80];
+        let mut intermediate = [0u8; 8];
+        let mut roundtrip = [0u8; 8];
+        unsafe {
+            ffi::syphon_convert_bgra_to_rgba(original.as_ptr(), intermediate.as_mut_ptr(), 2);
+            // Apply again: RGBA→BGRA (same swap operation)
+            ffi::syphon_convert_bgra_to_rgba(intermediate.as_ptr(), roundtrip.as_mut_ptr(), 2);
+        }
+        assert_eq!(roundtrip, original);
+    }
 }
