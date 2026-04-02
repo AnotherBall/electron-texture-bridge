@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.6...native-v0.7.0) (2026-03-29)
+
+
+### Features
+
+* **spout:** event-driven receiver via native thread ([aa24f9e](https://github.com/naporin0624/electron-texture-bridge/commit/aa24f9ea3f638f8f91998c4b6472b8c5f6d17ee8))
+* **spout:** event-driven receiver via native thread + ThreadsafeFunction ([70fbe9e](https://github.com/naporin0624/electron-texture-bridge/commit/70fbe9e775ce9b13e85ab9b879f112227b3882cb))
+* **syphon:** event-driven receiver via native listener thread ([be34204](https://github.com/naporin0624/electron-texture-bridge/commit/be34204add6467df914c05a10b7fb0996d894171))
+* **syphon:** event-driven receiver via native listener thread ([358fb41](https://github.com/naporin0624/electron-texture-bridge/commit/358fb41dcdc3615d6f92af96172c34ff2409e86d))
+
+
+### Bug Fixes
+
+* **ci:** use stub module for native package in vitest ([86eccfa](https://github.com/naporin0624/electron-texture-bridge/commit/86eccfacdf568940650eec9b350d2cb581fe89c6))
+* **spout:** remove duplicate return code comments in receiver bridge ([919c6f1](https://github.com/naporin0624/electron-texture-bridge/commit/919c6f1c7c2ae0f7166d02c41a9d5454b8434c8b))
+
 ## [0.6.6](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.5...native-v0.6.6) (2026-03-29)
 
 
