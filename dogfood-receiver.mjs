@@ -1,9 +1,9 @@
 /**
- * Dogfooding test: Spout Receiver (Event-Driven)
+ * Dogfooding test: Spout Receiver (Polling)
  *
  * Tests:
  * 1. listSenders() — discovers available Spout senders
- * 2. TextureReceiver.startListening() — event-driven frame reception (no polling)
+ * 2. TextureReceiver.receiveFrame() — polling-based frame reception
  *
  * Requires an active Spout sender on the system (e.g. OBS, Resolume, Vizion).
  *
@@ -27,14 +27,14 @@ if (senders.length === 0) {
 
 // Use CLI arg or first available sender
 const targetName = process.argv[2] || senders[0].name;
-console.log(`\n[dogfood] === Test 2: startListening("${targetName}") ===`);
+console.log(`\n[dogfood] === Test 2: polling receiveFrame("${targetName}") ===`);
 
 // --- Step 2: Create receiver ---
 const receiver = new TextureReceiver(targetName);
 console.log("[dogfood] platform:", receiver.platform());
 
-// --- Step 3: Event-driven frame reception ---
-console.log("[dogfood] starting event-driven listener...");
+// --- Step 3: Polling-based frame reception ---
+console.log("[dogfood] starting polling loop...");
 
 let frameCount = 0;
 let firstFrameTime = null;
@@ -43,8 +43,15 @@ const startTime = Date.now();
 const TARGET_FRAMES = 30;
 
 const done = new Promise((resolve) => {
-  receiver.startListening((frame) => {
-    if (stopped) return;
+  const timer = setInterval(() => {
+    if (stopped) {
+      clearInterval(timer);
+      return;
+    }
+
+    const frame = receiver.receiveFrame();
+    if (!frame) return;
+
     frameCount++;
 
     if (frameCount === 1) {
@@ -61,9 +68,10 @@ const done = new Promise((resolve) => {
     }
 
     if (frameCount >= TARGET_FRAMES) {
+      clearInterval(timer);
       resolve();
     }
-  });
+  }, 16);
 });
 
 // Timeout after 10 seconds

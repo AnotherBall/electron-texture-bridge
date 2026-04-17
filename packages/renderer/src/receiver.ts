@@ -1,5 +1,5 @@
 import { EventEmitter } from "events";
-import { TextureReceiver, getPlatform } from "@napolab/texture-bridge-core";
+import { TextureReceiver } from "@napolab/texture-bridge-core";
 import type { ReceivedFrame } from "@napolab/texture-bridge-core";
 import { FpsCounter } from "./fps-counter";
 
@@ -7,7 +7,7 @@ export interface TextureReceiverBridgeOptions {
   senderName: string;
   appName?: string;
   serverUuid?: string;
-  /** Polling interval in ms (only used on platforms without event-driven support). */
+  /** Polling interval in ms. Defaults to 16 (~60 fps). */
   pollIntervalMs?: number;
 }
 
@@ -48,15 +48,11 @@ class TextureReceiverBridgeImpl extends EventEmitter implements TextureReceiverB
   private _started = false;
   private _timer: ReturnType<typeof setInterval> | null = null;
   private pollIntervalMs: number;
-  private useEventDriven: boolean;
 
   constructor(receiver: InstanceType<typeof TextureReceiver>, pollIntervalMs: number) {
     super();
     this.receiver = receiver;
     this.pollIntervalMs = pollIntervalMs;
-    // Event-driven via startListening is available on both platforms
-    const platform = getPlatform();
-    this.useEventDriven = platform === "spout" || platform === "syphon-metal";
   }
 
   get isDisposed(): boolean {
@@ -68,14 +64,7 @@ class TextureReceiverBridgeImpl extends EventEmitter implements TextureReceiverB
     this._started = true;
     this.fpsCounter.reset();
 
-    if (this.useEventDriven) {
-      this.receiver.startListening((frame: ReceivedFrame) => {
-        if (this._disposed) return;
-        this._onFrame(frame);
-      });
-    } else {
-      this._timer = setInterval(() => this._poll(), this.pollIntervalMs);
-    }
+    this._timer = setInterval(() => this._poll(), this.pollIntervalMs);
   }
 
   stop(): void {

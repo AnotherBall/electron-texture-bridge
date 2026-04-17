@@ -54,6 +54,18 @@ app.whenReady().then(async () => {
 
   // ---- Receiver Test Window ----
   let activeReceiver: InstanceType<typeof TextureReceiver> | null = null;
+  let activePollTimer: ReturnType<typeof setInterval> | null = null;
+
+  const stopActiveReceiver = () => {
+    if (activePollTimer !== null) {
+      clearInterval(activePollTimer);
+      activePollTimer = null;
+    }
+    if (activeReceiver) {
+      activeReceiver.stop();
+      activeReceiver = null;
+    }
+  };
 
   const receiverWindow = new BrowserWindow({
     width: 960,
@@ -84,14 +96,13 @@ app.whenReady().then(async () => {
   });
 
   ipcMain.handle("connect-receiver", (_event, senderName: string) => {
-    if (activeReceiver) {
-      activeReceiver.stop();
-      activeReceiver = null;
-    }
+    stopActiveReceiver();
     const receiver = new TextureReceiver(senderName);
     console.log(`[receiver-test] connecting to "${senderName}"`, receiver.isConnected());
 
-    receiver.startListening((frame) => {
+    activePollTimer = setInterval(() => {
+      const frame = receiver.receiveFrame();
+      if (!frame) return;
       if (!receiverWindow.isDestroyed()) {
         receiverWindow.webContents.send("receiver-frame", {
           data: frame.data,
@@ -99,24 +110,20 @@ app.whenReady().then(async () => {
           height: frame.height,
         });
       }
-    });
+    }, 16);
 
     activeReceiver = receiver;
   });
 
   ipcMain.handle("disconnect-receiver", () => {
     if (activeReceiver) {
-      activeReceiver.stop();
-      activeReceiver = null;
+      stopActiveReceiver();
       console.log("[receiver-test] disconnected");
     }
   });
 
   receiverWindow.on("closed", () => {
-    if (activeReceiver) {
-      activeReceiver.stop();
-      activeReceiver = null;
-    }
+    stopActiveReceiver();
     ipcMain.removeHandler("list-senders");
     ipcMain.removeHandler("connect-receiver");
     ipcMain.removeHandler("disconnect-receiver");

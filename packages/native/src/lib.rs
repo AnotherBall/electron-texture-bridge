@@ -8,10 +8,6 @@ mod win;
 use napi::*;
 use napi_derive::napi;
 
-use napi::threadsafe_function::{
-    ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
-};
-
 // ============================================================
 // JS API: TextureSender
 //
@@ -267,16 +263,14 @@ pub struct TextureReceiver {
     #[cfg(target_os = "windows")]
     inner: Option<win::receiver::Receiver>,
 
+    #[allow(dead_code)]
     sender_name: String,
     #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
     app_name: Option<String>,
     #[cfg(target_os = "macos")]
+    #[allow(dead_code)]
     server_uuid: Option<String>,
-
-    #[cfg(target_os = "windows")]
-    listener: Option<win::receiver::ReceiverListener>,
-    #[cfg(target_os = "macos")]
-    listener: Option<mac::receiver::ReceiverListener>,
 }
 
 #[napi]
@@ -304,18 +298,13 @@ impl TextureReceiver {
         let inner =
             win::receiver::Receiver::new(&sender_name).map_err(|e| Error::from_reason(e))?;
 
-        #[allow(unused_mut)]
-        let mut result = Self {
+        let result = Self {
             inner: Some(inner),
             sender_name,
             #[cfg(target_os = "macos")]
             app_name,
             #[cfg(target_os = "macos")]
             server_uuid,
-            #[cfg(target_os = "windows")]
-            listener: None,
-            #[cfg(target_os = "macos")]
-            listener: None,
         };
 
         Ok(result)
@@ -376,108 +365,11 @@ impl TextureReceiver {
         self.inner.as_ref().map_or(0, |r| r.height())
     }
 
-    /// Start event-driven frame reception.
-    /// Spawns a native thread that receives frames and delivers them via callback.
-    /// The callback receives a `ReceivedFrame` object for each new frame.
-    /// Call `stop()` to terminate the listener thread.
-    ///
-    /// Backpressure: the JS callback is bridged via a threadsafe function with
-    /// a queue capacity of 1. When the JS main thread is slower than the
-    /// sender's native frame rate, newer frames are dropped at the native
-    /// boundary and the `Vec<u8>` buffer is freed immediately. This prevents
-    /// memory growth and matches the drop-latest semantics of the macOS
-    /// (Syphon) polling path. Consumers can assume they always observe the
-    /// most recent frame but may skip intermediate frames under load.
-    #[cfg(target_os = "windows")]
-    #[napi(
-        ts_args_type = "callback: (frame: ReceivedFrame) => void",
-        ts_return_type = "void"
-    )]
-    pub fn start_listening(&mut self, callback: JsFunction) -> Result<()> {
-        if self.listener.is_some() {
-            return Err(Error::from_reason("Listener already started"));
-        }
-
-        // Bounded queue with capacity 1 gives drop-latest semantics at the native
-        // boundary: when JS is behind, NonBlocking calls return Status::QueueFull
-        // and the 8MB Vec is dropped immediately instead of piling up in the tsfn
-        // queue. Matches the pull-based polling semantics on macOS (Syphon).
-        let tsfn: ThreadsafeFunction<(Vec<u8>, u32, u32), ErrorStrategy::Fatal> = callback
-            .create_threadsafe_function(1, |ctx: ThreadSafeCallContext<(Vec<u8>, u32, u32)>| {
-                let (data, width, height) = ctx.value;
-                let mut obj = ctx.env.create_object()?;
-                let buf = ctx.env.create_buffer_with_data(data)?;
-                obj.set_named_property("data", buf.into_raw())?;
-                obj.set_named_property("width", ctx.env.create_uint32(width)?)?;
-                obj.set_named_property("height", ctx.env.create_uint32(height)?)?;
-                Ok(vec![obj.into_unknown()])
-            })?;
-
-        let listener = win::receiver::start_listening(&self.sender_name, move |data, w, h| {
-            // Status::QueueFull is expected under load — the frame is dropped
-            // and the Vec<u8> is freed, preventing unbounded memory growth.
-            tsfn.call((data, w, h), ThreadsafeFunctionCallMode::NonBlocking);
-        })
-        .map_err(|e| Error::from_reason(e))?;
-
-        self.listener = Some(listener);
-
-        Ok(())
-    }
-
-    /// Start event-driven frame reception (macOS/Syphon).
-    /// Spawns a native thread that receives frames and delivers them via callback.
-    /// The callback receives a `ReceivedFrame` object for each new frame.
-    /// Call `stop()` to terminate the listener thread.
-    #[cfg(target_os = "macos")]
-    #[napi(
-        ts_args_type = "callback: (frame: ReceivedFrame) => void",
-        ts_return_type = "void"
-    )]
-    pub fn start_listening(&mut self, callback: JsFunction) -> Result<()> {
-        if self.listener.is_some() {
-            return Err(Error::from_reason("Listener already started"));
-        }
-
-        let tsfn: ThreadsafeFunction<(Vec<u8>, u32, u32), ErrorStrategy::Fatal> = callback
-            .create_threadsafe_function(0, |ctx: ThreadSafeCallContext<(Vec<u8>, u32, u32)>| {
-                let (data, width, height) = ctx.value;
-                let mut obj = ctx.env.create_object()?;
-                let buf = ctx.env.create_buffer_with_data(data)?;
-                obj.set_named_property("data", buf.into_raw())?;
-                obj.set_named_property("width", ctx.env.create_uint32(width)?)?;
-                obj.set_named_property("height", ctx.env.create_uint32(height)?)?;
-                Ok(vec![obj.into_unknown()])
-            })?;
-
-        let listener = mac::receiver::start_listening(
-            self.server_uuid.as_deref(),
-            Some(&self.sender_name),
-            self.app_name.as_deref(),
-            move |data, w, h| {
-                tsfn.call((data, w, h), ThreadsafeFunctionCallMode::NonBlocking);
-            },
-        )
-        .map_err(|e| Error::from_reason(e))?;
-
-        self.listener = Some(listener);
-
-        Ok(())
-    }
-
     /// Stop the receiver and release native resources immediately.
     /// This is a terminal operation — the receiver cannot be reused afterward.
     /// Repeated calls are safe and idempotent.
     #[napi]
     pub fn stop(&mut self) -> Result<()> {
-        #[cfg(target_os = "windows")]
-        if let Some(mut l) = self.listener.take() {
-            l.stop();
-        }
-        #[cfg(target_os = "macos")]
-        if let Some(mut l) = self.listener.take() {
-            l.stop();
-        }
         if let Some(mut r) = self.inner.take() {
             r.destroy();
         }
