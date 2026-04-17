@@ -380,6 +380,14 @@ impl TextureReceiver {
     /// Spawns a native thread that receives frames and delivers them via callback.
     /// The callback receives a `ReceivedFrame` object for each new frame.
     /// Call `stop()` to terminate the listener thread.
+    ///
+    /// Backpressure: the JS callback is bridged via a threadsafe function with
+    /// a queue capacity of 1. When the JS main thread is slower than the
+    /// sender's native frame rate, newer frames are dropped at the native
+    /// boundary and the `Vec<u8>` buffer is freed immediately. This prevents
+    /// memory growth and matches the drop-latest semantics of the macOS
+    /// (Syphon) polling path. Consumers can assume they always observe the
+    /// most recent frame but may skip intermediate frames under load.
     #[cfg(target_os = "windows")]
     #[napi(
         ts_args_type = "callback: (frame: ReceivedFrame) => void",
