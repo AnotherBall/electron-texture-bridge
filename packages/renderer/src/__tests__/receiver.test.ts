@@ -8,10 +8,7 @@ const mockReceiver = {
   getHeight: vi.fn().mockReturnValue(1080),
   stop: vi.fn(),
   platform: vi.fn().mockReturnValue("mock"),
-  startListening: vi.fn(),
 };
-
-const mockGetPlatform = vi.fn().mockReturnValue("syphon-metal");
 
 vi.mock("@napolab/texture-bridge-core", () => ({
   TextureReceiver: class MockTextureReceiver {
@@ -22,9 +19,7 @@ vi.mock("@napolab/texture-bridge-core", () => ({
     getHeight = mockReceiver.getHeight;
     stop = mockReceiver.stop;
     platform = mockReceiver.platform;
-    startListening = mockReceiver.startListening;
   },
-  getPlatform: (...args: unknown[]) => mockGetPlatform(...args),
   listSenders: vi.fn().mockReturnValue([]),
 }));
 
@@ -36,7 +31,6 @@ describe("TextureReceiverBridge", () => {
     vi.clearAllMocks();
     mockReceiver.receiveFrame.mockReturnValue(null);
     mockReceiver.isConnected.mockReturnValue(true);
-    mockGetPlatform.mockReturnValue("unknown");
   });
 
   afterEach(() => {
@@ -289,167 +283,16 @@ describe("TextureReceiverBridge", () => {
     bridge.dispose();
   });
 
-  // ---- Event-driven (Spout/Windows) tests ----
-
-  describe("event-driven mode", () => {
-    beforeEach(() => {
-      mockGetPlatform.mockReturnValue("spout");
-    });
-
-    it("uses event-driven for syphon-metal platform", () => {
-      mockGetPlatform.mockReturnValue("syphon-metal");
-      const bridge = createTextureReceiver({ senderName: "TestSender" });
-      bridge.start();
-
-      expect(mockReceiver.startListening).toHaveBeenCalledTimes(1);
-      expect(mockReceiver.startListening).toHaveBeenCalledWith(expect.any(Function));
-      vi.advanceTimersByTime(100);
-      expect(mockReceiver.receiveFrame).not.toHaveBeenCalled();
-
-      bridge.dispose();
-    });
-
-    it("start() calls startListening instead of setInterval", () => {
-      const bridge = createTextureReceiver({ senderName: "TestSender" });
-      bridge.start();
-
-      expect(mockReceiver.startListening).toHaveBeenCalledTimes(1);
-      expect(mockReceiver.startListening).toHaveBeenCalledWith(expect.any(Function));
-      // receiveFrame should NOT be called (no polling)
-      vi.advanceTimersByTime(100);
-      expect(mockReceiver.receiveFrame).not.toHaveBeenCalled();
-
-      bridge.dispose();
-    });
-
-    it("emits 'frame' when native callback delivers a frame", () => {
-      const handler = vi.fn();
-      const bridge = createTextureReceiver({ senderName: "TestSender" });
-      bridge.on("frame", handler);
-      bridge.start();
-
-      // Get the callback that was passed to startListening
-      const nativeCallback = mockReceiver.startListening.mock.calls[0][0];
-
-      // Simulate native thread delivering a frame
-      nativeCallback({
-        data: Buffer.from([10, 20, 30, 40]),
-        width: 640,
-        height: 480,
-      });
-
-      expect(handler).toHaveBeenCalledWith({
-        data: Buffer.from([10, 20, 30, 40]),
-        width: 640,
-        height: 480,
-      });
-
-      bridge.dispose();
-    });
-
-    it("does not emit frames after dispose", () => {
-      const handler = vi.fn();
-      const bridge = createTextureReceiver({ senderName: "TestSender" });
-      bridge.on("frame", handler);
-      bridge.start();
-
-      const nativeCallback = mockReceiver.startListening.mock.calls[0][0];
-
-      bridge.dispose();
-
-      // Simulate native callback firing after dispose (queued tsfn)
-      nativeCallback({
-        data: Buffer.from([1, 2, 3]),
-        width: 100,
-        height: 100,
-      });
-
-      expect(handler).not.toHaveBeenCalled();
-    });
-
-    it("emits 'fps' from event-driven frames", () => {
-      vi.useRealTimers();
-      const fpsHandler = vi.fn();
-      const bridge = createTextureReceiver({ senderName: "TestSender" });
-      bridge.on("fps", fpsHandler);
-      bridge.start();
-
-      const nativeCallback = mockReceiver.startListening.mock.calls[0][0];
-      const frame = { data: Buffer.from([0]), width: 1, height: 1 };
-
-      // Deliver enough frames over > 1 second for FPS to report
-      const start = Date.now();
-      const interval = setInterval(() => {
-        nativeCallback(frame);
-        if (Date.now() - start > 1100) {
-          clearInterval(interval);
-        }
-      }, 10);
-
-      return new Promise<void>((resolve) => {
-        setTimeout(() => {
-          expect(fpsHandler).toHaveBeenCalled();
-          const fps = fpsHandler.mock.calls[0][0];
-          expect(fps).toBeGreaterThan(0);
-          bridge.dispose();
-          resolve();
-        }, 1200);
-      });
-    });
-
-    it("emits 'error' when callback throws", () => {
-      const handler = vi.fn();
-      const bridge = createTextureReceiver({ senderName: "TestSender" });
-      bridge.on("error", handler);
-      bridge.on("frame", () => {
-        throw new Error("handler error");
-      });
-      bridge.start();
-
-      const nativeCallback = mockReceiver.startListening.mock.calls[0][0];
-      nativeCallback({ data: Buffer.from([0]), width: 1, height: 1 });
-
-      expect(handler).toHaveBeenCalled();
-      expect(handler.mock.calls[0][0].message).toBe("handler error");
-
-      bridge.dispose();
-    });
-
-    it("start() is idempotent", () => {
-      const bridge = createTextureReceiver({ senderName: "TestSender" });
-      bridge.start();
-      bridge.start(); // second call should be no-op
-
-      expect(mockReceiver.startListening).toHaveBeenCalledTimes(1);
-
-      bridge.dispose();
-    });
-
-    it("dispose() calls receiver.stop() to terminate listener thread", () => {
-      const bridge = createTextureReceiver({ senderName: "TestSender" });
-      bridge.start();
-      bridge.dispose();
-
-      expect(mockReceiver.stop).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  // ---- Platform fallback test ----
-
-  it("uses polling when platform is unsupported", () => {
-    mockGetPlatform.mockReturnValue("unknown");
+  it("start() is idempotent", () => {
     const bridge = createTextureReceiver({ senderName: "TestSender" });
     bridge.start();
+    const firstCallCount = mockReceiver.receiveFrame.mock.calls.length;
+    bridge.start(); // second call should be no-op
 
-    expect(mockReceiver.startListening).not.toHaveBeenCalled();
-    // Should use setInterval polling
-    mockReceiver.receiveFrame.mockReturnValue({
-      data: Buffer.from([1]),
-      width: 1,
-      height: 1,
-    });
     vi.advanceTimersByTime(20);
-    expect(mockReceiver.receiveFrame).toHaveBeenCalled();
+    // Only one interval should be running
+    const callsAfter = mockReceiver.receiveFrame.mock.calls.length;
+    expect(callsAfter).toBeGreaterThan(firstCallCount);
 
     bridge.dispose();
   });

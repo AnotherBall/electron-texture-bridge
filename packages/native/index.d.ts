@@ -101,20 +101,6 @@ export declare class TextureReceiver {
    */
   getHeight(): number
   /**
-   * Start event-driven frame reception.
-   * Spawns a native thread that receives frames and delivers them via callback.
-   * The callback receives a `ReceivedFrame` object for each new frame.
-   * Call `stop()` to terminate the listener thread.
-   */
-  startListening(callback: (frame: ReceivedFrame) => void): void
-  /**
-   * Start event-driven frame reception (macOS/Syphon).
-   * Spawns a native thread that receives frames and delivers them via callback.
-   * The callback receives a `ReceivedFrame` object for each new frame.
-   * Call `stop()` to terminate the listener thread.
-   */
-  startListening(callback: (frame: ReceivedFrame) => void): void
-  /**
    * Stop the receiver and release native resources immediately.
    * This is a terminal operation — the receiver cannot be reused afterward.
    * Repeated calls are safe and idempotent.
