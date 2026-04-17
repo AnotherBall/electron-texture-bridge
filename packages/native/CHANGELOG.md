@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.1](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.8.0...native-v0.8.1) (2026-04-17)
+
+
+### Bug Fixes
+
+* **spout:** use bounded tsfn queue for drop-latest semantics ([aee9271](https://github.com/naporin0624/electron-texture-bridge/commit/aee9271ea9396c8a8a14917ac060ed13fa836d1b))
+* **spout:** use bounded tsfn queue for drop-latest semantics ([a442111](https://github.com/naporin0624/electron-texture-bridge/commit/a442111d6992a51e0341c60ce7c44225fe40b6e0))
+
 ## [0.8.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.7.1...native-v0.8.0) (2026-04-02)
 
 
