@@ -140,12 +140,13 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          # Node 24 ships with npm 11+, required for OIDC trusted publishing.
+          # Avoids upgrading npm at runtime — Node 22.22.2's bundled npm was
+          # found to be broken (missing 'promise-retry'), so `npm install -g
+          # npm@latest` failed before it could upgrade itself.
+          node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
-
-      # npm >= 11.5.1 required for OIDC trusted publishing
-      - run: npm install -g npm@latest
 
       - run: pnpm install
 
