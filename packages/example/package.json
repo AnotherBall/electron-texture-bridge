@@ -17,6 +17,7 @@
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
+    "@napolab/texture-bridge": "workspace:*",
     "@napolab/texture-bridge-renderer": "workspace:*",
     "three": "^0.182.0"
   },

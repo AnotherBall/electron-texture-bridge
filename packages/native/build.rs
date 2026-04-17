@@ -58,6 +58,10 @@ fn build_windows(vendor_dir: &std::path::Path) {
 fn build_macos(vendor_dir: &std::path::Path) {
     let vendor_str = vendor_dir.to_str().unwrap();
 
+    // C++ ソースの変更を検知してリビルドする
+    println!("cargo:rerun-if-changed=cpp/mac/syphon_bridge.mm");
+    println!("cargo:rerun-if-changed=cpp/mac/syphon_bridge.h");
+
     // Syphon Metal の ObjC++ ブリッジをビルド
     cc::Build::new()
         .file("cpp/mac/syphon_bridge.mm")
@@ -69,6 +73,9 @@ fn build_macos(vendor_dir: &std::path::Path) {
         .flag("-F")
         .flag(vendor_str)
         .compile("syphon_bridge");
+
+    // C++ runtime (required for test binaries linking ObjC++ code)
+    println!("cargo:rustc-link-lib=c++");
 
     // フレームワークリンク
     println!("cargo:rustc-link-lib=framework=Syphon");

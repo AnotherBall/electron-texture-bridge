@@ -8,7 +8,6 @@ mod win;
 use napi::*;
 use napi_derive::napi;
 
-#[cfg(target_os = "windows")]
 use napi::threadsafe_function::{
     ErrorStrategy, ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
 };
@@ -269,9 +268,15 @@ pub struct TextureReceiver {
     inner: Option<win::receiver::Receiver>,
 
     sender_name: String,
+    #[cfg(target_os = "macos")]
+    app_name: Option<String>,
+    #[cfg(target_os = "macos")]
+    server_uuid: Option<String>,
 
     #[cfg(target_os = "windows")]
     listener: Option<win::receiver::ReceiverListener>,
+    #[cfg(target_os = "macos")]
+    listener: Option<mac::receiver::ReceiverListener>,
 }
 
 #[napi]
@@ -303,7 +308,13 @@ impl TextureReceiver {
         let mut result = Self {
             inner: Some(inner),
             sender_name,
+            #[cfg(target_os = "macos")]
+            app_name,
+            #[cfg(target_os = "macos")]
+            server_uuid,
             #[cfg(target_os = "windows")]
+            listener: None,
+            #[cfg(target_os = "macos")]
             listener: None,
         };
 
@@ -406,12 +417,56 @@ impl TextureReceiver {
         Ok(())
     }
 
+    /// Start event-driven frame reception (macOS/Syphon).
+    /// Spawns a native thread that receives frames and delivers them via callback.
+    /// The callback receives a `ReceivedFrame` object for each new frame.
+    /// Call `stop()` to terminate the listener thread.
+    #[cfg(target_os = "macos")]
+    #[napi(
+        ts_args_type = "callback: (frame: ReceivedFrame) => void",
+        ts_return_type = "void"
+    )]
+    pub fn start_listening(&mut self, callback: JsFunction) -> Result<()> {
+        if self.listener.is_some() {
+            return Err(Error::from_reason("Listener already started"));
+        }
+
+        let tsfn: ThreadsafeFunction<(Vec<u8>, u32, u32), ErrorStrategy::Fatal> = callback
+            .create_threadsafe_function(0, |ctx: ThreadSafeCallContext<(Vec<u8>, u32, u32)>| {
+                let (data, width, height) = ctx.value;
+                let mut obj = ctx.env.create_object()?;
+                let buf = ctx.env.create_buffer_with_data(data)?;
+                obj.set_named_property("data", buf.into_raw())?;
+                obj.set_named_property("width", ctx.env.create_uint32(width)?)?;
+                obj.set_named_property("height", ctx.env.create_uint32(height)?)?;
+                Ok(vec![obj.into_unknown()])
+            })?;
+
+        let listener = mac::receiver::start_listening(
+            self.server_uuid.as_deref(),
+            Some(&self.sender_name),
+            self.app_name.as_deref(),
+            move |data, w, h| {
+                tsfn.call((data, w, h), ThreadsafeFunctionCallMode::NonBlocking);
+            },
+        )
+        .map_err(|e| Error::from_reason(e))?;
+
+        self.listener = Some(listener);
+
+        Ok(())
+    }
+
     /// Stop the receiver and release native resources immediately.
     /// This is a terminal operation — the receiver cannot be reused afterward.
     /// Repeated calls are safe and idempotent.
     #[napi]
     pub fn stop(&mut self) -> Result<()> {
         #[cfg(target_os = "windows")]
+        if let Some(mut l) = self.listener.take() {
+            l.stop();
+        }
+        #[cfg(target_os = "macos")]
         if let Some(mut l) = self.listener.take() {
             l.stop();
         }

@@ -69,8 +69,11 @@ int syphon_bridge_send(SyphonBridgeHandle handle,
         IOSurfaceRef surface = IOSurfaceLookup(surface_id);
         if (!surface) return -1;
 
+        // Derive MTLPixelFormat from the IOSurface's actual pixel format
+        MTLPixelFormat metalFmt = (MTLPixelFormat)syphon_map_pixel_format(IOSurfaceGetPixelFormat(surface));
+
         // IOSurface → Metal Texture（GPU zero-copy: 同じ VRAM を参照）
-        MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:metalFmt
                                                                                         width:width
                                                                                        height:height
                                                                                     mipmapped:NO];
@@ -85,7 +88,7 @@ int syphon_bridge_send(SyphonBridgeHandle handle,
         if (!texture) return -1;
 
         // Syphon にパブリッシュ（GPU→GPU, zero-copy）
-        // flipped:YES because IOSurface from Chromium has flipped Y coordinates
+        // Publish to Syphon
         id<MTLCommandBuffer> cmdBuf = [bridge->commandQueue commandBuffer];
         [bridge->server publishFrameTexture:texture
                             onCommandBuffer:cmdBuf
@@ -108,8 +111,11 @@ int syphon_bridge_send_surface(SyphonBridgeHandle handle,
         // Cast to IOSurfaceRef directly (no lookup needed)
         IOSurfaceRef surface = static_cast<IOSurfaceRef>(surface_ptr);
 
+        // Derive MTLPixelFormat from the IOSurface's actual pixel format
+        MTLPixelFormat metalFmt = (MTLPixelFormat)syphon_map_pixel_format(IOSurfaceGetPixelFormat(surface));
+
         // IOSurface → Metal Texture（GPU zero-copy）
-        MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+        MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:metalFmt
                                                                                         width:width
                                                                                        height:height
                                                                                     mipmapped:NO];
@@ -126,7 +132,7 @@ int syphon_bridge_send_surface(SyphonBridgeHandle handle,
         if (!texture) return -1;
 
         // Publish to Syphon（GPU→GPU, zero-copy）
-        // flipped:YES because IOSurface from Chromium has flipped Y coordinates
+        // Publish to Syphon
         id<MTLCommandBuffer> cmdBuf = [bridge->commandQueue commandBuffer];
         [bridge->server publishFrameTexture:texture
                             onCommandBuffer:cmdBuf
@@ -204,7 +210,7 @@ int syphon_bridge_send_rgba(SyphonBridgeHandle handle,
         [bridge->server publishFrameTexture:texture
                             onCommandBuffer:cmdBuf
                                 imageRegion:NSMakeRect(0, 0, width, height)
-                                    flipped:NO];
+                                    flipped:YES];
         [cmdBuf commit];
 
         return 0;
@@ -376,8 +382,18 @@ int syphon_receiver_receive_rgba(SyphonReceiverHandle handle,
         [cmdBuf commit];
         [cmdBuf waitUntilCompleted];
 
-        // Copy from staging buffer to output
-        memcpy(out_buffer, bridge->stagingBuffer.contents, requiredSize);
+        // Copy from staging buffer to output with vertical flip + BGRA→RGBA if needed
+        const uint8_t* src = static_cast<const uint8_t*>(bridge->stagingBuffer.contents);
+        bool needSwap = (texture.pixelFormat == MTLPixelFormatBGRA8Unorm);
+        for (uint32_t y = 0; y < h; y++) {
+            const uint8_t* srcRow = src + (h - 1 - y) * bytesPerRow;
+            uint8_t* dstRow = out_buffer + y * bytesPerRow;
+            if (needSwap) {
+                syphon_convert_bgra_to_rgba(srcRow, dstRow, w);
+            } else {
+                memcpy(dstRow, srcRow, bytesPerRow);
+            }
+        }
 
         // Flag was already consumed by exchange() at the top — no need to clear.
 
@@ -448,6 +464,35 @@ char* syphon_discovery_list_servers(void) {
 
 void syphon_discovery_free_string(char* str) {
     if (str) free(str);
+}
+
+// ============================================================
+// Pixel format utilities
+// ============================================================
+
+void syphon_convert_bgra_to_rgba(const uint8_t* src, uint8_t* dst, uint32_t pixel_count) {
+    for (uint32_t i = 0; i < pixel_count; i++) {
+        uint32_t off = i * 4;
+        uint8_t b = src[off + 0];
+        uint8_t g = src[off + 1];
+        uint8_t r = src[off + 2];
+        uint8_t a = src[off + 3];
+        dst[off + 0] = r;
+        dst[off + 1] = g;
+        dst[off + 2] = b;
+        dst[off + 3] = a;
+    }
+}
+
+uint64_t syphon_map_pixel_format(uint32_t iosurface_pixel_format) {
+    switch (iosurface_pixel_format) {
+        case 'RGBA':
+            return 70; // MTLPixelFormatRGBA8Unorm
+        case 'BGRA':
+            return 80; // MTLPixelFormatBGRA8Unorm
+        default:
+            return 80; // MTLPixelFormatBGRA8Unorm (safe default)
+    }
 }
 
 } // extern "C"

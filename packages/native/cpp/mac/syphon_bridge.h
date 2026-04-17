@@ -77,6 +77,23 @@ uint32_t syphon_receiver_get_width(SyphonReceiverHandle handle);
 uint32_t syphon_receiver_get_height(SyphonReceiverHandle handle);
 
 // ============================================================
+// Pixel format utilities
+// ============================================================
+
+// Convert BGRA pixel data to RGBA in-place or between buffers.
+// src and dst may be the same pointer for in-place conversion.
+// pixel_count: number of pixels (NOT bytes — each pixel is 4 bytes).
+void syphon_convert_bgra_to_rgba(const uint8_t* src, uint8_t* dst, uint32_t pixel_count);
+
+// Map an IOSurface OSType pixel format to a Metal pixel format enum value.
+// Returns the underlying uint64_t value of MTLPixelFormat.
+// Known mappings:
+//   kCVPixelFormatType_32RGBA (0x52474241) → MTLPixelFormatRGBA8Unorm (70)
+//   kCVPixelFormatType_32BGRA ('BGRA')     → MTLPixelFormatBGRA8Unorm (80)
+//   Unknown formats                        → MTLPixelFormatBGRA8Unorm (80, default)
+uint64_t syphon_map_pixel_format(uint32_t iosurface_pixel_format);
+
+// ============================================================
 // Discovery (SyphonServerDirectory)
 // ============================================================
 

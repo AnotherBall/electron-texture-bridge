@@ -36,7 +36,7 @@ describe("TextureReceiverBridge", () => {
     vi.clearAllMocks();
     mockReceiver.receiveFrame.mockReturnValue(null);
     mockReceiver.isConnected.mockReturnValue(true);
-    mockGetPlatform.mockReturnValue("syphon-metal");
+    mockGetPlatform.mockReturnValue("unknown");
   });
 
   afterEach(() => {
@@ -291,9 +291,22 @@ describe("TextureReceiverBridge", () => {
 
   // ---- Event-driven (Spout/Windows) tests ----
 
-  describe("event-driven mode (spout)", () => {
+  describe("event-driven mode", () => {
     beforeEach(() => {
       mockGetPlatform.mockReturnValue("spout");
+    });
+
+    it("uses event-driven for syphon-metal platform", () => {
+      mockGetPlatform.mockReturnValue("syphon-metal");
+      const bridge = createTextureReceiver({ senderName: "TestSender" });
+      bridge.start();
+
+      expect(mockReceiver.startListening).toHaveBeenCalledTimes(1);
+      expect(mockReceiver.startListening).toHaveBeenCalledWith(expect.any(Function));
+      vi.advanceTimersByTime(100);
+      expect(mockReceiver.receiveFrame).not.toHaveBeenCalled();
+
+      bridge.dispose();
     });
 
     it("start() calls startListening instead of setInterval", () => {
@@ -423,8 +436,8 @@ describe("TextureReceiverBridge", () => {
 
   // ---- Platform fallback test ----
 
-  it("uses polling when platform is not spout", () => {
-    mockGetPlatform.mockReturnValue("syphon-metal");
+  it("uses polling when platform is unsupported", () => {
+    mockGetPlatform.mockReturnValue("unknown");
     const bridge = createTextureReceiver({ senderName: "TestSender" });
     bridge.start();
 

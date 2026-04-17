@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.8.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.7.1...native-v0.8.0) (2026-04-02)
+
+
+### Features
+
+* **syphon:** event-driven receiver with vertical flip fix ([2d62f02](https://github.com/naporin0624/electron-texture-bridge/commit/2d62f0251ffefc735654ef1ba77223cfc59a41e9))
+
+
+### Bug Fixes
+
+* **syphon:** set flipped:YES for correct vertical orientation in Syphon output ([83cf3f6](https://github.com/naporin0624/electron-texture-bridge/commit/83cf3f63f8fb61b95730e0bc7a3666ba3c9bbf27))
+
+## [0.7.1](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.7.0...native-v0.7.1) (2026-04-02)
+
+
+### Bug Fixes
+
+* **syphon:** correct color and orientation in sender/receiver ([882c87d](https://github.com/naporin0624/electron-texture-bridge/commit/882c87d483d7ae745790ee5c34d149ac14f7af62))
+* **syphon:** correct pixel format detection, color swap, and vertical flip in sender/receiver ([041de0c](https://github.com/naporin0624/electron-texture-bridge/commit/041de0ce8db36bff550db73033510d422b148875))
+
+## [0.7.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.6...native-v0.7.0) (2026-03-29)
+
+
+### Features
+
+* **spout:** event-driven receiver via native thread ([aa24f9e](https://github.com/naporin0624/electron-texture-bridge/commit/aa24f9ea3f638f8f91998c4b6472b8c5f6d17ee8))
+* **spout:** event-driven receiver via native thread + ThreadsafeFunction ([70fbe9e](https://github.com/naporin0624/electron-texture-bridge/commit/70fbe9e775ce9b13e85ab9b879f112227b3882cb))
+* **syphon:** event-driven receiver via native listener thread ([be34204](https://github.com/naporin0624/electron-texture-bridge/commit/be34204add6467df914c05a10b7fb0996d894171))
+* **syphon:** event-driven receiver via native listener thread ([358fb41](https://github.com/naporin0624/electron-texture-bridge/commit/358fb41dcdc3615d6f92af96172c34ff2409e86d))
+
+
+### Bug Fixes
+
+* **ci:** use stub module for native package in vitest ([86eccfa](https://github.com/naporin0624/electron-texture-bridge/commit/86eccfacdf568940650eec9b350d2cb581fe89c6))
+* **spout:** remove duplicate return code comments in receiver bridge ([919c6f1](https://github.com/naporin0624/electron-texture-bridge/commit/919c6f1c7c2ae0f7166d02c41a9d5454b8434c8b))
+
 ## [0.6.6](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.6.5...native-v0.6.6) (2026-03-29)
 
 

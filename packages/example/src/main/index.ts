@@ -5,9 +5,10 @@
  * offscreen window, paint events, Syphon/Spout sender, and preview.
  */
 
-import { app, BrowserWindow, globalShortcut } from "electron";
+import { app, BrowserWindow, globalShortcut, ipcMain } from "electron";
 import path from "path";
 import { createTextureBridge } from "@napolab/texture-bridge-renderer";
+import { TextureReceiver, listSenders } from "@napolab/texture-bridge";
 
 // GPU acceleration flags
 app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer");
@@ -49,6 +50,76 @@ app.whenReady().then(async () => {
 
   bridge.renderWindow.webContents.on("did-fail-load", (_event, errorCode, errorDesc) => {
     console.error("[example] did-fail-load:", errorCode, errorDesc);
+  });
+
+  // ---- Receiver Test Window ----
+  let activeReceiver: InstanceType<typeof TextureReceiver> | null = null;
+
+  const receiverWindow = new BrowserWindow({
+    width: 960,
+    height: 600,
+    title: "Receiver Test",
+    webPreferences: {
+      preload: path.join(__dirname, "../preload/receiver.js"),
+      sandbox: false,
+    },
+  });
+
+  const receiverUrl = process.env.ELECTRON_RENDERER_URL
+    ? `${process.env.ELECTRON_RENDERER_URL}/receiver-test.html`
+    : path.join(__dirname, "../renderer/receiver-test.html");
+  if (receiverUrl.startsWith("http")) {
+    receiverWindow.loadURL(receiverUrl);
+  } else {
+    receiverWindow.loadFile(receiverUrl);
+  }
+
+  ipcMain.handle("list-senders", () => {
+    try {
+      return listSenders();
+    } catch (err) {
+      console.error("[receiver-test] listSenders error:", err);
+      return [];
+    }
+  });
+
+  ipcMain.handle("connect-receiver", (_event, senderName: string) => {
+    if (activeReceiver) {
+      activeReceiver.stop();
+      activeReceiver = null;
+    }
+    const receiver = new TextureReceiver(senderName);
+    console.log(`[receiver-test] connecting to "${senderName}"`, receiver.isConnected());
+
+    receiver.startListening((frame) => {
+      if (!receiverWindow.isDestroyed()) {
+        receiverWindow.webContents.send("receiver-frame", {
+          data: frame.data,
+          width: frame.width,
+          height: frame.height,
+        });
+      }
+    });
+
+    activeReceiver = receiver;
+  });
+
+  ipcMain.handle("disconnect-receiver", () => {
+    if (activeReceiver) {
+      activeReceiver.stop();
+      activeReceiver = null;
+      console.log("[receiver-test] disconnected");
+    }
+  });
+
+  receiverWindow.on("closed", () => {
+    if (activeReceiver) {
+      activeReceiver.stop();
+      activeReceiver = null;
+    }
+    ipcMain.removeHandler("list-senders");
+    ipcMain.removeHandler("connect-receiver");
+    ipcMain.removeHandler("disconnect-receiver");
   });
 });
 
