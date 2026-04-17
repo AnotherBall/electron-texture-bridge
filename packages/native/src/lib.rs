@@ -390,8 +390,12 @@ impl TextureReceiver {
             return Err(Error::from_reason("Listener already started"));
         }
 
+        // Bounded queue with capacity 1 gives drop-latest semantics at the native
+        // boundary: when JS is behind, NonBlocking calls return Status::QueueFull
+        // and the 8MB Vec is dropped immediately instead of piling up in the tsfn
+        // queue. Matches the pull-based polling semantics on macOS (Syphon).
         let tsfn: ThreadsafeFunction<(Vec<u8>, u32, u32), ErrorStrategy::Fatal> = callback
-            .create_threadsafe_function(0, |ctx: ThreadSafeCallContext<(Vec<u8>, u32, u32)>| {
+            .create_threadsafe_function(1, |ctx: ThreadSafeCallContext<(Vec<u8>, u32, u32)>| {
                 let (data, width, height) = ctx.value;
                 let mut obj = ctx.env.create_object()?;
                 let buf = ctx.env.create_buffer_with_data(data)?;
@@ -402,6 +406,8 @@ impl TextureReceiver {
             })?;
 
         let listener = win::receiver::start_listening(&self.sender_name, move |data, w, h| {
+            // Status::QueueFull is expected under load — the frame is dropped
+            // and the Vec<u8> is freed, preventing unbounded memory growth.
             tsfn.call((data, w, h), ThreadsafeFunctionCallMode::NonBlocking);
         })
         .map_err(|e| Error::from_reason(e))?;
