@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.2](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.8.1...renderer-v0.8.2) (2026-04-17)
+
+
+### Miscellaneous Chores
+
+* **renderer:** Synchronize electron-texture-bridge versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @napolab/texture-bridge-core bumped to 0.8.2
+
 ## [0.8.1](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.8.0...renderer-v0.8.1) (2026-04-17)
 
 
