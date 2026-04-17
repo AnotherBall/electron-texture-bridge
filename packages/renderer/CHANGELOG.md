@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.9.0](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.8.2...renderer-v0.9.0) (2026-04-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* The native `TextureReceiver.startListening(callback)` API is removed. Frame reception now always goes through JS-driven `setInterval` polling via `receiveFrame()`, matching the semantics the macOS path already used.
+
+### Features
+
+* unify receiver to JS-driven polling, remove startListening ([4daa304](https://github.com/naporin0624/electron-texture-bridge/commit/4daa304231ca6b8b1358a547839f6392a605e911))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @napolab/texture-bridge-core bumped to 0.9.0
+
 ## [0.8.2](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.8.1...renderer-v0.8.2) (2026-04-17)
 
 
