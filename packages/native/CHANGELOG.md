@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.2](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.8.1...native-v0.8.2) (2026-04-17)
+
+
+### Bug Fixes
+
+* **native:** document drop-latest backpressure in start_listening ([180d244](https://github.com/naporin0624/electron-texture-bridge/commit/180d244b9c2dd79691e8277cb0968f37f8a8f225))
+* **native:** document drop-latest backpressure in start_listening ([961caf9](https://github.com/naporin0624/electron-texture-bridge/commit/961caf9f343fd6832d119e0f052d087e2758f94a))
+
 ## [0.8.1](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.8.0...native-v0.8.1) (2026-04-17)
 
 
