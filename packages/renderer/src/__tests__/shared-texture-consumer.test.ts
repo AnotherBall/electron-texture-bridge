@@ -21,19 +21,22 @@ vi.mock("electron", () => ({
   },
 }));
 
-import { consumeSharedTexture } from "../client/shared-texture-consumer";
+import {
+  _resetSharedTextureRegistryForTesting,
+  consumeSharedTexture,
+} from "../client/shared-texture-consumer";
 
 const makeMockVideoFrame = () =>
   ({
     close: vi.fn(),
   }) as unknown as VideoFrame;
 
-const makeMockImported = (videoFrame?: VideoFrame) => {
-  const frame = videoFrame ?? makeMockVideoFrame();
+const makeMockImported = (videoFrameFactory?: () => VideoFrame) => {
+  const getVideoFrame = vi.fn(videoFrameFactory ?? (() => makeMockVideoFrame()));
   return {
     textureId: "tex-abc",
     release: vi.fn(),
-    getVideoFrame: vi.fn().mockReturnValue(frame),
+    getVideoFrame,
   };
 };
 
@@ -48,20 +51,30 @@ describe("consumeSharedTexture", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     registeredCallback = null;
+    _resetSharedTextureRegistryForTesting();
   });
 
-  it("registers the callback exactly once on call", () => {
-    consumeSharedTexture({ onFrame: vi.fn() });
+  it("installs the pool receiver on first register", () => {
+    const reg = consumeSharedTexture({ onFrame: vi.fn() });
     expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(1);
     expect(registeredCallback).not.toBeNull();
+    reg.dispose();
   });
 
-  it("invokes onFrame with { textureId, videoFrame } and forwards extra args", async () => {
+  it("does not re-install when a second consumer registers", () => {
+    const a = consumeSharedTexture({ onFrame: vi.fn() });
+    const b = consumeSharedTexture({ onFrame: vi.fn() });
+    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(1);
+    a.dispose();
+    b.dispose();
+  });
+
+  it("invokes a single consumer with { textureId, videoFrame } and forwards extra args", async () => {
     const onFrame = vi.fn();
-    consumeSharedTexture({ onFrame });
+    const reg = consumeSharedTexture({ onFrame });
 
     const videoFrame = makeMockVideoFrame();
-    const imported = makeMockImported(videoFrame);
+    const imported = makeMockImported(() => videoFrame);
     await registeredCallback!(makeMockData(imported), "extra1", 7);
 
     expect(onFrame).toHaveBeenCalledTimes(1);
@@ -69,24 +82,44 @@ describe("consumeSharedTexture", () => {
     expect(frameArg).toMatchObject({ textureId: "tex-abc", videoFrame });
     expect(extra1).toBe("extra1");
     expect(extra2).toBe(7);
+    expect(imported.release).toHaveBeenCalledTimes(1);
+
+    reg.dispose();
   });
 
-  it("closes VideoFrame and releases the imported texture after onFrame resolves", async () => {
-    const videoFrame = makeMockVideoFrame();
-    const imported = makeMockImported(videoFrame);
-    consumeSharedTexture({ onFrame: vi.fn().mockResolvedValue(undefined) });
+  it("delivers each frame to every active consumer with its own VideoFrame", async () => {
+    const onFrameA = vi.fn();
+    const onFrameB = vi.fn();
+    const regA = consumeSharedTexture({ onFrame: onFrameA });
+    const regB = consumeSharedTexture({ onFrame: onFrameB });
+
+    const frameA = makeMockVideoFrame();
+    const frameB = makeMockVideoFrame();
+    const frames = [frameA, frameB];
+    const imported = makeMockImported(() => frames.shift() ?? makeMockVideoFrame());
 
     await registeredCallback!(makeMockData(imported));
 
-    expect(videoFrame.close).toHaveBeenCalledTimes(1);
+    expect(onFrameA).toHaveBeenCalledTimes(1);
+    expect(onFrameB).toHaveBeenCalledTimes(1);
+    expect(imported.getVideoFrame).toHaveBeenCalledTimes(2);
+    // Each consumer got a distinct VideoFrame instance.
+    expect((onFrameA.mock.calls[0][0] as SharedTextureConsumerFrameLike).videoFrame).toBe(frameA);
+    expect((onFrameB.mock.calls[0][0] as SharedTextureConsumerFrameLike).videoFrame).toBe(frameB);
+    expect(frameA.close).toHaveBeenCalledTimes(1);
+    expect(frameB.close).toHaveBeenCalledTimes(1);
+    // Imported texture is released exactly once after all consumers finish.
     expect(imported.release).toHaveBeenCalledTimes(1);
+
+    regA.dispose();
+    regB.dispose();
   });
 
-  it("closes VideoFrame and releases the imported texture even when onFrame throws", async () => {
+  it("closes VideoFrame and releases the imported texture even when a handler throws", async () => {
     const videoFrame = makeMockVideoFrame();
-    const imported = makeMockImported(videoFrame);
+    const imported = makeMockImported(() => videoFrame);
     const onError = vi.fn();
-    consumeSharedTexture({
+    const reg = consumeSharedTexture({
       onFrame: () => {
         throw new Error("handler boom");
       },
@@ -98,15 +131,16 @@ describe("consumeSharedTexture", () => {
     expect(videoFrame.close).toHaveBeenCalledTimes(1);
     expect(imported.release).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledTimes(1);
-    expect(onError.mock.calls[0][0]).toBeInstanceOf(Error);
     expect((onError.mock.calls[0][0] as Error).message).toBe("handler boom");
+
+    reg.dispose();
   });
 
-  it("closes VideoFrame and releases the imported texture when an async handler rejects", async () => {
+  it("closes VideoFrame and releases when an async handler rejects", async () => {
     const videoFrame = makeMockVideoFrame();
-    const imported = makeMockImported(videoFrame);
+    const imported = makeMockImported(() => videoFrame);
     const onError = vi.fn();
-    consumeSharedTexture({
+    const reg = consumeSharedTexture({
       onFrame: async () => {
         throw new Error("async boom");
       },
@@ -119,68 +153,140 @@ describe("consumeSharedTexture", () => {
     expect(imported.release).toHaveBeenCalledTimes(1);
     expect(onError).toHaveBeenCalledTimes(1);
     expect((onError.mock.calls[0][0] as Error).message).toBe("async boom");
+
+    reg.dispose();
   });
 
-  it("does not throw if the handler closed the VideoFrame itself", async () => {
+  it("tolerates a VideoFrame.close that throws (e.g. handler closed it first)", async () => {
     const videoFrame = makeMockVideoFrame();
     (videoFrame.close as ReturnType<typeof vi.fn>).mockImplementation(() => {
       throw new Error("already closed");
     });
-    const imported = makeMockImported(videoFrame);
-    consumeSharedTexture({ onFrame: vi.fn() });
+    const imported = makeMockImported(() => videoFrame);
+    const reg = consumeSharedTexture({ onFrame: vi.fn() });
 
     await expect(registeredCallback!(makeMockData(imported))).resolves.toBeUndefined();
     expect(imported.release).toHaveBeenCalledTimes(1);
+
+    reg.dispose();
   });
 
-  it("after dispose(), incoming frames release the imported texture without invoking onFrame", async () => {
-    const onFrame = vi.fn();
-    const registration = consumeSharedTexture({ onFrame });
-
-    registration.dispose();
+  it("one handler throwing does not prevent others from running or leaking release", async () => {
+    const onFrameBad = vi.fn(() => {
+      throw new Error("bad");
+    });
+    const onFrameGood = vi.fn();
+    const regBad = consumeSharedTexture({ onFrame: onFrameBad });
+    const regGood = consumeSharedTexture({ onFrame: onFrameGood });
 
     const imported = makeMockImported();
     await registeredCallback!(makeMockData(imported));
 
-    expect(onFrame).not.toHaveBeenCalled();
+    expect(onFrameBad).toHaveBeenCalledTimes(1);
+    expect(onFrameGood).toHaveBeenCalledTimes(1);
     expect(imported.release).toHaveBeenCalledTimes(1);
+
+    regBad.dispose();
+    regGood.dispose();
   });
 
-  it("dispose() is idempotent", () => {
-    const registration = consumeSharedTexture({ onFrame: vi.fn() });
-    registration.dispose();
-    registration.dispose();
-    // No assertion beyond "does not throw" — but we verify state by sending one more
-    expect(() => registration.dispose()).not.toThrow();
+  it("disposing one consumer leaves others running", async () => {
+    const onFrameA = vi.fn();
+    const onFrameB = vi.fn();
+    const regA = consumeSharedTexture({ onFrame: onFrameA });
+    const regB = consumeSharedTexture({ onFrame: onFrameB });
+
+    regA.dispose();
+
+    const imported = makeMockImported();
+    await registeredCallback!(makeMockData(imported));
+
+    expect(onFrameA).not.toHaveBeenCalled();
+    expect(onFrameB).toHaveBeenCalledTimes(1);
+    expect(imported.release).toHaveBeenCalledTimes(1);
+
+    regB.dispose();
   });
 
-  it("dispose() replaces the registered receiver with a no-op so the handler closure becomes GC-eligible", () => {
-    const onFrame = vi.fn();
-    const registration = consumeSharedTexture({ onFrame });
-
-    // Initial registration from consumeSharedTexture()
+  it("replaces the Electron slot with a no-op releaser when the last consumer disposes", () => {
+    const reg = consumeSharedTexture({ onFrame: vi.fn() });
     expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(1);
-    const originalCallback = mockSetSharedTextureReceiver.mock.calls[0][0];
 
-    registration.dispose();
+    reg.dispose();
 
-    // Dispose re-registers with a new callback that does NOT reference handlers.
+    // Pool installs the no-op once the last consumer leaves.
     expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(2);
-    const replacementCallback = mockSetSharedTextureReceiver.mock.calls[1][0];
-    expect(replacementCallback).not.toBe(originalCallback);
+    expect(mockSetSharedTextureReceiver.mock.calls[1][0]).not.toBe(
+      mockSetSharedTextureReceiver.mock.calls[0][0],
+    );
   });
 
-  it("post-dispose callback only releases the imported texture", async () => {
+  it("no-op slot after total dispose releases incoming frames without invoking any handler", async () => {
     const onFrame = vi.fn();
     consumeSharedTexture({ onFrame }).dispose();
 
-    // After dispose, registeredCallback is the no-op replacement.
     const imported = makeMockImported();
     await registeredCallback!(makeMockData(imported));
 
     expect(onFrame).not.toHaveBeenCalled();
     expect(imported.release).toHaveBeenCalledTimes(1);
-    // The no-op does not pull a VideoFrame (it never calls getVideoFrame).
     expect(imported.getVideoFrame).not.toHaveBeenCalled();
   });
+
+  it("re-registers the pool receiver when a consumer returns after total dispose", () => {
+    consumeSharedTexture({ onFrame: vi.fn() }).dispose();
+    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(2);
+
+    const reg = consumeSharedTexture({ onFrame: vi.fn() });
+    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(3);
+    // The third installation uses the pool receiver, not the no-op.
+    expect(mockSetSharedTextureReceiver.mock.calls[2][0]).not.toBe(
+      mockSetSharedTextureReceiver.mock.calls[1][0],
+    );
+    reg.dispose();
+  });
+
+  it("dispose() is idempotent and does not over-uninstall", () => {
+    const reg = consumeSharedTexture({ onFrame: vi.fn() });
+    reg.dispose();
+    reg.dispose();
+    reg.dispose();
+    // Initial install (1) + one uninstall on first dispose (2). Subsequent
+    // dispose calls must not trigger further setSharedTextureReceiver calls.
+    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(2);
+  });
+
+  it("a consumer disposed during its own onFrame is skipped on the next frame", async () => {
+    const onFrameA = vi.fn();
+    const onFrameB = vi.fn();
+    let regA: { dispose(): void } | null = null;
+
+    regA = consumeSharedTexture({
+      onFrame: (frame, ...args) => {
+        onFrameA(frame, ...args);
+        regA?.dispose();
+      },
+    });
+    const regB = consumeSharedTexture({ onFrame: onFrameB });
+
+    await registeredCallback!(makeMockData(makeMockImported()));
+    // Both fire on the first frame (A disposed itself at the end, but was
+    // already in this frame's snapshot).
+    expect(onFrameA).toHaveBeenCalledTimes(1);
+    expect(onFrameB).toHaveBeenCalledTimes(1);
+
+    onFrameA.mockClear();
+    onFrameB.mockClear();
+    await registeredCallback!(makeMockData(makeMockImported()));
+    // Next frame: only B.
+    expect(onFrameA).not.toHaveBeenCalled();
+    expect(onFrameB).toHaveBeenCalledTimes(1);
+
+    regB.dispose();
+  });
 });
+
+type SharedTextureConsumerFrameLike = {
+  textureId: string;
+  videoFrame: VideoFrame;
+};
