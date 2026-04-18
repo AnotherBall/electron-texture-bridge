@@ -214,6 +214,52 @@ pub fn list_servers_json() -> Result<String, String> {
 mod tests {
     use super::*;
 
+    // ---- SharedIoSurfaceInfo::pixel_format_string ----
+
+    #[test]
+    fn pixel_format_string_bgra_for_code_0() {
+        let info = SharedIoSurfaceInfo {
+            iosurface_ptr: 0,
+            width: 0,
+            height: 0,
+            pixel_format_code: 0,
+        };
+        assert_eq!(info.pixel_format_string(), "bgra");
+    }
+
+    #[test]
+    fn pixel_format_string_rgba_for_code_1() {
+        let info = SharedIoSurfaceInfo {
+            iosurface_ptr: 0,
+            width: 0,
+            height: 0,
+            pixel_format_code: 1,
+        };
+        assert_eq!(info.pixel_format_string(), "rgba");
+    }
+
+    #[test]
+    fn pixel_format_string_rgbaf16_for_code_2() {
+        let info = SharedIoSurfaceInfo {
+            iosurface_ptr: 0,
+            width: 0,
+            height: 0,
+            pixel_format_code: 2,
+        };
+        assert_eq!(info.pixel_format_string(), "rgbaf16");
+    }
+
+    #[test]
+    fn pixel_format_string_unknown_defaults_to_bgra() {
+        let info = SharedIoSurfaceInfo {
+            iosurface_ptr: 0,
+            width: 0,
+            height: 0,
+            pixel_format_code: 99,
+        };
+        assert_eq!(info.pixel_format_string(), "bgra");
+    }
+
     // ---- Pixel format utility tests ----
 
     #[test]

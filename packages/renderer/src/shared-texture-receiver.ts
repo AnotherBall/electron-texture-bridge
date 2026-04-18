@@ -69,6 +69,7 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
   private _disposed = false;
   private _started = false;
   private _timer: ReturnType<typeof setInterval> | null = null;
+  private _inFlight = false;
   private pollIntervalMs: number;
 
   constructor(
@@ -92,7 +93,9 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
     if (this._disposed || this._started) return;
     this._started = true;
     this.fpsCounter.reset();
-    this._timer = setInterval(() => this._poll(), this.pollIntervalMs);
+    this._timer = setInterval(() => {
+      void this._tick();
+    }, this.pollIntervalMs);
   }
 
   stop(): void {
@@ -116,8 +119,14 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
     this.dispose();
   }
 
-  private _poll(): void {
-    if (this._disposed) return;
+  /**
+   * One poll tick. Drop-latest: if a previous send is still in flight (the
+   * Electron `sendSharedTexture` Promise has not resolved yet), this tick is a
+   * no-op. That keeps at most one imported-texture reference alive on the main
+   * process at any time and prevents frame pile-up when the renderer is slow.
+   */
+  private async _tick(): Promise<void> {
+    if (this._disposed || this._inFlight) return;
 
     let frame: SharedTextureFrame | null;
     try {
@@ -129,13 +138,18 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
     }
     if (!frame) return;
 
-    this._send(frame);
+    this._inFlight = true;
+    try {
+      await this._send(frame);
+    } finally {
+      this._inFlight = false;
+    }
 
     const fps = this.fpsCounter.tick();
     if (fps !== null) this.emit("fps", fps);
   }
 
-  private _send(frame: SharedTextureFrame): void {
+  private async _send(frame: SharedTextureFrame): Promise<void> {
     if (this.target.isDestroyed()) return;
 
     // Wrap the raw handle under the platform-specific key that Electron's
@@ -164,19 +178,18 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
       return;
     }
 
-    // Fire-and-forget send. We still await the Promise via .then/.catch so we
-    // can release our reference on completion. The renderer gets its own
-    // reference via the transfer machinery and must release independently.
-    sharedTexture
-      .sendSharedTexture({ frame: targetFrame, importedSharedTexture: imported }, ...this.extraArgs)
-      .catch((err: unknown) => {
-        if (this._disposed) return;
-        const error = err instanceof Error ? err : new Error(String(err));
-        this.emit("error", error);
-      })
-      .finally(() => {
-        imported.release();
-      });
+    try {
+      await sharedTexture.sendSharedTexture(
+        { frame: targetFrame, importedSharedTexture: imported },
+        ...this.extraArgs,
+      );
+    } catch (err) {
+      if (this._disposed) return;
+      const error = err instanceof Error ? err : new Error(String(err));
+      this.emit("error", error);
+    } finally {
+      imported.release();
+    }
   }
 }
 
