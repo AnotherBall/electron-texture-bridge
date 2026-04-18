@@ -153,4 +153,34 @@ describe("consumeSharedTexture", () => {
     // No assertion beyond "does not throw" — but we verify state by sending one more
     expect(() => registration.dispose()).not.toThrow();
   });
+
+  it("dispose() replaces the registered receiver with a no-op so the handler closure becomes GC-eligible", () => {
+    const onFrame = vi.fn();
+    const registration = consumeSharedTexture({ onFrame });
+
+    // Initial registration from consumeSharedTexture()
+    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(1);
+    const originalCallback = mockSetSharedTextureReceiver.mock.calls[0][0];
+
+    registration.dispose();
+
+    // Dispose re-registers with a new callback that does NOT reference handlers.
+    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(2);
+    const replacementCallback = mockSetSharedTextureReceiver.mock.calls[1][0];
+    expect(replacementCallback).not.toBe(originalCallback);
+  });
+
+  it("post-dispose callback only releases the imported texture", async () => {
+    const onFrame = vi.fn();
+    consumeSharedTexture({ onFrame }).dispose();
+
+    // After dispose, registeredCallback is the no-op replacement.
+    const imported = makeMockImported();
+    await registeredCallback!(makeMockData(imported));
+
+    expect(onFrame).not.toHaveBeenCalled();
+    expect(imported.release).toHaveBeenCalledTimes(1);
+    // The no-op does not pull a VideoFrame (it never calls getVideoFrame).
+    expect(imported.getVideoFrame).not.toHaveBeenCalled();
+  });
 });

@@ -43,6 +43,14 @@ export interface SharedTextureConsumerRegistration {
 }
 
 /**
+ * Release + VideoFrame-close logic extracted so both the active callback and
+ * the post-dispose no-op can share it.
+ */
+const releaseFrame = (data: Electron.ReceivedSharedTextureData): void => {
+  data.importedSharedTexture.release();
+};
+
+/**
  * Register a callback for imported shared textures delivered from the main
  * process via `createSharedTextureReceiver`.
  *
@@ -54,25 +62,35 @@ export interface SharedTextureConsumerRegistration {
 export function consumeSharedTexture(
   handlers: SharedTextureConsumerHandlers,
 ): SharedTextureConsumerRegistration {
-  let disposed = false;
+  // Hold the user's handlers behind a nullable ref so `dispose()` can drop the
+  // reference and let any captured state (GPU device, React scope, etc.) become
+  // GC-eligible, even though Electron retains _something_ in its internal
+  // receiver slot.
+  const state: {
+    disposed: boolean;
+    handlers: SharedTextureConsumerHandlers | null;
+  } = { disposed: false, handlers };
 
   const callback = async (
     data: Electron.ReceivedSharedTextureData,
     ...args: unknown[]
   ): Promise<void> => {
-    if (disposed) {
-      data.importedSharedTexture.release();
+    const h = state.handlers;
+    if (state.disposed || h === null) {
+      // Defensive: release the incoming texture even if the frame arrives
+      // during the brief window between dispose() and the no-op re-register.
+      releaseFrame(data);
       return;
     }
 
     const imported = data.importedSharedTexture;
     const videoFrame = imported.getVideoFrame();
     try {
-      await handlers.onFrame({ textureId: imported.textureId, videoFrame }, ...args);
+      await h.onFrame({ textureId: imported.textureId, videoFrame }, ...args);
     } catch (err) {
-      if (handlers.onError) {
+      if (h.onError) {
         const error = err instanceof Error ? err : new Error(String(err));
-        handlers.onError(error);
+        h.onError(error);
       }
     } finally {
       // VideoFrame must be closed before the imported texture is released so
@@ -90,11 +108,20 @@ export function consumeSharedTexture(
 
   return {
     dispose() {
-      if (disposed) return;
-      disposed = true;
-      // Electron does not expose an unregister API on setSharedTextureReceiver;
-      // once disposed, our wrapper releases incoming textures without invoking
-      // the user handler. Future frames from main are therefore no-ops.
+      if (state.disposed) return;
+      state.disposed = true;
+      // Drop the user handlers ref so anything they captured (WebGPU device,
+      // React scope, large closures…) becomes GC-eligible immediately, even
+      // though Electron's internal receiver slot still holds _something_.
+      state.handlers = null;
+      // Replace our retained callback with a free-standing no-op releaser.
+      // Electron then holds only this tiny closure, not the richer one that
+      // captured `state` and the original `handlers`. If the caller registers
+      // a new consumer afterwards, their setSharedTextureReceiver() call
+      // overrides this one cleanly.
+      sharedTexture.setSharedTextureReceiver(async (data) => {
+        releaseFrame(data);
+      });
     },
   };
 }
