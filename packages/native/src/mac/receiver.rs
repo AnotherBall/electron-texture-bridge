@@ -5,6 +5,31 @@ pub struct Receiver {
     handle: Option<ffi::SyphonReceiverHandle>,
 }
 
+/// Metadata + raw IOSurfaceRef pointer for a Syphon frame received as a shared
+/// GPU texture.
+///
+/// `iosurface_ptr` is CFRetained. Ownership transfers to the caller: either
+/// pass to Electron's `importSharedTexture` (which CFReleases on release) or
+/// manually `CFRelease` it to avoid leaking.
+pub struct SharedIoSurfaceInfo {
+    pub iosurface_ptr: u64,
+    pub width: u32,
+    pub height: u32,
+    /// 0 = bgra, 1 = rgba, 2 = rgbaf16. See [`pixel_format_string`].
+    pub pixel_format_code: u32,
+}
+
+impl SharedIoSurfaceInfo {
+    /// Convert the numeric code to an Electron-compatible pixel format string.
+    pub fn pixel_format_string(&self) -> String {
+        match self.pixel_format_code {
+            1 => "rgba".to_string(),
+            2 => "rgbaf16".to_string(),
+            _ => "bgra".to_string(),
+        }
+    }
+}
+
 unsafe impl Send for Receiver {}
 
 impl Receiver {
@@ -98,6 +123,45 @@ impl Receiver {
             }
             1 | 2 => Ok(None), // No new frame or buffer too small — next poll uses updated dimensions
             _ => Ok(None),     // Error or not connected — return None
+        }
+    }
+
+    /// Receive the current frame as an IOSurfaceRef (zero-copy for GPU consumers).
+    ///
+    /// Returns `Ok(Some(info))` on success. The caller owns `info.iosurface_ptr`
+    /// and must either pass it to Electron's `importSharedTexture` or `CFRelease`
+    /// it directly.
+    pub fn receive_shared_iosurface(&mut self) -> Result<Option<SharedIoSurfaceInfo>, String> {
+        let handle = match self.handle {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+
+        let mut iosurface: *mut std::ffi::c_void = std::ptr::null_mut();
+        let mut width: u32 = 0;
+        let mut height: u32 = 0;
+        let mut pixel_format: u32 = 0;
+
+        let ret = unsafe {
+            ffi::syphon_receiver_receive_shared_iosurface(
+                handle,
+                &mut iosurface,
+                &mut width,
+                &mut height,
+                &mut pixel_format,
+            )
+        };
+
+        match ret {
+            0 => Ok(Some(SharedIoSurfaceInfo {
+                iosurface_ptr: iosurface as u64,
+                width,
+                height,
+                pixel_format_code: pixel_format,
+            })),
+            1 => Ok(None),
+            -2 => Err("Syphon texture is not IOSurface-backed".into()),
+            _ => Ok(None),
         }
     }
 

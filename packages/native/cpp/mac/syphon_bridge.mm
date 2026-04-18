@@ -421,6 +421,61 @@ uint32_t syphon_receiver_get_height(SyphonReceiverHandle handle) {
     return bridge->lastHeight;
 }
 
+int syphon_receiver_receive_shared_iosurface(SyphonReceiverHandle handle,
+                                             void** out_iosurface,
+                                             uint32_t* out_width,
+                                             uint32_t* out_height,
+                                             uint32_t* out_pixel_format) {
+    if (!handle || !out_iosurface || !out_width || !out_height || !out_pixel_format) {
+        return -1;
+    }
+
+    auto* bridge = static_cast<SyphonReceiverBridge*>(handle);
+    *out_iosurface = nullptr;
+
+    // Mirror receive_rgba: atomically consume the new-frame flag so we don't
+    // hand the same IOSurface out twice.
+    if (!bridge->hasNewFrameFlag.exchange(false, std::memory_order_acq_rel)) {
+        *out_width = bridge->lastWidth;
+        *out_height = bridge->lastHeight;
+        return 1; // no new frame
+    }
+
+    @autoreleasepool {
+        id<MTLTexture> texture = [bridge->client newFrameImage];
+        if (!texture) return -1;
+
+        IOSurfaceRef iosurface = texture.iosurface;
+        if (!iosurface) return -2; // Syphon textures are always IOSurface-backed
+
+        uint32_t w = (uint32_t)texture.width;
+        uint32_t h = (uint32_t)texture.height;
+        bridge->lastWidth = w;
+        bridge->lastHeight = h;
+
+        // Encode the pixel format as a small integer the Rust side decodes into
+        // an Electron-compatible string: 0 = bgra, 1 = rgba, 2 = rgbaf16.
+        uint32_t fmt_code = 0;
+        switch (texture.pixelFormat) {
+            case MTLPixelFormatBGRA8Unorm:  fmt_code = 0; break;
+            case MTLPixelFormatRGBA8Unorm:  fmt_code = 1; break;
+            case MTLPixelFormatRGBA16Float: fmt_code = 2; break;
+            default:                        fmt_code = 0; break;
+        }
+
+        // Transfer ownership to the caller. The IOSurface stays alive while
+        // Electron's imported texture references it; `release()` on that
+        // imported texture will CFRelease.
+        CFRetain(iosurface);
+
+        *out_iosurface = (void*)iosurface;
+        *out_width = w;
+        *out_height = h;
+        *out_pixel_format = fmt_code;
+        return 0;
+    }
+}
+
 // ============================================================
 // Discovery (SyphonServerDirectory)
 // ============================================================

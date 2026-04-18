@@ -45,6 +45,13 @@ extern "C" {
     pub fn syphon_receiver_is_valid(handle: SyphonReceiverHandle) -> i32;
     pub fn syphon_receiver_get_width(handle: SyphonReceiverHandle) -> u32;
     pub fn syphon_receiver_get_height(handle: SyphonReceiverHandle) -> u32;
+    pub fn syphon_receiver_receive_shared_iosurface(
+        handle: SyphonReceiverHandle,
+        out_iosurface: *mut *mut std::ffi::c_void,
+        out_width: *mut u32,
+        out_height: *mut u32,
+        out_pixel_format: *mut u32,
+    ) -> i32;
 
     // ---- Discovery ----
     pub fn syphon_discovery_list_servers() -> *mut c_char;

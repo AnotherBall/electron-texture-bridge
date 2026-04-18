@@ -373,9 +373,6 @@ impl TextureReceiver {
     /// `sharedTexture.importSharedTexture` after wrapping the `handle` Buffer
     /// under the appropriate platform key (`ntHandle` on Windows,
     /// `ioSurface` on macOS).
-    ///
-    /// Currently only Windows has a concrete implementation; macOS returns an
-    /// error until the Syphon IOSurface path is wired up.
     #[napi]
     pub fn receive_shared_texture(&mut self) -> Result<Option<SharedTextureFrame>> {
         let inner = match &mut self.inner {
@@ -404,10 +401,21 @@ impl TextureReceiver {
 
         #[cfg(target_os = "macos")]
         {
-            let _ = inner; // silence unused warning
-            Err(Error::from_reason(
-                "receiveSharedTexture is not yet implemented on macOS".to_string(),
-            ))
+            match inner.receive_shared_iosurface() {
+                Ok(Some(info)) => {
+                    let mut bytes = vec![0u8; 8];
+                    bytes.copy_from_slice(&info.iosurface_ptr.to_le_bytes());
+                    Ok(Some(SharedTextureFrame {
+                        width: info.width,
+                        height: info.height,
+                        pixel_format: info.pixel_format_string(),
+                        owner_pid: std::process::id(),
+                        handle: bytes.into(),
+                    }))
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(Error::from_reason(e)),
+            }
         }
     }
 
