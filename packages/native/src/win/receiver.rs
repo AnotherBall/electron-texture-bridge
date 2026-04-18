@@ -7,6 +7,20 @@ pub struct Receiver {
     sender_name: String,
 }
 
+/// Metadata + raw NT handle for a Spout frame received as a shared GPU texture.
+///
+/// `nt_handle` is a freshly minted kernel handle. Ownership is transferred to
+/// the caller: either pass it to Electron's `sharedTexture.importSharedTexture`
+/// (which will close it on release) or close it manually with `CloseHandle`.
+pub struct SharedTextureHandleInfo {
+    pub nt_handle: u64,
+    pub width: u32,
+    pub height: u32,
+    /// Raw `DXGI_FORMAT` value. 87 = `B8G8R8A8_UNORM` (BGRA), which is what
+    /// Spout senders default to.
+    pub format: u32,
+}
+
 unsafe impl Send for Receiver {}
 
 impl Receiver {
@@ -82,6 +96,51 @@ impl Receiver {
                 Ok(Some((frame, width, height)))
             }
             1 | 2 => Ok(None),
+            _ => Ok(None),
+        }
+    }
+
+    /// Receive a frame as a GPU-shared NT-handle texture (zero CPU readback).
+    ///
+    /// Returns `Ok(Some(info))` on success. The caller owns `info.nt_handle`
+    /// and must either pass it to Electron's `importSharedTexture` or close
+    /// it explicitly to avoid leaking a kernel handle.
+    pub fn receive_shared_texture(&mut self) -> Result<Option<SharedTextureHandleInfo>, String> {
+        let handle = match self.handle {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+
+        let mut nt_handle: *mut std::ffi::c_void = std::ptr::null_mut();
+        let mut width: u32 = 0;
+        let mut height: u32 = 0;
+        let mut format: u32 = 0;
+
+        let ret = unsafe {
+            ffi::spout_receiver_receive_shared_texture(
+                handle,
+                &mut nt_handle,
+                &mut width,
+                &mut height,
+                &mut format,
+            )
+        };
+
+        // Return codes mirror receive_rgba:
+        //  0 = frame received (nt_handle populated)
+        //  1 = no new frame
+        //  2 = dimensions changed, poll again
+        // -1 = not connected
+        // -2 = GPU op failed
+        match ret {
+            0 => Ok(Some(SharedTextureHandleInfo {
+                nt_handle: nt_handle as u64,
+                width,
+                height,
+                format,
+            })),
+            1 | 2 => Ok(None),
+            -2 => Err("Spout shared-texture GPU operation failed".into()),
             _ => Ok(None),
         }
     }

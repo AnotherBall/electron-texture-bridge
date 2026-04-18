@@ -137,13 +137,60 @@ struct SpoutReceiverBridge {
     unsigned int height;
     bool connected;
     char senderName[256];
+    // Persistent staging texture with SHARED_NTHANDLE, used by
+    // spout_receiver_receive_shared_texture. Recreated on size change.
+    ID3D11Texture2D* sharedStaging;
+    unsigned int stagingWidth;
+    unsigned int stagingHeight;
 };
+
+// Ensure the receiver's SHARED_NTHANDLE staging texture exists and matches
+// the given dimensions. Returns true on success.
+static bool ensure_shared_staging(SpoutReceiverBridge* bridge,
+                                  unsigned int width,
+                                  unsigned int height) {
+    if (bridge->sharedStaging &&
+        bridge->stagingWidth == width &&
+        bridge->stagingHeight == height) {
+        return true;
+    }
+    if (bridge->sharedStaging) {
+        bridge->sharedStaging->Release();
+        bridge->sharedStaging = nullptr;
+    }
+
+    ID3D11Device* device = bridge->receiver.GetDX11Device();
+    if (!device) return false;
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+
+    HRESULT hr = device->CreateTexture2D(&desc, nullptr, &bridge->sharedStaging);
+    if (FAILED(hr)) {
+        bridge->sharedStaging = nullptr;
+        return false;
+    }
+    bridge->stagingWidth = width;
+    bridge->stagingHeight = height;
+    return true;
+}
 
 void* spout_receiver_create(const char* sender_name) {
     SpoutReceiverBridge* bridge = new SpoutReceiverBridge();
     bridge->width = 0;
     bridge->height = 0;
     bridge->connected = false;
+    bridge->sharedStaging = nullptr;
+    bridge->stagingWidth = 0;
+    bridge->stagingHeight = 0;
     memset(bridge->senderName, 0, sizeof(bridge->senderName));
 
     if (sender_name && sender_name[0]) {
@@ -166,6 +213,10 @@ void spout_receiver_destroy(void* handle) {
     if (!handle) return;
 
     SpoutReceiverBridge* bridge = static_cast<SpoutReceiverBridge*>(handle);
+    if (bridge->sharedStaging) {
+        bridge->sharedStaging->Release();
+        bridge->sharedStaging = nullptr;
+    }
     bridge->receiver.ReleaseReceiver();
     bridge->receiver.CloseDirectX11();
     delete bridge;
@@ -231,6 +282,104 @@ int32_t spout_receiver_receive_rgba(void* handle,
     *out_width = bridge->width;
     *out_height = bridge->height;
     return 0;  // Frame received successfully
+}
+
+// Receive a frame as a shared NT-handle texture (GPU-to-GPU, zero CPU copy).
+// On success, writes a new NT HANDLE into *out_nt_handle that the caller is
+// responsible for passing to Electron's sharedTexture.importSharedTexture().
+// Electron takes ownership of the handle and will close it when the imported
+// texture is released. DO NOT close the handle yourself after a successful
+// return.
+//
+// Return codes:
+//   0 = frame received successfully
+//   1 = no new frame (poll again later)
+//   2 = dimensions changed, caller should re-poll
+//  -1 = not connected / no sender
+//  -2 = GPU operation failed (device lost, OOM, missing IDXGIResource1)
+int32_t spout_receiver_receive_shared_texture(void* handle,
+                                              void** out_nt_handle,
+                                              uint32_t* out_width,
+                                              uint32_t* out_height,
+                                              uint32_t* out_format) {
+    if (!handle || !out_nt_handle || !out_width || !out_height || !out_format) {
+        return -1;
+    }
+
+    SpoutReceiverBridge* bridge = static_cast<SpoutReceiverBridge*>(handle);
+    *out_nt_handle = nullptr;
+
+    // Call ReceiveTexture. Spout internally opens the sender's shared handle
+    // and hands us a reference to an ID3D11Texture2D. We still own the returned
+    // texture pointer and must Release it.
+    ID3D11Texture2D* received = nullptr;
+    bool ok = bridge->receiver.ReceiveTexture(&received);
+    if (!ok) {
+        bridge->connected = false;
+        return -1;
+    }
+
+    if (bridge->receiver.IsUpdated()) {
+        bridge->width = bridge->receiver.GetSenderWidth();
+        bridge->height = bridge->receiver.GetSenderHeight();
+        bridge->connected = true;
+        *out_width = bridge->width;
+        *out_height = bridge->height;
+        if (received) received->Release();
+        return 2; // caller should retry on next poll with updated dims
+    }
+
+    if (!received) {
+        bridge->connected = true;
+        *out_width = bridge->width;
+        *out_height = bridge->height;
+        return 1; // no new frame
+    }
+
+    // Prepare our persistent NT-shared staging texture at current dims
+    if (!ensure_shared_staging(bridge, bridge->width, bridge->height)) {
+        received->Release();
+        return -2;
+    }
+
+    // GPU-to-GPU copy: received (imported shared) -> our staging (NT-shared).
+    // This is the entire CPU cost of the path — a single D3D11 CopyResource,
+    // no CPU readback.
+    ID3D11DeviceContext* context = bridge->receiver.GetDX11Context();
+    if (!context) {
+        received->Release();
+        return -2;
+    }
+    context->CopyResource(bridge->sharedStaging, received);
+    context->Flush();
+    received->Release();
+
+    // Mint a fresh NT handle from our staging texture. Electron will take
+    // ownership via importSharedTexture and close it at release time.
+    IDXGIResource1* dxgi = nullptr;
+    HRESULT hr = bridge->sharedStaging->QueryInterface(
+        __uuidof(IDXGIResource1), reinterpret_cast<void**>(&dxgi));
+    if (FAILED(hr) || !dxgi) {
+        return -2;
+    }
+
+    HANDLE nt_handle = nullptr;
+    hr = dxgi->CreateSharedHandle(
+        nullptr,
+        DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+        nullptr,
+        &nt_handle);
+    dxgi->Release();
+
+    if (FAILED(hr) || !nt_handle) {
+        return -2;
+    }
+
+    *out_nt_handle = nt_handle;
+    *out_width = bridge->width;
+    *out_height = bridge->height;
+    *out_format = static_cast<uint32_t>(DXGI_FORMAT_B8G8R8A8_UNORM); // 87
+    return 0;
 }
 
 int32_t spout_receiver_is_connected(void* handle) {

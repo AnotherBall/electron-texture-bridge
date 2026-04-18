@@ -240,6 +240,36 @@ fn parse_senders_json(json: &str) -> std::result::Result<Vec<SenderInfo>, String
 //
 // ============================================================
 
+/// napi-rs object returned from `receiveSharedTexture()`.
+///
+/// Zero-copy GPU frame metadata, designed to be passed almost verbatim into
+/// Electron's `sharedTexture.importSharedTexture({ textureInfo: ... })` in the
+/// main process.
+///
+/// `handle` is an 8-byte little-endian encoding of the platform-native shared
+/// resource descriptor:
+/// - Windows: an NT HANDLE (freshly minted for this frame via
+///   `IDXGIResource1::CreateSharedHandle`). Ownership transfers to the consumer;
+///   Electron will close it when the imported texture is released.
+/// - macOS: an `IOSurfaceRef` pointer (retained by this call, released when the
+///   imported texture is released by Electron).
+///
+/// The `ownerPid` field is the process ID in which the handle is valid, so
+/// Chromium's GPU process can duplicate it correctly.
+#[napi(object)]
+pub struct SharedTextureFrame {
+    pub width: u32,
+    pub height: u32,
+    /// Matches Electron's `SharedTextureImportTextureInfo.pixelFormat` values:
+    /// `"bgra" | "rgba" | "rgbaf16" | "nv12"`.
+    pub pixel_format: String,
+    /// Process ID that owns the handle. Almost always `process.pid` of the
+    /// Node process that called `receiveSharedTexture`.
+    pub owner_pid: u32,
+    /// 8-byte little-endian encoding of the platform-native handle/pointer.
+    pub handle: napi::bindgen_prelude::Buffer,
+}
+
 /// napi-rs object returned from receiveFrame()
 #[napi(object)]
 pub struct ReceivedFrame {
@@ -333,6 +363,51 @@ impl TextureReceiver {
             })),
             Ok(None) => Ok(None),
             Err(e) => Err(Error::from_reason(e)),
+        }
+    }
+
+    /// Receive the current frame as a GPU-shared texture descriptor.
+    ///
+    /// Returns `null` if no new frame is available or if `stop()` has been called.
+    /// The returned object can be handed to Electron's
+    /// `sharedTexture.importSharedTexture` after wrapping the `handle` Buffer
+    /// under the appropriate platform key (`ntHandle` on Windows,
+    /// `ioSurface` on macOS).
+    ///
+    /// Currently only Windows has a concrete implementation; macOS returns an
+    /// error until the Syphon IOSurface path is wired up.
+    #[napi]
+    pub fn receive_shared_texture(&mut self) -> Result<Option<SharedTextureFrame>> {
+        let inner = match &mut self.inner {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        #[cfg(target_os = "windows")]
+        {
+            match inner.receive_shared_texture() {
+                Ok(Some(info)) => {
+                    let mut bytes = vec![0u8; 8];
+                    bytes.copy_from_slice(&info.nt_handle.to_le_bytes());
+                    Ok(Some(SharedTextureFrame {
+                        width: info.width,
+                        height: info.height,
+                        pixel_format: "bgra".to_string(),
+                        owner_pid: std::process::id(),
+                        handle: bytes.into(),
+                    }))
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(Error::from_reason(e)),
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let _ = inner; // silence unused warning
+            Err(Error::from_reason(
+                "receiveSharedTexture is not yet implemented on macOS".to_string(),
+            ))
         }
     }
 

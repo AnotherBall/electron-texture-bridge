@@ -5,6 +5,40 @@
 
 /** Returns the current platform's texture sharing protocol name. */
 export declare function getPlatform(): string
+/**
+ * napi-rs object returned from `receiveSharedTexture()`.
+ *
+ * Zero-copy GPU frame metadata, designed to be passed almost verbatim into
+ * Electron's `sharedTexture.importSharedTexture({ textureInfo: ... })` in the
+ * main process.
+ *
+ * `handle` is an 8-byte little-endian encoding of the platform-native shared
+ * resource descriptor:
+ * - Windows: an NT HANDLE (freshly minted for this frame via
+ *   `IDXGIResource1::CreateSharedHandle`). Ownership transfers to the consumer;
+ *   Electron will close it when the imported texture is released.
+ * - macOS: an `IOSurfaceRef` pointer (retained by this call, released when the
+ *   imported texture is released by Electron).
+ *
+ * The `ownerPid` field is the process ID in which the handle is valid, so
+ * Chromium's GPU process can duplicate it correctly.
+ */
+export interface SharedTextureFrame {
+  width: number
+  height: number
+  /**
+   * Matches Electron's `SharedTextureImportTextureInfo.pixelFormat` values:
+   * `"bgra" | "rgba" | "rgbaf16" | "nv12"`.
+   */
+  pixelFormat: string
+  /**
+   * Process ID that owns the handle. Almost always `process.pid` of the
+   * Node process that called `receiveSharedTexture`.
+   */
+  ownerPid: number
+  /** 8-byte little-endian encoding of the platform-native handle/pointer. */
+  handle: Buffer
+}
 /** napi-rs object returned from receiveFrame() */
 export interface ReceivedFrame {
   data: Buffer
@@ -85,6 +119,19 @@ export declare class TextureReceiver {
    * Returns null if no frame is available or if `stop()` has been called.
    */
   receiveFrame(): ReceivedFrame | null
+  /**
+   * Receive the current frame as a GPU-shared texture descriptor.
+   *
+   * Returns `null` if no new frame is available or if `stop()` has been called.
+   * The returned object can be handed to Electron's
+   * `sharedTexture.importSharedTexture` after wrapping the `handle` Buffer
+   * under the appropriate platform key (`ntHandle` on Windows,
+   * `ioSurface` on macOS).
+   *
+   * Currently only Windows has a concrete implementation; macOS returns an
+   * error until the Syphon IOSurface path is wired up.
+   */
+  receiveSharedTexture(): SharedTextureFrame | null
   /**
    * Returns true if the receiver has a valid connection to a server.
    * Returns false if `stop()` has been called.

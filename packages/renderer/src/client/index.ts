@@ -1,6 +1,12 @@
 import type { MainToWorkerMessage } from "./worker-protocol";
 
 export type { MainToWorkerMessage, WorkerToMainMessage, WorkerMessage } from "./worker-protocol";
+export { consumeSharedTexture } from "./shared-texture-consumer";
+export type {
+  SharedTextureConsumerFrame,
+  SharedTextureConsumerHandlers,
+  SharedTextureConsumerRegistration,
+} from "./shared-texture-consumer";
 
 export interface WorkerRendererOptions {
   /** An existing Worker instance */
