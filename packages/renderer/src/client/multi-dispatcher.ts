@@ -89,7 +89,12 @@ export const createMultiDispatcher = <Args extends readonly unknown[], R>(
     // Snapshot so a listener that unsubscribes during dispatch does not
     // perturb iteration of the current emit.
     for (const listener of [...listeners[type]]) {
-      listener(event);
+      // One throwing listener must not block its siblings.
+      try {
+        listener(event);
+      } catch (err) {
+        console.error(`[multi-dispatcher] subscriber for "${type}" threw:`, err);
+      }
     }
   };
 
@@ -110,7 +115,14 @@ export const createMultiDispatcher = <Args extends readonly unknown[], R>(
         // Re-check active on each iteration so a callback that unregisters
         // an earlier-iterated sibling has a chance to skip it.
         if (!entry.active) continue;
-        results.push(entry.callback(...args));
+        // One throwing callback must not starve its siblings. The failing
+        // callback contributes no result to `combine` — callers must
+        // therefore accept that `results.length <= snapshot.length`.
+        try {
+          results.push(entry.callback(...args));
+        } catch (err) {
+          console.error("[multi-dispatcher] handler callback threw:", err);
+        }
       }
       return options.combine(results);
     },

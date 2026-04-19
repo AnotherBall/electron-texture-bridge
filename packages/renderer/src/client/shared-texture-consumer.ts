@@ -65,6 +65,7 @@ const dispatcher = createMultiDispatcher<DispatchArgs, Promise<void>>({
 });
 
 let receiverInstalled = false;
+let notInstalledWarningShown = false;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -89,7 +90,15 @@ export const installSharedTextureReceiver = (): void => {
     try {
       await dispatcher.handler(data, ...args);
     } finally {
-      imported.release();
+      // A misbehaving consumer that called `.release()` inside its own
+      // `onFrame` would otherwise throw here and kill the permanent slot
+      // (DoS). Log and swallow so the slot stays healthy for every other
+      // consumer.
+      try {
+        imported.release();
+      } catch (err) {
+        console.error("[shared-texture] imported.release() threw (possibly double-released):", err);
+      }
     }
   });
 };
@@ -111,6 +120,13 @@ export const installSharedTextureReceiver = (): void => {
 export const consumeSharedTexture = (
   handlers: SharedTextureConsumerHandlers,
 ): SharedTextureConsumerRegistration => {
+  if (!receiverInstalled && !notInstalledWarningShown) {
+    notInstalledWarningShown = true;
+    console.warn(
+      "[consumeSharedTexture] Called before installSharedTextureReceiver(). Frames will not be delivered until install is called at renderer startup.",
+    );
+  }
+
   const unregister = dispatcher.register(async (data, ...args) => {
     const imported = data.importedSharedTexture;
     const videoFrame = imported.getVideoFrame();
@@ -118,8 +134,13 @@ export const consumeSharedTexture = (
       await handlers.onFrame({ textureId: imported.textureId, videoFrame }, ...args);
     } catch (err) {
       if (handlers.onError) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        handlers.onError(error);
+        // A consumer whose `onError` itself throws must not crash the outer
+        // try/finally (which would leak VideoFrame.close()).
+        try {
+          handlers.onError(err instanceof Error ? err : new Error(String(err)));
+        } catch (handlerErr) {
+          console.error("[consumeSharedTexture] onError handler threw:", handlerErr);
+        }
       }
     } finally {
       try {
@@ -147,4 +168,5 @@ export const consumeSharedTexture = (
 export const _resetSharedTextureRegistryForTesting = (): void => {
   dispatcher.reset();
   receiverInstalled = false;
+  notInstalledWarningShown = false;
 };

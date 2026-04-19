@@ -76,6 +76,64 @@ describe("installSharedTextureReceiver", () => {
   });
 });
 
+describe("consumeSharedTexture — install pre-condition", () => {
+  beforeEach(() => {
+    _resetSharedTextureRegistryForTesting();
+    vi.clearAllMocks();
+    registeredCallback = null;
+  });
+
+  it("emits a console.warn the first time consumeSharedTexture is called before install", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const reg = consumeSharedTexture({ onFrame: vi.fn() });
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toMatch(/installSharedTextureReceiver/);
+
+    reg.dispose();
+    warnSpy.mockRestore();
+  });
+
+  it("only warns once per process even if multiple consumers are registered before install", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const reg1 = consumeSharedTexture({ onFrame: vi.fn() });
+    const reg2 = consumeSharedTexture({ onFrame: vi.fn() });
+    const reg3 = consumeSharedTexture({ onFrame: vi.fn() });
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+
+    reg1.dispose();
+    reg2.dispose();
+    reg3.dispose();
+    warnSpy.mockRestore();
+  });
+
+  it("does not warn once installSharedTextureReceiver has been called", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    installSharedTextureReceiver();
+    const reg = consumeSharedTexture({ onFrame: vi.fn() });
+
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    reg.dispose();
+    warnSpy.mockRestore();
+  });
+
+  it("still returns a valid registration even when it warned (dispose is a no-op-safe)", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const reg = consumeSharedTexture({ onFrame: vi.fn() });
+    expect(typeof reg.dispose).toBe("function");
+    expect(() => reg.dispose()).not.toThrow();
+    expect(() => reg.dispose()).not.toThrow();
+
+    warnSpy.mockRestore();
+  });
+});
+
 describe("consumeSharedTexture", () => {
   beforeEach(() => {
     _resetSharedTextureRegistryForTesting();
@@ -265,6 +323,77 @@ describe("consumeSharedTexture", () => {
     reg.dispose();
     // One install ever; no dispose-triggered setSharedTextureReceiver churn.
     expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(1);
+  });
+
+  it("a consumer calling imported.release() during onFrame does not crash the permanent slot", async () => {
+    // Simulate a misbehaving consumer that double-releases on its own. The
+    // outer finally block in `installSharedTextureReceiver` must tolerate
+    // this so subsequent frames still reach healthy consumers.
+    const healthyOnFrame = vi.fn();
+    const misbehavingImported = makeMockImported();
+    // When the first release() is called by the consumer, flag the imported so
+    // the second release() (from the installed receiver's finally) throws.
+    let firstCallHandled = false;
+    misbehavingImported.release.mockImplementation(() => {
+      if (firstCallHandled) {
+        throw new Error("already released");
+      }
+      firstCallHandled = true;
+    });
+
+    const misbehaving = consumeSharedTexture({
+      onFrame: (_frame) => {
+        // Consumer does the bad thing: releases the imported texture itself.
+        misbehavingImported.release();
+      },
+    });
+    const healthy = consumeSharedTexture({ onFrame: healthyOnFrame });
+
+    // First frame uses the misbehaving imported. The permanent slot's outer
+    // release() will throw, but must be swallowed.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(registeredCallback!(makeMockData(misbehavingImported))).resolves.toBeUndefined();
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+
+    // A subsequent frame with a well-behaved imported still reaches consumers.
+    const cleanImported = makeMockImported();
+    await registeredCallback!(makeMockData(cleanImported));
+    expect(healthyOnFrame).toHaveBeenCalledTimes(2); // called on both frames
+    expect(cleanImported.release).toHaveBeenCalledTimes(1);
+
+    misbehaving.dispose();
+    healthy.dispose();
+  });
+
+  it("an onError handler that throws does not break release or other consumers", async () => {
+    const otherConsumer = vi.fn();
+    const reg1 = consumeSharedTexture({
+      onFrame: () => {
+        throw new Error("first-consumer boom");
+      },
+      onError: () => {
+        throw new Error("onError-itself-threw");
+      },
+    });
+    const reg2 = consumeSharedTexture({ onFrame: otherConsumer });
+
+    const videoFrame = makeMockVideoFrame();
+    const imported = makeMockImported(() => videoFrame);
+
+    // The onError throw must be swallowed so finally + outer release still run.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(registeredCallback!(makeMockData(imported))).resolves.toBeUndefined();
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+
+    // Other consumer still got its frame.
+    expect(otherConsumer).toHaveBeenCalledTimes(1);
+    // Release + close still ran.
+    expect(imported.release).toHaveBeenCalledTimes(1);
+
+    reg1.dispose();
+    reg2.dispose();
   });
 
   it("a consumer disposed during its own onFrame is skipped on the next frame", async () => {

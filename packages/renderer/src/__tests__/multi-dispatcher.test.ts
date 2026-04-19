@@ -316,6 +316,103 @@ describe("createMultiDispatcher", () => {
 
   // -- async R --------------------------------------------------------------
 
+  // -- listener / callback isolation ----------------------------------------
+
+  it("a subscriber that throws during emit does not prevent other subscribers from running", () => {
+    const events: string[] = [];
+    const d = createMultiDispatcher<[], void>({ combine: () => {} });
+
+    d.subscribe("register", () => {
+      events.push("a");
+      throw new Error("a threw");
+    });
+    d.subscribe("register", () => {
+      events.push("b");
+    });
+    d.subscribe("register", () => {
+      events.push("c");
+    });
+
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => d.register(() => {})).not.toThrow();
+    expect(events).toEqual(["a", "b", "c"]);
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it("a callback that throws during handler() does not prevent other callbacks from running", () => {
+    const calls: string[] = [];
+    const d = createMultiDispatcher<[], void>({ combine: () => {} });
+
+    d.register(() => {
+      calls.push("a");
+      throw new Error("a threw");
+    });
+    d.register(() => {
+      calls.push("b");
+    });
+    d.register(() => {
+      calls.push("c");
+    });
+
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect(() => d.handler()).not.toThrow();
+    expect(calls).toEqual(["a", "b", "c"]);
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it("combine receives fewer results than callbacks when some throw", () => {
+    const received: number[][] = [];
+    const combine = vi.fn((results: readonly number[]) => {
+      received.push([...results]);
+      return results.reduce((acc, x) => acc + x, 0);
+    });
+
+    const d = createMultiDispatcher<[], number>({ combine });
+
+    d.register(() => 1);
+    d.register(() => {
+      throw new Error("middle throws");
+    });
+    d.register(() => 3);
+
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const total = d.handler();
+    errSpy.mockRestore();
+
+    expect(total).toBe(4); // 1 + 3 — the throwing callback contributed nothing
+    expect(received).toHaveLength(1);
+    expect(received[0]).toEqual([1, 3]);
+  });
+
+  it("reset() called inside a handler callback still lets the current dispatch's snapshot complete", () => {
+    const calls: string[] = [];
+    const d = createMultiDispatcher<[], void>({ combine: () => {} });
+
+    d.register(() => {
+      calls.push("a");
+      d.reset(); // wipe everything mid-dispatch
+    });
+    d.register(() => {
+      calls.push("b");
+    });
+    d.register(() => {
+      calls.push("c");
+    });
+
+    d.handler();
+
+    // Snapshot semantics: `reset()` flips all entries' `active` flags, so the
+    // re-check inside handler() short-circuits b and c — they were in the
+    // snapshot but are now inactive.
+    expect(calls).toEqual(["a"]);
+
+    // Subsequent dispatch has no registrations left.
+    d.handler();
+    expect(calls).toEqual(["a"]);
+  });
+
   it("works with Promise<void> as R via Promise.all combine", async () => {
     const d = createMultiDispatcher<[number], Promise<void>>({
       combine: async (results) => {

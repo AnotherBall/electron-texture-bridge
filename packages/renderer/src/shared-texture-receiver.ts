@@ -11,9 +11,47 @@
 import { EventEmitter } from "events";
 import { sharedTexture } from "electron";
 import type { WebContents } from "electron";
-import { TextureReceiver } from "@napolab/texture-bridge-core";
+import { TextureReceiver, closeNativeHandle } from "@napolab/texture-bridge-core";
 import type { SharedTextureFrame } from "@napolab/texture-bridge-core";
 import { FpsCounter } from "./fps-counter";
+
+/**
+ * Safely release a native shared-texture handle that was minted by the native
+ * receiver but never consumed by Electron's `importSharedTexture`. Any throw
+ * here would break the bridge poll loop, so we log and swallow.
+ */
+const releaseUnconsumedHandle = (handle: Buffer): void => {
+  try {
+    closeNativeHandle(handle);
+  } catch (releaseErr) {
+    console.error("[shared-texture] closeNativeHandle threw:", releaseErr);
+  }
+};
+
+/**
+ * Pixel formats that Electron's `sharedTexture.importSharedTexture` accepts.
+ * Anything outside this set is rejected before reaching the Electron API to
+ * avoid smuggling invalid strings through an `as` cast.
+ */
+type SharedTexturePixelFormat = "bgra" | "rgba" | "rgbaf16" | "nv12";
+
+const VALID_PIXEL_FORMATS: readonly SharedTexturePixelFormat[] = [
+  "bgra",
+  "rgba",
+  "rgbaf16",
+  "nv12",
+];
+
+const isValidPixelFormat = (value: string): value is SharedTexturePixelFormat => {
+  return (VALID_PIXEL_FORMATS as readonly string[]).includes(value);
+};
+
+/**
+ * After this many consecutive `_tick` errors, the receiver gives up and stops
+ * itself. Prevents flooding the error channel at 60Hz when the native side is
+ * permanently broken.
+ */
+const MAX_CONSECUTIVE_TICK_ERRORS = 10;
 
 export interface SharedTextureReceiverOptions {
   readonly senderName: string;
@@ -70,6 +108,7 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
   private _started = false;
   private _timer: ReturnType<typeof setInterval> | null = null;
   private _inFlight = false;
+  private _consecutiveErrors = 0;
   private pollIntervalMs: number;
 
   constructor(
@@ -92,6 +131,7 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
   start(): void {
     if (this._disposed || this._started) return;
     this._started = true;
+    this._consecutiveErrors = 0;
     this.fpsCounter.reset();
     this._timer = setInterval(() => {
       void this._tick();
@@ -120,6 +160,26 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
   }
 
   /**
+   * Record a `_tick`-level error. Emits `"error"` and, once the consecutive
+   * count crosses `MAX_CONSECUTIVE_TICK_ERRORS`, stops the receiver and emits
+   * a final circuit-breaker error. Does NOT call `dispose()` — releasing
+   * native resources is the caller's responsibility.
+   */
+  private _recordTickError(error: Error): void {
+    this._consecutiveErrors += 1;
+    this.emit("error", error);
+    if (this._consecutiveErrors >= MAX_CONSECUTIVE_TICK_ERRORS) {
+      this.stop();
+      this.emit(
+        "error",
+        new Error(
+          `shared texture receiver stopped after ${MAX_CONSECUTIVE_TICK_ERRORS} consecutive errors`,
+        ),
+      );
+    }
+  }
+
+  /**
    * One poll tick. Drop-latest: if a previous send is still in flight (the
    * Electron `sendSharedTexture` Promise has not resolved yet), this tick is a
    * no-op. That keeps at most one imported-texture reference alive on the main
@@ -133,7 +193,7 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
       frame = this.receiver.receiveSharedTexture();
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
-      this.emit("error", error);
+      this._recordTickError(error);
       return;
     }
     if (!frame) return;
@@ -145,12 +205,32 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
       this._inFlight = false;
     }
 
+    // Successful frame delivery — reset the consecutive-error counter.
+    this._consecutiveErrors = 0;
+
     const fps = this.fpsCounter.tick();
     if (fps !== null) this.emit("fps", fps);
   }
 
   private async _send(frame: SharedTextureFrame): Promise<void> {
-    if (this.target.isDestroyed()) return;
+    if (this.target.isDestroyed()) {
+      // Target is gone — handle was minted but Electron will never consume it.
+      // Release it directly via the native helper so we don't leak
+      // NT HANDLE / IOSurface per frame during window teardown.
+      releaseUnconsumedHandle(frame.handle);
+      return;
+    }
+
+    if (!isValidPixelFormat(frame.pixelFormat)) {
+      const error = new Error(
+        `shared texture frame has unsupported pixelFormat "${frame.pixelFormat}" (expected one of ${VALID_PIXEL_FORMATS.join(", ")})`,
+      );
+      this.emit("error", error);
+      // Handle was minted but will never reach importSharedTexture — release it
+      // here to avoid leaking an NT HANDLE / IOSurface on unknown pixelFormat.
+      releaseUnconsumedHandle(frame.handle);
+      return;
+    }
 
     // Wrap the raw handle under the platform-specific key that Electron's
     // SharedTextureHandle expects.
@@ -160,7 +240,7 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
     const textureInfo: Electron.SharedTextureImportTextureInfo = {
       codedSize: { width: frame.width, height: frame.height },
       handle,
-      pixelFormat: frame.pixelFormat as "bgra" | "rgba" | "rgbaf16" | "nv12",
+      pixelFormat: frame.pixelFormat,
     };
 
     let imported: Electron.SharedTextureImported;
@@ -169,6 +249,9 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
       this.emit("error", error);
+      // importSharedTexture threw before taking ownership — release the handle
+      // ourselves so we don't leak a per-frame NT HANDLE / IOSurface.
+      releaseUnconsumedHandle(frame.handle);
       return;
     }
 
@@ -207,6 +290,13 @@ export function createSharedTextureReceiver(
   options: SharedTextureReceiverOptions,
 ): SharedTextureReceiverBridge {
   const { senderName, appName, serverUuid, pollIntervalMs = 16, target, extraArgs = [] } = options;
+
+  if (options.pollIntervalMs !== undefined) {
+    if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
+      throw new TypeError("pollIntervalMs must be a positive finite number");
+    }
+  }
+
   const receiver = new TextureReceiver(senderName, appName, serverUuid);
   return new SharedTextureReceiverBridgeImpl(receiver, target, extraArgs, pollIntervalMs);
 }

@@ -37,11 +37,14 @@ vi.mock("electron", () => ({
   },
 }));
 
+const mockCloseNativeHandle = vi.fn<(handle: Buffer) => void>();
+
 vi.mock("@napolab/texture-bridge-core", () => ({
   TextureReceiver: class MockTextureReceiver {
     receiveSharedTexture = mockReceiver.receiveSharedTexture;
     stop = mockReceiver.stop;
   },
+  closeNativeHandle: (handle: Buffer) => mockCloseNativeHandle(handle),
 }));
 
 import { createSharedTextureReceiver } from "../shared-texture-receiver";
@@ -400,5 +403,270 @@ describe("createSharedTextureReceiver", () => {
     bridge[Symbol.dispose]();
     expect(bridge.isDisposed).toBe(true);
     expect(mockReceiver.stop).toHaveBeenCalledTimes(1);
+  });
+
+  // -- pollIntervalMs validation ---------------------------------------------
+
+  it("throws TypeError when pollIntervalMs is 0", () => {
+    expect(() =>
+      createSharedTextureReceiver({
+        senderName: "test",
+        target: makeMockTarget() as unknown as Electron.WebContents,
+        pollIntervalMs: 0,
+      }),
+    ).toThrow(TypeError);
+  });
+
+  it("throws TypeError when pollIntervalMs is negative", () => {
+    expect(() =>
+      createSharedTextureReceiver({
+        senderName: "test",
+        target: makeMockTarget() as unknown as Electron.WebContents,
+        pollIntervalMs: -1,
+      }),
+    ).toThrow(TypeError);
+  });
+
+  it("throws TypeError when pollIntervalMs is NaN", () => {
+    expect(() =>
+      createSharedTextureReceiver({
+        senderName: "test",
+        target: makeMockTarget() as unknown as Electron.WebContents,
+        pollIntervalMs: Number.NaN,
+      }),
+    ).toThrow(TypeError);
+  });
+
+  it("throws TypeError when pollIntervalMs is Infinity", () => {
+    expect(() =>
+      createSharedTextureReceiver({
+        senderName: "test",
+        target: makeMockTarget() as unknown as Electron.WebContents,
+        pollIntervalMs: Number.POSITIVE_INFINITY,
+      }),
+    ).toThrow(TypeError);
+  });
+
+  it("does not throw when pollIntervalMs is undefined (uses default)", () => {
+    expect(() =>
+      createSharedTextureReceiver({
+        senderName: "test",
+        target: makeMockTarget() as unknown as Electron.WebContents,
+      }),
+    ).not.toThrow();
+  });
+
+  // -- _tick circuit breaker ------------------------------------------------
+
+  it("stops and emits a final circuit-breaker error after 10 consecutive _tick errors", async () => {
+    const errorHandler = vi.fn();
+    mockReceiver.receiveSharedTexture.mockImplementation(() => {
+      throw new Error("native boom");
+    });
+
+    const bridge = createSharedTextureReceiver({
+      senderName: "test",
+      target: makeMockTarget() as unknown as Electron.WebContents,
+      pollIntervalMs: 10,
+    });
+    bridge.on("error", errorHandler);
+    bridge.start();
+
+    // 10 consecutive ticks → 10 per-tick error emits + 1 circuit-breaker emit.
+    await vi.advanceTimersByTimeAsync(120);
+
+    // Should have emitted exactly the 10 per-tick errors plus the final
+    // circuit-breaker error.
+    expect(errorHandler).toHaveBeenCalledTimes(11);
+    const finalErr = errorHandler.mock.calls[10][0] as Error;
+    expect(finalErr).toBeInstanceOf(Error);
+    expect(finalErr.message).toMatch(/stopped after 10 consecutive errors/);
+
+    // Receiver should now be stopped: further timer advancement must not
+    // invoke receiveSharedTexture again.
+    const callsBefore = mockReceiver.receiveSharedTexture.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(mockReceiver.receiveSharedTexture.mock.calls.length).toBe(callsBefore);
+
+    bridge.dispose();
+  });
+
+  it("resets the consecutive-error counter after a successful tick", async () => {
+    const errorHandler = vi.fn();
+    let throwCount = 0;
+
+    // First 5 ticks throw, then succeed, then 5 more throw.
+    mockReceiver.receiveSharedTexture.mockImplementation(() => {
+      throwCount += 1;
+      if (throwCount <= 5 || (throwCount > 6 && throwCount <= 11)) {
+        throw new Error(`boom ${throwCount}`);
+      }
+      return makeFrame();
+    });
+
+    const bridge = createSharedTextureReceiver({
+      senderName: "test",
+      target: makeMockTarget() as unknown as Electron.WebContents,
+      pollIntervalMs: 10,
+    });
+    bridge.on("error", errorHandler);
+    bridge.start();
+
+    await vi.advanceTimersByTimeAsync(200);
+
+    // We should NOT have tripped the circuit breaker: the successful tick at
+    // throwCount===6 reset the consecutive counter, so the following 5 errors
+    // are not enough to reach 10-in-a-row.
+    const circuitBreakerErr = errorHandler.mock.calls.find((c) =>
+      (c[0] as Error).message.includes("stopped after"),
+    );
+    expect(circuitBreakerErr).toBeUndefined();
+
+    bridge.dispose();
+  });
+
+  // -- pixelFormat validation ----------------------------------------------
+
+  it("emits 'error' and skips import when pixelFormat is unknown", async () => {
+    const errorHandler = vi.fn();
+    mockReceiver.receiveSharedTexture.mockReturnValue(
+      makeFrame({ pixelFormat: "something-weird" }),
+    );
+
+    const bridge = createSharedTextureReceiver({
+      senderName: "test",
+      target: makeMockTarget() as unknown as Electron.WebContents,
+      pollIntervalMs: 10,
+    });
+    bridge.on("error", errorHandler);
+    bridge.start();
+
+    await vi.advanceTimersByTimeAsync(15);
+
+    expect(mockImportSharedTexture).not.toHaveBeenCalled();
+    expect(mockSendSharedTexture).not.toHaveBeenCalled();
+    expect(errorHandler).toHaveBeenCalled();
+    const err = errorHandler.mock.calls[0][0] as Error;
+    expect(err.message).toMatch(/unsupported pixelFormat/);
+    expect(err.message).toMatch(/something-weird/);
+
+    bridge.dispose();
+  });
+
+  // -- native handle release on unconsumed paths ---------------------------
+
+  it("releases the native handle when target webContents is destroyed", async () => {
+    const errorHandler = vi.fn();
+    const handleBuf = Buffer.alloc(8);
+    handleBuf.writeUInt32LE(0xdeadbeef, 0);
+    const frame = makeFrame({ handle: handleBuf });
+    mockReceiver.receiveSharedTexture.mockReturnValue(frame);
+
+    const target = makeMockTarget();
+    target.isDestroyed.mockReturnValue(true);
+
+    const bridge = createSharedTextureReceiver({
+      senderName: "test",
+      target: target as unknown as Electron.WebContents,
+      pollIntervalMs: 10,
+    });
+    bridge.on("error", errorHandler);
+    bridge.start();
+
+    await vi.advanceTimersByTimeAsync(15);
+
+    expect(mockCloseNativeHandle).toHaveBeenCalledTimes(1);
+    expect(mockCloseNativeHandle).toHaveBeenCalledWith(handleBuf);
+    expect(mockImportSharedTexture).not.toHaveBeenCalled();
+    // Destroyed target is an expected shutdown path, not an error.
+    expect(errorHandler).not.toHaveBeenCalled();
+
+    bridge.dispose();
+  });
+
+  it("releases the native handle when pixelFormat is unsupported", async () => {
+    const errorHandler = vi.fn();
+    const handleBuf = Buffer.alloc(8);
+    handleBuf.writeUInt32LE(0x12345678, 0);
+    const frame = makeFrame({ pixelFormat: "yuv420p", handle: handleBuf });
+    mockReceiver.receiveSharedTexture.mockReturnValue(frame);
+
+    const bridge = createSharedTextureReceiver({
+      senderName: "test",
+      target: makeMockTarget() as unknown as Electron.WebContents,
+      pollIntervalMs: 10,
+    });
+    bridge.on("error", errorHandler);
+    bridge.start();
+
+    await vi.advanceTimersByTimeAsync(15);
+
+    expect(mockCloseNativeHandle).toHaveBeenCalledTimes(1);
+    expect(mockCloseNativeHandle).toHaveBeenCalledWith(handleBuf);
+    expect(mockImportSharedTexture).not.toHaveBeenCalled();
+    expect(errorHandler).toHaveBeenCalledTimes(1);
+    const emitted = errorHandler.mock.calls[0][0] as Error;
+    expect(emitted).toBeInstanceOf(Error);
+    expect(emitted.message).toMatch(/unsupported pixelFormat/);
+    expect(emitted.message).toMatch(/yuv420p/);
+
+    bridge.dispose();
+  });
+
+  it("releases the native handle when importSharedTexture throws", async () => {
+    const errorHandler = vi.fn();
+    const handleBuf = Buffer.alloc(8);
+    handleBuf.writeUInt32LE(0xcafebabe, 0);
+    const frame = makeFrame({ handle: handleBuf });
+    mockReceiver.receiveSharedTexture.mockReturnValue(frame);
+    mockImportSharedTexture.mockImplementation(() => {
+      throw new Error("import failed badly");
+    });
+
+    const bridge = createSharedTextureReceiver({
+      senderName: "test",
+      target: makeMockTarget() as unknown as Electron.WebContents,
+      pollIntervalMs: 10,
+    });
+    bridge.on("error", errorHandler);
+    bridge.start();
+
+    await vi.advanceTimersByTimeAsync(15);
+
+    expect(mockCloseNativeHandle).toHaveBeenCalledTimes(1);
+    expect(mockCloseNativeHandle).toHaveBeenCalledWith(handleBuf);
+    expect(mockSendSharedTexture).not.toHaveBeenCalled();
+    expect(errorHandler).toHaveBeenCalledTimes(1);
+    const emitted = errorHandler.mock.calls[0][0] as Error;
+    expect(emitted).toBeInstanceOf(Error);
+    expect(emitted.message).toBe("import failed badly");
+
+    bridge.dispose();
+  });
+
+  it("accepts every documented pixelFormat (bgra/rgba/rgbaf16/nv12)", async () => {
+    const formats: readonly string[] = ["bgra", "rgba", "rgbaf16", "nv12"];
+
+    for (const fmt of formats) {
+      mockImportSharedTexture.mockClear();
+      mockSendSharedTexture.mockClear();
+      mockReceiver.receiveSharedTexture.mockReturnValue(makeFrame({ pixelFormat: fmt }));
+
+      const bridge = createSharedTextureReceiver({
+        senderName: "test",
+        target: makeMockTarget() as unknown as Electron.WebContents,
+        pollIntervalMs: 10,
+      });
+      bridge.start();
+      await vi.advanceTimersByTimeAsync(15);
+
+      expect(mockImportSharedTexture).toHaveBeenCalledTimes(1);
+      const arg = mockImportSharedTexture.mock.calls[0][0] as {
+        textureInfo: Electron.SharedTextureImportTextureInfo;
+      };
+      expect(arg.textureInfo.pixelFormat).toBe(fmt);
+
+      bridge.dispose();
+    }
   });
 });
