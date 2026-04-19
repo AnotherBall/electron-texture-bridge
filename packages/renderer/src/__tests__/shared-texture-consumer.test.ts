@@ -24,6 +24,7 @@ vi.mock("electron", () => ({
 import {
   _resetSharedTextureRegistryForTesting,
   consumeSharedTexture,
+  installSharedTextureReceiver,
 } from "../client/shared-texture-consumer";
 
 const makeMockVideoFrame = () =>
@@ -47,29 +48,42 @@ const makeMockData = (
     makeMockImported()) as unknown as Electron.SharedTextureImported,
 });
 
-describe("consumeSharedTexture", () => {
+describe("installSharedTextureReceiver", () => {
   beforeEach(() => {
-    // Reset first so the "receiver installed" flag is cleared, then wipe
-    // mocks and registeredCallback so each test starts from a pristine state
-    // where the first `consumeSharedTexture` call triggers an install.
     _resetSharedTextureRegistryForTesting();
     vi.clearAllMocks();
     registeredCallback = null;
   });
 
-  it("installs the permanent receiver on the first register", () => {
-    const reg = consumeSharedTexture({ onFrame: vi.fn() });
+  it("binds the Electron receiver slot on first call", () => {
+    installSharedTextureReceiver();
     expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(1);
     expect(registeredCallback).not.toBeNull();
-    reg.dispose();
   });
 
-  it("does not re-install when a second consumer registers", () => {
-    const a = consumeSharedTexture({ onFrame: vi.fn() });
-    const b = consumeSharedTexture({ onFrame: vi.fn() });
+  it("is idempotent — subsequent calls do not re-bind the slot", () => {
+    installSharedTextureReceiver();
+    installSharedTextureReceiver();
+    installSharedTextureReceiver();
     expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(1);
-    a.dispose();
-    b.dispose();
+  });
+
+  it("consumeSharedTexture does not install — it is purely a pool registration", () => {
+    // No install call. consumeSharedTexture must not touch the Electron slot.
+    const reg = consumeSharedTexture({ onFrame: vi.fn() });
+    expect(mockSetSharedTextureReceiver).not.toHaveBeenCalled();
+    reg.dispose();
+  });
+});
+
+describe("consumeSharedTexture", () => {
+  beforeEach(() => {
+    _resetSharedTextureRegistryForTesting();
+    vi.clearAllMocks();
+    registeredCallback = null;
+    // Install is a pre-condition for consumer tests. Each test starts with
+    // the slot bound so registeredCallback is available.
+    installSharedTextureReceiver();
   });
 
   it("invokes a single consumer with { textureId, videoFrame } and forwards extra args", async () => {

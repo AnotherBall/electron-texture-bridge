@@ -2,14 +2,17 @@
  * Renderer-side helper for consuming shared textures sent by
  * `createSharedTextureReceiver` in the main process.
  *
- * Electron's `sharedTexture.setSharedTextureReceiver` only allows one callback
- * per renderer. This module owns that single slot: the first call to
- * `consumeSharedTexture` lazily installs a permanent receiver that delegates
- * to a `createMultiDispatcher` pool. The slot is never swapped or released
- * afterwards — it stays bound for the lifetime of the renderer process.
+ * The module has two orthogonal exports:
+ *
+ * - `installSharedTextureReceiver()` — binds Electron's single
+ *   `sharedTexture.setSharedTextureReceiver` slot to an internal
+ *   `createMultiDispatcher` pool. Idempotent; call once at app startup.
+ * - `consumeSharedTexture(handlers)` — registers one consumer into the pool.
+ *   Purely a registration; performs no other side effects. Requires
+ *   `installSharedTextureReceiver()` to have been called first.
  *
  * Every active consumer receives its own `VideoFrame` per incoming imported
- * texture. When no consumers are registered, the permanent receiver still
+ * texture. When no consumers are registered, the installed receiver still
  * drains incoming frames (`dispatcher.handler` returns `Promise.all([])`) and
  * releases the imported texture exactly once.
  *
@@ -50,7 +53,7 @@ export interface SharedTextureConsumerRegistration {
 }
 
 // ---------------------------------------------------------------------------
-// Pool — one multi-dispatcher backing one permanently-installed Electron slot.
+// Pool — one multi-dispatcher backing one Electron slot.
 // ---------------------------------------------------------------------------
 
 type DispatchArgs = readonly [Electron.ReceivedSharedTextureData, ...unknown[]];
@@ -61,13 +64,24 @@ const dispatcher = createMultiDispatcher<DispatchArgs, Promise<void>>({
   },
 });
 
-// The Electron slot is bound at most once per renderer process, on the first
-// `consumeSharedTexture` call. It stays bound forever: the permanent receiver
-// always delegates to `dispatcher.handler` (a no-op when no consumers are
-// registered) and unconditionally releases the imported texture afterwards.
 let receiverInstalled = false;
 
-const ensureReceiverInstalled = (): void => {
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Bind Electron's `sharedTexture.setSharedTextureReceiver` slot to the internal
+ * consumer pool. Idempotent — subsequent calls are no-ops. Call once at
+ * renderer startup, before any `consumeSharedTexture` call.
+ *
+ * The bound receiver stays in place for the lifetime of the renderer process.
+ * It always delegates to the pool's dispatcher (a no-op when no consumers are
+ * registered) and unconditionally releases the imported texture afterwards.
+ *
+ * @experimental Requires Electron 40+ `sharedTexture` module.
+ */
+export const installSharedTextureReceiver = (): void => {
   if (receiverInstalled) return;
   receiverInstalled = true;
   sharedTexture.setSharedTextureReceiver(async (data, ...args) => {
@@ -80,10 +94,6 @@ const ensureReceiverInstalled = (): void => {
   });
 };
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
 /**
  * Register a callback for imported shared textures delivered from the main
  * process via `createSharedTextureReceiver`.
@@ -92,12 +102,15 @@ const ensureReceiverInstalled = (): void => {
  * imported texture; the underlying texture is released exactly once after all
  * consumers' `onFrame` callbacks have settled.
  *
+ * Pre-condition: `installSharedTextureReceiver()` must have been called. This
+ * function never touches the Electron receiver slot — its only job is to add
+ * one entry to the consumer pool.
+ *
  * @experimental Requires Electron 40+ `sharedTexture` module.
  */
 export const consumeSharedTexture = (
   handlers: SharedTextureConsumerHandlers,
 ): SharedTextureConsumerRegistration => {
-  ensureReceiverInstalled();
   const unregister = dispatcher.register(async (data, ...args) => {
     const imported = data.importedSharedTexture;
     const videoFrame = imported.getVideoFrame();
@@ -126,7 +139,7 @@ export const consumeSharedTexture = (
 
 /**
  * Clear the consumer pool AND the "receiver installed" flag. Used by vitest
- * suites to return the module to its pre-first-call state; not part of the
+ * suites to return the module to its pre-install state; not part of the
  * public API. Production code never resets — the slot is permanent.
  *
  * @internal

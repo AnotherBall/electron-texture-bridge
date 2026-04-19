@@ -1,7 +1,7 @@
 import type { MainToWorkerMessage } from "./worker-protocol";
 
 export type { MainToWorkerMessage, WorkerToMainMessage, WorkerMessage } from "./worker-protocol";
-export { consumeSharedTexture } from "./shared-texture-consumer";
+export { consumeSharedTexture, installSharedTextureReceiver } from "./shared-texture-consumer";
 export type {
   SharedTextureConsumerFrame,
   SharedTextureConsumerHandlers,
