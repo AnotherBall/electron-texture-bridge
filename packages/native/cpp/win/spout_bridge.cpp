@@ -354,6 +354,14 @@ int32_t spout_receiver_receive_shared_texture(void* handle,
     context->Flush();
     received->Release();
 
+    // TODO(perf, P1): CreateSharedHandle is a syscall (~2 syscalls/frame = 120/s at
+    // 60fps). Optimize by caching a single NT handle on the bridge alongside
+    // sharedStaging (reminted on resize, closed in destroy) and using
+    // DuplicateHandle(GetCurrentProcess(), cached, GetCurrentProcess(),
+    // out_nt_handle, 0, FALSE, DUPLICATE_SAME_ACCESS) per call. Skipped here
+    // because the lifecycle (invalidate on resize, close on destroy, handoff
+    // to Electron or native_close_shared_handle) needs careful verification.
+    //
     // Mint a fresh NT handle from our staging texture. Electron will take
     // ownership via importSharedTexture and close it at release time.
     IDXGIResource1* dxgi = nullptr;
@@ -379,6 +387,23 @@ int32_t spout_receiver_receive_shared_texture(void* handle,
     *out_width = bridge->width;
     *out_height = bridge->height;
     *out_format = static_cast<uint32_t>(DXGI_FORMAT_B8G8R8A8_UNORM); // 87
+    return 0;
+}
+
+// Close a raw NT HANDLE minted by spout_receiver_receive_shared_texture but
+// never consumed by Electron's importSharedTexture. Use when the caller
+// decides not to import the handle (e.g. target destroyed, import threw).
+// Returns 0 on success, -1 if handle is invalid.
+int32_t native_close_shared_handle(uintptr_t raw_handle) {
+    if (raw_handle == 0) return -1;
+    HANDLE nt_handle = reinterpret_cast<HANDLE>(raw_handle);
+    if (!CloseHandle(nt_handle)) {
+        DWORD err = GetLastError();
+        fprintf(stderr,
+                "[SpoutBridge] native_close_shared_handle: CloseHandle failed (err=%lu)\n",
+                static_cast<unsigned long>(err));
+        return -1;
+    }
     return 0;
 }
 

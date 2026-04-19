@@ -384,12 +384,14 @@ impl TextureReceiver {
         {
             match inner.receive_shared_texture() {
                 Ok(Some(info)) => {
+                    let pixel_format = dxgi_format_to_pixel_format(info.format)
+                        .map_err(|e| Error::from_reason(e))?;
                     let mut bytes = vec![0u8; 8];
                     bytes.copy_from_slice(&info.nt_handle.to_le_bytes());
                     Ok(Some(SharedTextureFrame {
                         width: info.width,
                         height: info.height,
-                        pixel_format: "bgra".to_string(),
+                        pixel_format: pixel_format.to_string(),
                         owner_pid: std::process::id(),
                         handle: bytes.into(),
                     }))
@@ -473,6 +475,65 @@ impl TextureReceiver {
         #[cfg(target_os = "macos")]
         return "syphon-metal".to_string();
     }
+}
+
+/// Map a raw `DXGI_FORMAT` value to an Electron-compatible pixel format string.
+///
+/// Currently supports the formats Chromium/Electron accepts in
+/// `SharedTextureImportTextureInfo.pixelFormat`. Returns `Err` for unknown
+/// formats so the caller can surface a useful error rather than silently
+/// lying about the texture layout.
+#[cfg(target_os = "windows")]
+fn dxgi_format_to_pixel_format(format: u32) -> std::result::Result<&'static str, String> {
+    // DXGI_FORMAT values:
+    //   87 = DXGI_FORMAT_B8G8R8A8_UNORM
+    //   28 = DXGI_FORMAT_R8G8B8A8_UNORM
+    //   10 = DXGI_FORMAT_R16G16B16A16_FLOAT
+    match format {
+        87 => Ok("bgra"),
+        28 => Ok("rgba"),
+        10 => Ok("rgbaf16"),
+        other => Err(format!(
+            "Unsupported DXGI_FORMAT for shared texture: {other}"
+        )),
+    }
+}
+
+/// Release a native shared texture handle (NT HANDLE on Windows, IOSurfaceRef
+/// on macOS) that was minted by receiveSharedTexture() but never consumed by
+/// Electron's importSharedTexture. Buffer must be 8 bytes LE.
+#[napi]
+pub fn close_native_handle(handle: napi::bindgen_prelude::Buffer) -> Result<()> {
+    if handle.len() != 8 {
+        return Err(Error::from_reason(format!(
+            "close_native_handle: expected 8-byte buffer, got {}",
+            handle.len()
+        )));
+    }
+    let bytes: [u8; 8] = handle[..8]
+        .try_into()
+        .map_err(|_| Error::from_reason("Failed to read 8-byte handle buffer"))?;
+    let raw = u64::from_le_bytes(bytes);
+
+    #[cfg(target_os = "windows")]
+    {
+        win::close_shared_handle(raw).map_err(|e| Error::from_reason(e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        mac::close_shared_iosurface(raw).map_err(|e| Error::from_reason(e))?;
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let _ = raw;
+        return Err(Error::from_reason(
+            "close_native_handle is not supported on this platform",
+        ));
+    }
+
+    Ok(())
 }
 
 /// List all available texture senders (Syphon servers / Spout senders).
@@ -584,6 +645,31 @@ mod tests {
         let result = parse_senders_json(json).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].name, r#"My "VJ" App"#);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn dxgi_format_bgra_maps_to_bgra_string() {
+        assert_eq!(dxgi_format_to_pixel_format(87).unwrap(), "bgra");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn dxgi_format_rgba_maps_to_rgba_string() {
+        assert_eq!(dxgi_format_to_pixel_format(28).unwrap(), "rgba");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn dxgi_format_rgba16f_maps_to_rgbaf16_string() {
+        assert_eq!(dxgi_format_to_pixel_format(10).unwrap(), "rgbaf16");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn dxgi_format_unknown_returns_error() {
+        assert!(dxgi_format_to_pixel_format(0).is_err());
+        assert!(dxgi_format_to_pixel_format(999).is_err());
     }
 
     #[test]

@@ -114,7 +114,7 @@ impl Receiver {
         //  0 = frame received
         //  1 = no new frame (poll again)
         //  2 = buffer too small — dimensions updated, next poll will allocate correctly
-        // -1 = error (not connected, etc.)
+        // -1 = not connected (sender disconnected or never appeared)
         match ret {
             0 => {
                 let actual_size = (width as usize) * (height as usize) * 4;
@@ -122,7 +122,11 @@ impl Receiver {
                 Ok(Some((buffer, width, height)))
             }
             1 | 2 => Ok(None), // No new frame or buffer too small — next poll uses updated dimensions
-            _ => Ok(None),     // Error or not connected — return None
+            -1 => Err(
+                "Shared texture receiver is not connected (sender disconnected or never appeared)"
+                    .into(),
+            ),
+            _ => Ok(None),
         }
     }
 
@@ -160,6 +164,10 @@ impl Receiver {
                 pixel_format_code: pixel_format,
             })),
             1 => Ok(None),
+            -1 => Err(
+                "Shared texture receiver is not connected (sender disconnected or never appeared)"
+                    .into(),
+            ),
             -2 => Err("Syphon texture is not IOSurface-backed".into()),
             _ => Ok(None),
         }

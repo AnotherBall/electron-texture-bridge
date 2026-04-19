@@ -51,6 +51,12 @@ export interface JsSenderInfo {
   appName?: string
   uuid?: string
 }
+/**
+ * Release a native shared texture handle (NT HANDLE on Windows, IOSurfaceRef
+ * on macOS) that was minted by receiveSharedTexture() but never consumed by
+ * Electron's importSharedTexture. Buffer must be 8 bytes LE.
+ */
+export declare function closeNativeHandle(handle: Buffer): void
 /** List all available texture senders (Syphon servers / Spout senders). */
 export declare function listSenders(): Array<JsSenderInfo>
 export declare class TextureSender {

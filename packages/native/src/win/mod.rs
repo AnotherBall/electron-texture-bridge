@@ -58,3 +58,17 @@ impl Drop for Sender {
         }
     }
 }
+
+/// Close a raw NT HANDLE minted by the receiver but never consumed by
+/// Electron's `importSharedTexture`. Returns `Ok(())` on success, or an error
+/// describing the failure (invalid handle, CloseHandle failure).
+pub fn close_shared_handle(raw_handle: u64) -> Result<(), String> {
+    if raw_handle == 0 {
+        return Err("Cannot close null NT handle".into());
+    }
+    let ret = unsafe { ffi::native_close_shared_handle(raw_handle as usize) };
+    if ret != 0 {
+        return Err("CloseHandle failed for shared NT handle".into());
+    }
+    Ok(())
+}

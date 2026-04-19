@@ -88,7 +88,7 @@ impl Receiver {
         //  0 = frame received
         //  1 = no new frame (poll again)
         //  2 = dimensions changed (next poll will use updated size)
-        // -1 = not connected
+        // -1 = not connected (sender disconnected or never appeared)
         match ret {
             0 => {
                 let actual_size = (width as usize) * (height as usize) * 4;
@@ -96,6 +96,10 @@ impl Receiver {
                 Ok(Some((frame, width, height)))
             }
             1 | 2 => Ok(None),
+            -1 => Err(
+                "Shared texture receiver is not connected (sender disconnected or never appeared)"
+                    .into(),
+            ),
             _ => Ok(None),
         }
     }
@@ -130,16 +134,27 @@ impl Receiver {
         //  0 = frame received (nt_handle populated)
         //  1 = no new frame
         //  2 = dimensions changed, poll again
-        // -1 = not connected
+        // -1 = not connected (sender disconnected or never appeared)
         // -2 = GPU op failed
         match ret {
-            0 => Ok(Some(SharedTextureHandleInfo {
-                nt_handle: nt_handle as u64,
-                width,
-                height,
-                format,
-            })),
+            0 => {
+                if nt_handle.is_null() {
+                    return Err(
+                        "Spout returned success but shared NT handle is null".into(),
+                    );
+                }
+                Ok(Some(SharedTextureHandleInfo {
+                    nt_handle: nt_handle as u64,
+                    width,
+                    height,
+                    format,
+                }))
+            }
             1 | 2 => Ok(None),
+            -1 => Err(
+                "Shared texture receiver is not connected (sender disconnected or never appeared)"
+                    .into(),
+            ),
             -2 => Err("Spout shared-texture GPU operation failed".into()),
             _ => Ok(None),
         }

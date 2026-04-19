@@ -94,6 +94,11 @@ int syphon_bridge_send(SyphonBridgeHandle handle,
                             onCommandBuffer:cmdBuf
                                 imageRegion:NSMakeRect(0, 0, width, height)
                                     flipped:YES];
+        [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+            if (completed.error) {
+                NSLog(@"[SyphonBridge] ERROR: publish (IOSurface id) cmdBuf error: %@", completed.error);
+            }
+        }];
         [cmdBuf commit];
 
         return 0;
@@ -138,6 +143,11 @@ int syphon_bridge_send_surface(SyphonBridgeHandle handle,
                             onCommandBuffer:cmdBuf
                                 imageRegion:NSMakeRect(0, 0, width, height)
                                     flipped:YES];
+        [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+            if (completed.error) {
+                NSLog(@"[SyphonBridge] ERROR: publish (IOSurface ptr) cmdBuf error: %@", completed.error);
+            }
+        }];
         [cmdBuf commit];
 
         return 0;
@@ -211,6 +221,11 @@ int syphon_bridge_send_rgba(SyphonBridgeHandle handle,
                             onCommandBuffer:cmdBuf
                                 imageRegion:NSMakeRect(0, 0, width, height)
                                     flipped:YES];
+        [cmdBuf addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+            if (completed.error) {
+                NSLog(@"[SyphonBridge] ERROR: publish (RGBA buffer) cmdBuf error: %@", completed.error);
+            }
+        }];
         [cmdBuf commit];
 
         return 0;
@@ -382,6 +397,11 @@ int syphon_receiver_receive_rgba(SyphonReceiverHandle handle,
         [cmdBuf commit];
         [cmdBuf waitUntilCompleted];
 
+        if (cmdBuf.error) {
+            NSLog(@"[SyphonReceiver] ERROR: Metal blit command buffer failed: %@", cmdBuf.error);
+            return -1;
+        }
+
         // Copy from staging buffer to output with vertical flip + BGRA→RGBA if needed
         const uint8_t* src = static_cast<const uint8_t*>(bridge->stagingBuffer.contents);
         bool needSwap = (texture.pixelFormat == MTLPixelFormatBGRA8Unorm);
@@ -548,6 +568,16 @@ uint64_t syphon_map_pixel_format(uint32_t iosurface_pixel_format) {
         default:
             return 80; // MTLPixelFormatBGRA8Unorm (safe default)
     }
+}
+
+int32_t native_close_shared_iosurface(uintptr_t raw_ptr) {
+    if (raw_ptr == 0) {
+        NSLog(@"[SyphonBridge] native_close_shared_iosurface: null pointer");
+        return -1;
+    }
+    IOSurfaceRef surface = reinterpret_cast<IOSurfaceRef>(raw_ptr);
+    CFRelease(surface);
+    return 0;
 }
 
 } // extern "C"

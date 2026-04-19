@@ -115,6 +115,12 @@ void syphon_convert_bgra_to_rgba(const uint8_t* src, uint8_t* dst, uint32_t pixe
 //   Unknown formats                        → MTLPixelFormatBGRA8Unorm (80, default)
 uint64_t syphon_map_pixel_format(uint32_t iosurface_pixel_format);
 
+// Release a raw IOSurfaceRef minted by syphon_receiver_receive_shared_iosurface
+// but never consumed by Electron's importSharedTexture. Use when the caller
+// decides not to import the surface (e.g. target destroyed, import threw).
+// Returns 0 on success, -1 if the pointer is null.
+int32_t native_close_shared_iosurface(uintptr_t raw_ptr);
+
 // ============================================================
 // Discovery (SyphonServerDirectory)
 // ============================================================

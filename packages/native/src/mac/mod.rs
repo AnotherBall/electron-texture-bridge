@@ -73,3 +73,17 @@ impl Drop for Sender {
         }
     }
 }
+
+/// Release a raw `IOSurfaceRef` minted by the receiver but never consumed by
+/// Electron's `importSharedTexture`. Returns `Ok(())` on success, or an error
+/// describing the failure (null pointer).
+pub fn close_shared_iosurface(raw_ptr: u64) -> Result<(), String> {
+    if raw_ptr == 0 {
+        return Err("Cannot close null IOSurface pointer".into());
+    }
+    let ret = unsafe { ffi::native_close_shared_iosurface(raw_ptr as usize) };
+    if ret != 0 {
+        return Err("CFRelease failed for shared IOSurface".into());
+    }
+    Ok(())
+}

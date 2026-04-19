@@ -18,6 +18,9 @@ fn main() {
 
 #[cfg(target_os = "windows")]
 fn build_windows(vendor_dir: &std::path::Path) {
+    // C++ ソースの変更を検知してリビルドする
+    println!("cargo:rerun-if-changed=cpp/win/spout_bridge.cpp");
+
     // vendor/Spout2/ に SPOUTSDK の構造を保持して配置:
     //   Spout2/SpoutDirectX/SpoutDX/ — SpoutDX.cpp, SpoutDX.h
     //   Spout2/SpoutGL/              — SpoutDirectX.cpp, SpoutCommon.h, etc.

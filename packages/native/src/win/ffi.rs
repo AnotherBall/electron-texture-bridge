@@ -41,6 +41,9 @@ extern "C" {
     // ---- Consolidated Discovery ----
     pub fn spout_discovery_list_senders() -> *mut c_char;
     pub fn spout_discovery_free_string(str: *mut c_char);
+
+    // ---- Shared-handle lifecycle ----
+    pub fn native_close_shared_handle(raw_handle: usize) -> i32;
 }
 
 pub type SpoutReceiverHandle = *mut std::ffi::c_void;
