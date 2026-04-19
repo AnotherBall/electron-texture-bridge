@@ -3,10 +3,15 @@
  * `createSharedTextureReceiver` in the main process.
  *
  * Electron's `sharedTexture.setSharedTextureReceiver` only allows one callback
- * per renderer. This module owns that single slot via a `createMultiDispatcher`
- * pool: the Electron slot is bound when the first consumer registers, and
- * replaced with a lean no-op releaser when the last consumer disposes. Every
- * active consumer receives its own `VideoFrame` per incoming imported texture.
+ * per renderer. This module owns that single slot: the first call to
+ * `consumeSharedTexture` lazily installs a permanent receiver that delegates
+ * to a `createMultiDispatcher` pool. The slot is never swapped or released
+ * afterwards — it stays bound for the lifetime of the renderer process.
+ *
+ * Every active consumer receives its own `VideoFrame` per incoming imported
+ * texture. When no consumers are registered, the permanent receiver still
+ * drains incoming frames (`dispatcher.handler` returns `Promise.all([])`) and
+ * releases the imported texture exactly once.
  *
  * Renderer process only.
  */
@@ -45,40 +50,35 @@ export interface SharedTextureConsumerRegistration {
 }
 
 // ---------------------------------------------------------------------------
-// Pool — one multi-dispatcher backing one Electron slot.
-//
-// The dispatcher itself does the register/unregister idempotency. The
-// onFirstRegister / onLastUnregister hooks flip Electron's single receiver
-// slot between the pool's own `handler` and a tiny releaser.
+// Pool — one multi-dispatcher backing one permanently-installed Electron slot.
 // ---------------------------------------------------------------------------
 
 type DispatchArgs = readonly [Electron.ReceivedSharedTextureData, ...unknown[]];
-
-const noopReceiver = async (data: Electron.ReceivedSharedTextureData): Promise<void> => {
-  data.importedSharedTexture.release();
-};
 
 const dispatcher = createMultiDispatcher<DispatchArgs, Promise<void>>({
   combine: async (results) => {
     await Promise.all(results);
   },
-  onFirstRegister: () => {
-    // Wrap dispatcher.handler so the per-frame `imported.release()` runs
-    // exactly once, after every registered consumer finishes. The dispatcher
-    // itself never owns the imported texture — consumers only get a VideoFrame.
-    sharedTexture.setSharedTextureReceiver(async (data, ...args) => {
-      const imported = data.importedSharedTexture;
-      try {
-        await dispatcher.handler(data, ...args);
-      } finally {
-        imported.release();
-      }
-    });
-  },
-  onLastUnregister: () => {
-    sharedTexture.setSharedTextureReceiver(noopReceiver);
-  },
 });
+
+// The Electron slot is bound at most once per renderer process, on the first
+// `consumeSharedTexture` call. It stays bound forever: the permanent receiver
+// always delegates to `dispatcher.handler` (a no-op when no consumers are
+// registered) and unconditionally releases the imported texture afterwards.
+let receiverInstalled = false;
+
+const ensureReceiverInstalled = (): void => {
+  if (receiverInstalled) return;
+  receiverInstalled = true;
+  sharedTexture.setSharedTextureReceiver(async (data, ...args) => {
+    const imported = data.importedSharedTexture;
+    try {
+      await dispatcher.handler(data, ...args);
+    } finally {
+      imported.release();
+    }
+  });
+};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -97,6 +97,7 @@ const dispatcher = createMultiDispatcher<DispatchArgs, Promise<void>>({
 export const consumeSharedTexture = (
   handlers: SharedTextureConsumerHandlers,
 ): SharedTextureConsumerRegistration => {
+  ensureReceiverInstalled();
   const unregister = dispatcher.register(async (data, ...args) => {
     const imported = data.importedSharedTexture;
     const videoFrame = imported.getVideoFrame();
@@ -124,13 +125,13 @@ export const consumeSharedTexture = (
 // ---------------------------------------------------------------------------
 
 /**
- * Clear the consumer pool. Used by vitest suites; not part of the public API.
- * Does not fire `onLastUnregister`, so Electron's slot is left bound to
- * whichever receiver was last installed — tests that care should clear their
- * mocks after calling this.
+ * Clear the consumer pool AND the "receiver installed" flag. Used by vitest
+ * suites to return the module to its pre-first-call state; not part of the
+ * public API. Production code never resets — the slot is permanent.
  *
  * @internal
  */
 export const _resetSharedTextureRegistryForTesting = (): void => {
   dispatcher.reset();
+  receiverInstalled = false;
 };

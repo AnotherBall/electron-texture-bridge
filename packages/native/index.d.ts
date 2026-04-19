@@ -127,9 +127,6 @@ export declare class TextureReceiver {
    * `sharedTexture.importSharedTexture` after wrapping the `handle` Buffer
    * under the appropriate platform key (`ntHandle` on Windows,
    * `ioSurface` on macOS).
-   *
-   * Currently only Windows has a concrete implementation; macOS returns an
-   * error until the Syphon IOSurface path is wired up.
    */
   receiveSharedTexture(): SharedTextureFrame | null
   /**

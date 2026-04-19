@@ -183,7 +183,7 @@ describe("createMultiDispatcher", () => {
 
   // -- reset ----------------------------------------------------------------
 
-  it("reset() clears all entries without firing onLastUnregister", () => {
+  it("reset() clears all entries and fires onLastUnregister once", () => {
     const onLast = vi.fn();
     const d = createMultiDispatcher<[], void>({
       combine: () => {},
@@ -197,6 +197,18 @@ describe("createMultiDispatcher", () => {
     d.reset();
 
     expect(d.size).toBe(0);
+    expect(onLast).toHaveBeenCalledTimes(1);
+  });
+
+  it("reset() on an empty dispatcher does not fire onLastUnregister", () => {
+    const onLast = vi.fn();
+    const d = createMultiDispatcher<[], void>({
+      combine: () => {},
+      onLastUnregister: onLast,
+    });
+
+    d.reset();
+
     expect(onLast).not.toHaveBeenCalled();
   });
 

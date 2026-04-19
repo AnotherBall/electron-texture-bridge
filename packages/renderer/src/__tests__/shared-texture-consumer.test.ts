@@ -49,12 +49,15 @@ const makeMockData = (
 
 describe("consumeSharedTexture", () => {
   beforeEach(() => {
+    // Reset first so the "receiver installed" flag is cleared, then wipe
+    // mocks and registeredCallback so each test starts from a pristine state
+    // where the first `consumeSharedTexture` call triggers an install.
+    _resetSharedTextureRegistryForTesting();
     vi.clearAllMocks();
     registeredCallback = null;
-    _resetSharedTextureRegistryForTesting();
   });
 
-  it("installs the pool receiver on first register", () => {
+  it("installs the permanent receiver on the first register", () => {
     const reg = consumeSharedTexture({ onFrame: vi.fn() });
     expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(1);
     expect(registeredCallback).not.toBeNull();
@@ -208,20 +211,18 @@ describe("consumeSharedTexture", () => {
     regB.dispose();
   });
 
-  it("replaces the Electron slot with a no-op releaser when the last consumer disposes", () => {
+  it("keeps the Electron slot bound after the last consumer disposes", () => {
     const reg = consumeSharedTexture({ onFrame: vi.fn() });
     expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(1);
 
     reg.dispose();
 
-    // Pool installs the no-op once the last consumer leaves.
-    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(2);
-    expect(mockSetSharedTextureReceiver.mock.calls[1][0]).not.toBe(
-      mockSetSharedTextureReceiver.mock.calls[0][0],
-    );
+    // The slot stays bound for the lifetime of the renderer — no swap, no
+    // uninstall. Only the dispatcher's internal entries are cleared.
+    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(1);
   });
 
-  it("no-op slot after total dispose releases incoming frames without invoking any handler", async () => {
+  it("with no active consumers the installed receiver still drains incoming frames", async () => {
     const onFrame = vi.fn();
     consumeSharedTexture({ onFrame }).dispose();
 
@@ -233,27 +234,23 @@ describe("consumeSharedTexture", () => {
     expect(imported.getVideoFrame).not.toHaveBeenCalled();
   });
 
-  it("re-registers the pool receiver when a consumer returns after total dispose", () => {
+  it("does not re-install the receiver when a consumer returns after total dispose", () => {
     consumeSharedTexture({ onFrame: vi.fn() }).dispose();
-    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(2);
+    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(1);
 
     const reg = consumeSharedTexture({ onFrame: vi.fn() });
-    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(3);
-    // The third installation uses the pool receiver, not the no-op.
-    expect(mockSetSharedTextureReceiver.mock.calls[2][0]).not.toBe(
-      mockSetSharedTextureReceiver.mock.calls[1][0],
-    );
+    // Still 1: the permanent slot is reused.
+    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(1);
     reg.dispose();
   });
 
-  it("dispose() is idempotent and does not over-uninstall", () => {
+  it("dispose() is idempotent", () => {
     const reg = consumeSharedTexture({ onFrame: vi.fn() });
     reg.dispose();
     reg.dispose();
     reg.dispose();
-    // Initial install (1) + one uninstall on first dispose (2). Subsequent
-    // dispose calls must not trigger further setSharedTextureReceiver calls.
-    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(2);
+    // One install ever; no dispose-triggered setSharedTextureReceiver churn.
+    expect(mockSetSharedTextureReceiver).toHaveBeenCalledTimes(1);
   });
 
   it("a consumer disposed during its own onFrame is skipped on the next frame", async () => {

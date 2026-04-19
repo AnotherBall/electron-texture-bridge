@@ -25,8 +25,9 @@ export interface MultiDispatcher<Args extends readonly unknown[], R> {
   /** Number of currently registered callbacks. */
   readonly size: number;
   /**
-   * Remove every registered callback without invoking `onLastUnregister`.
-   * Primarily useful for testing harnesses that reset global state.
+   * Remove every registered callback. Fires `onLastUnregister` once if there
+   * were any registered callbacks, so the "size transitioned from >0 to 0"
+   * invariant holds regardless of mechanism (unregister vs. reset).
    */
   reset(): void;
 }
@@ -45,10 +46,9 @@ export interface CreateMultiDispatcherOptions<Args extends readonly unknown[], R
    */
   onFirstRegister?: () => void;
   /**
-   * Fired synchronously when `size` transitions from 1 to 0 via an unregister
-   * call. Typical use: detach the upstream listener.
-   *
-   * NOT fired by `reset()`.
+   * Fired synchronously when `size` transitions from non-zero to 0, either via
+   * the final unregister call or via `reset()` when the dispatcher had entries.
+   * Typical use: detach the upstream listener.
    */
   onLastUnregister?: () => void;
 }
@@ -96,10 +96,12 @@ export const createMultiDispatcher = <Args extends readonly unknown[], R>(
       };
     },
     reset(): void {
+      const hadEntries = entries.size > 0;
       for (const entry of entries) {
         entry.active = false;
       }
       entries.clear();
+      if (hadEntries) options.onLastUnregister?.();
     },
   };
 };
