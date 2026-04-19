@@ -97,52 +97,82 @@ describe("createMultiDispatcher", () => {
     expect(cb).not.toHaveBeenCalled();
   });
 
-  // -- lifecycle hooks ------------------------------------------------------
+  // -- onSizeChange ---------------------------------------------------------
 
-  it("onFirstRegister fires exactly once on 0 → 1 transition", () => {
-    const onFirst = vi.fn();
+  it("onSizeChange fires after every register with {size, previous}", () => {
+    const changes: Array<{ size: number; previous: number }> = [];
     const d = createMultiDispatcher<[], void>({
       combine: () => {},
-      onFirstRegister: onFirst,
+      onSizeChange: (c) => changes.push({ size: c.size, previous: c.previous }),
     });
 
     d.register(() => {});
-    expect(onFirst).toHaveBeenCalledTimes(1);
+    d.register(() => {});
+    d.register(() => {});
 
-    d.register(() => {});
-    d.register(() => {});
-    expect(onFirst).toHaveBeenCalledTimes(1);
+    expect(changes).toEqual([
+      { size: 1, previous: 0 },
+      { size: 2, previous: 1 },
+      { size: 3, previous: 2 },
+    ]);
   });
 
-  it("onLastUnregister fires exactly once on 1 → 0 transition", () => {
-    const onLast = vi.fn();
+  it("onSizeChange fires after every active unregister with {size, previous}", () => {
+    const changes: Array<{ size: number; previous: number }> = [];
     const d = createMultiDispatcher<[], void>({
       combine: () => {},
-      onLastUnregister: onLast,
+      onSizeChange: (c) => changes.push({ size: c.size, previous: c.previous }),
     });
 
     const u1 = d.register(() => {});
     const u2 = d.register(() => {});
+    changes.length = 0;
 
     u1();
-    expect(onLast).not.toHaveBeenCalled();
-
     u2();
-    expect(onLast).toHaveBeenCalledTimes(1);
+
+    expect(changes).toEqual([
+      { size: 1, previous: 2 },
+      { size: 0, previous: 1 },
+    ]);
   });
 
-  it("onFirstRegister fires again after size returns to 0 and a new register arrives", () => {
-    const onFirst = vi.fn();
+  it("onSizeChange does NOT fire on idempotent unregister calls", () => {
+    const onChange = vi.fn();
     const d = createMultiDispatcher<[], void>({
       combine: () => {},
-      onFirstRegister: onFirst,
+      onSizeChange: onChange,
     });
 
-    d.register(() => {})();
-    expect(onFirst).toHaveBeenCalledTimes(1);
+    const unregister = d.register(() => {});
+    onChange.mockClear();
 
-    d.register(() => {});
-    expect(onFirst).toHaveBeenCalledTimes(2);
+    unregister();
+    unregister();
+    unregister();
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("caller can detect first-register / last-unregister edges from the metadata", () => {
+    const firstEdges: number[] = [];
+    const lastEdges: number[] = [];
+    const d = createMultiDispatcher<[], void>({
+      combine: () => {},
+      onSizeChange: ({ size, previous }) => {
+        if (previous === 0 && size > 0) firstEdges.push(size);
+        if (previous > 0 && size === 0) lastEdges.push(previous);
+      },
+    });
+
+    const u1 = d.register(() => {}); // 0 → 1  (first edge, size=1)
+    const u2 = d.register(() => {}); // 1 → 2
+    u1(); //                             2 → 1
+    u2(); //                             1 → 0  (last edge, previous=1)
+    d.register(() => {})(); //           0 → 1 → 0 (first + last edges)
+
+    expect(firstEdges).toEqual([1, 1]);
+    expect(lastEdges).toEqual([1, 1]);
   });
 
   // -- snapshot semantics ---------------------------------------------------
@@ -183,33 +213,34 @@ describe("createMultiDispatcher", () => {
 
   // -- reset ----------------------------------------------------------------
 
-  it("reset() clears all entries and fires onLastUnregister once", () => {
-    const onLast = vi.fn();
+  it("reset() on a non-empty dispatcher fires onSizeChange once with {size: 0, previous: <count>}", () => {
+    const onChange = vi.fn();
     const d = createMultiDispatcher<[], void>({
       combine: () => {},
-      onLastUnregister: onLast,
+      onSizeChange: onChange,
     });
 
     d.register(() => {});
     d.register(() => {});
-    expect(d.size).toBe(2);
+    onChange.mockClear();
 
     d.reset();
 
     expect(d.size).toBe(0);
-    expect(onLast).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith({ size: 0, previous: 2 });
   });
 
-  it("reset() on an empty dispatcher does not fire onLastUnregister", () => {
-    const onLast = vi.fn();
+  it("reset() on an empty dispatcher does not fire onSizeChange", () => {
+    const onChange = vi.fn();
     const d = createMultiDispatcher<[], void>({
       combine: () => {},
-      onLastUnregister: onLast,
+      onSizeChange: onChange,
     });
 
     d.reset();
 
-    expect(onLast).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it("after reset(), previously-returned unregisters are safe no-ops", () => {
@@ -220,18 +251,19 @@ describe("createMultiDispatcher", () => {
     expect(d.size).toBe(0);
   });
 
-  it("after reset(), new registrations still fire onFirstRegister", () => {
-    const onFirst = vi.fn();
+  it("after reset(), a new register still reports the 0 → 1 transition via onSizeChange", () => {
+    const changes: Array<{ size: number; previous: number }> = [];
     const d = createMultiDispatcher<[], void>({
       combine: () => {},
-      onFirstRegister: onFirst,
+      onSizeChange: (c) => changes.push({ size: c.size, previous: c.previous }),
     });
     d.register(() => {});
-    expect(onFirst).toHaveBeenCalledTimes(1);
-
     d.reset();
+    changes.length = 0;
+
     d.register(() => {});
-    expect(onFirst).toHaveBeenCalledTimes(2);
+
+    expect(changes).toEqual([{ size: 1, previous: 0 }]);
   });
 
   // -- async R --------------------------------------------------------------

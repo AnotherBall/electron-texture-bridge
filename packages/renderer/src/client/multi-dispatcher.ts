@@ -8,6 +8,13 @@
  * Reusable for any "one upstream slot, many downstream consumers" pattern.
  */
 
+export interface MultiDispatcherSizeChange {
+  /** Entry count after the change. */
+  readonly size: number;
+  /** Entry count immediately before the change. */
+  readonly previous: number;
+}
+
 export interface MultiDispatcher<Args extends readonly unknown[], R> {
   /**
    * Invoke every registered callback with the given args. Calls take a
@@ -25,9 +32,8 @@ export interface MultiDispatcher<Args extends readonly unknown[], R> {
   /** Number of currently registered callbacks. */
   readonly size: number;
   /**
-   * Remove every registered callback. Fires `onLastUnregister` once if there
-   * were any registered callbacks, so the "size transitioned from >0 to 0"
-   * invariant holds regardless of mechanism (unregister vs. reset).
+   * Remove every registered callback. If the dispatcher had any entries,
+   * fires `onSizeChange` once with `{ size: 0, previous: <count> }`.
    */
   reset(): void;
 }
@@ -41,16 +47,18 @@ export interface CreateMultiDispatcherOptions<Args extends readonly unknown[], R
    */
   combine: (results: readonly R[]) => R;
   /**
-   * Fired synchronously when `size` transitions from 0 to 1. Typical use:
-   * install an upstream listener that feeds `handler`.
+   * Fired synchronously after every operation that actually changes `size`:
+   * register, active unregister, or reset on a non-empty dispatcher. Receives
+   * the before/after sizes as metadata so the caller decides which transitions
+   * matter.
+   *
+   * Common transition detections:
+   * - First register:       `previous === 0 && size > 0`
+   * - Last unregister/reset: `previous > 0 && size === 0`
+   *
+   * Not fired for idempotent unregister calls or reset on an empty dispatcher.
    */
-  onFirstRegister?: () => void;
-  /**
-   * Fired synchronously when `size` transitions from non-zero to 0, either via
-   * the final unregister call or via `reset()` when the dispatcher had entries.
-   * Typical use: detach the upstream listener.
-   */
-  onLastUnregister?: () => void;
+  onSizeChange?: (change: MultiDispatcherSizeChange) => void;
 }
 
 export const createMultiDispatcher = <Args extends readonly unknown[], R>(
@@ -84,24 +92,25 @@ export const createMultiDispatcher = <Args extends readonly unknown[], R>(
     },
     register(callback: (...args: Args) => R): () => void {
       const entry: Entry = { active: true, callback };
-      const wasEmpty = entries.size === 0;
+      const previous = entries.size;
       entries.add(entry);
-      if (wasEmpty) options.onFirstRegister?.();
+      options.onSizeChange?.({ size: entries.size, previous });
 
       return () => {
         if (!entry.active) return;
         entry.active = false;
+        const previous = entries.size;
         entries.delete(entry);
-        if (entries.size === 0) options.onLastUnregister?.();
+        options.onSizeChange?.({ size: entries.size, previous });
       };
     },
     reset(): void {
-      const hadEntries = entries.size > 0;
+      const previous = entries.size;
       for (const entry of entries) {
         entry.active = false;
       }
       entries.clear();
-      if (hadEntries) options.onLastUnregister?.();
+      if (previous > 0) options.onSizeChange?.({ size: 0, previous });
     },
   };
 };
