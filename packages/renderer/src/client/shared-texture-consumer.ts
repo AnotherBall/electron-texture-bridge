@@ -133,14 +133,12 @@ export const consumeSharedTexture = (
     try {
       await handlers.onFrame({ textureId: imported.textureId, videoFrame }, ...args);
     } catch (err) {
-      if (handlers.onError) {
-        // A consumer whose `onError` itself throws must not crash the outer
-        // try/finally (which would leak VideoFrame.close()).
-        try {
-          handlers.onError(err instanceof Error ? err : new Error(String(err)));
-        } catch (handlerErr) {
-          console.error("[consumeSharedTexture] onError handler threw:", handlerErr);
-        }
+      // A consumer whose `onError` itself throws must not crash the outer
+      // try/finally (which would leak VideoFrame.close()).
+      try {
+        handlers.onError?.(err instanceof Error ? err : new Error(String(err)));
+      } catch (handlerErr) {
+        console.error("[consumeSharedTexture] onError handler threw:", handlerErr);
       }
     } finally {
       try {
