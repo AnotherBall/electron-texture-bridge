@@ -8,7 +8,12 @@ export type {
   SharedTextureConsumerRegistration,
 } from "./shared-texture-consumer";
 export { createMultiDispatcher } from "./multi-dispatcher";
-export type { MultiDispatcher, CreateMultiDispatcherOptions } from "./multi-dispatcher";
+export type {
+  MultiDispatcher,
+  CreateMultiDispatcherOptions,
+  MultiDispatcherEvent,
+  MultiDispatcherEventType,
+} from "./multi-dispatcher";
 
 export interface WorkerRendererOptions {
   /** An existing Worker instance */

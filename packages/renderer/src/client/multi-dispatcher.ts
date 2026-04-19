@@ -3,12 +3,18 @@
  * callbacks with the same arguments, and `register` that returns an idempotent
  * unregister function.
  *
- * Used by `shared-texture-consumer` to multiplex Electron's single-receiver
- * `sharedTexture.setSharedTextureReceiver` slot across multiple consumers.
+ * Emits lifecycle events via `subscribe("register" | "dispose", ...)`
+ * so callers can observe size transitions (e.g., install an upstream listener
+ * on the first register, detach on the last dispose).
+ *
  * Reusable for any "one upstream slot, many downstream consumers" pattern.
  */
 
-export interface MultiDispatcherSizeChange {
+export type MultiDispatcherEventType = "register" | "dispose";
+
+export interface MultiDispatcherEvent {
+  /** Which lifecycle event this is. */
+  readonly type: MultiDispatcherEventType;
   /** Entry count after the change. */
   readonly size: number;
   /** Entry count immediately before the change. */
@@ -33,9 +39,25 @@ export interface MultiDispatcher<Args extends readonly unknown[], R> {
   readonly size: number;
   /**
    * Remove every registered callback. If the dispatcher had any entries,
-   * fires `onSizeChange` once with `{ size: 0, previous: <count> }`.
+   * fires one `"dispose"` event with `{ size: 0, previous: <count> }`.
    */
   reset(): void;
+  /**
+   * Subscribe to lifecycle events. Returns an unsubscribe function — the only
+   * way to stop delivery. Mirrors the `register()` contract.
+   *
+   * - `"register"` — fires after each successful register call.
+   *   Detect first-register with `previous === 0 && size > 0`.
+   * - `"dispose"` — fires after each active unregister or non-empty reset.
+   *   Detect last-unregister with `previous > 0 && size === 0`.
+   *
+   * Does NOT fire on idempotent unregister calls or reset on an empty
+   * dispatcher (size did not change, so there is nothing to report).
+   */
+  subscribe(
+    type: MultiDispatcherEventType,
+    listener: (event: MultiDispatcherEvent) => void,
+  ): () => void;
 }
 
 export interface CreateMultiDispatcherOptions<Args extends readonly unknown[], R> {
@@ -46,19 +68,6 @@ export interface CreateMultiDispatcherOptions<Args extends readonly unknown[], R
    * logical AND for `boolean`, summation for `number`).
    */
   combine: (results: readonly R[]) => R;
-  /**
-   * Fired synchronously after every operation that actually changes `size`:
-   * register, active unregister, or reset on a non-empty dispatcher. Receives
-   * the before/after sizes as metadata so the caller decides which transitions
-   * matter.
-   *
-   * Common transition detections:
-   * - First register:       `previous === 0 && size > 0`
-   * - Last unregister/reset: `previous > 0 && size === 0`
-   *
-   * Not fired for idempotent unregister calls or reset on an empty dispatcher.
-   */
-  onSizeChange?: (change: MultiDispatcherSizeChange) => void;
 }
 
 export const createMultiDispatcher = <Args extends readonly unknown[], R>(
@@ -68,6 +77,21 @@ export const createMultiDispatcher = <Args extends readonly unknown[], R>(
   // multiple times without Set deduplicating; each wrapper is identity-unique.
   type Entry = { active: boolean; callback: (...args: Args) => R };
   const entries = new Set<Entry>();
+
+  type Listener = (event: MultiDispatcherEvent) => void;
+  const listeners: Record<MultiDispatcherEventType, Set<Listener>> = {
+    register: new Set(),
+    dispose: new Set(),
+  };
+
+  const emit = (type: MultiDispatcherEventType, size: number, previous: number): void => {
+    const event: MultiDispatcherEvent = { type, size, previous };
+    // Snapshot so a listener that unsubscribes during dispatch does not
+    // perturb iteration of the current emit.
+    for (const listener of [...listeners[type]]) {
+      listener(event);
+    }
+  };
 
   return {
     get size(): number {
@@ -94,14 +118,14 @@ export const createMultiDispatcher = <Args extends readonly unknown[], R>(
       const entry: Entry = { active: true, callback };
       const previous = entries.size;
       entries.add(entry);
-      options.onSizeChange?.({ size: entries.size, previous });
+      emit("register", entries.size, previous);
 
       return () => {
         if (!entry.active) return;
         entry.active = false;
         const previous = entries.size;
         entries.delete(entry);
-        options.onSizeChange?.({ size: entries.size, previous });
+        emit("dispose", entries.size, previous);
       };
     },
     reset(): void {
@@ -110,7 +134,13 @@ export const createMultiDispatcher = <Args extends readonly unknown[], R>(
         entry.active = false;
       }
       entries.clear();
-      if (previous > 0) options.onSizeChange?.({ size: 0, previous });
+      if (previous > 0) emit("dispose", 0, previous);
+    },
+    subscribe(type, listener) {
+      listeners[type].add(listener);
+      return () => {
+        listeners[type].delete(listener);
+      };
     },
   };
 };
