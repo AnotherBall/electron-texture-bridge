@@ -142,6 +142,10 @@ struct SpoutReceiverBridge {
     ID3D11Texture2D* sharedStaging;
     unsigned int stagingWidth;
     unsigned int stagingHeight;
+    // Cached NT HANDLE minted once alongside sharedStaging. Per frame we hand
+    // out DuplicateHandle-based copies instead of calling CreateSharedHandle.
+    // Reminted on resize, closed in spout_receiver_destroy.
+    HANDLE cachedNtHandle;
 };
 
 // Ensure the receiver's SHARED_NTHANDLE staging texture exists and matches
@@ -153,6 +157,10 @@ static bool ensure_shared_staging(SpoutReceiverBridge* bridge,
         bridge->stagingWidth == width &&
         bridge->stagingHeight == height) {
         return true;
+    }
+    if (bridge->cachedNtHandle) {
+        CloseHandle(bridge->cachedNtHandle);
+        bridge->cachedNtHandle = nullptr;
     }
     if (bridge->sharedStaging) {
         bridge->sharedStaging->Release();
@@ -178,6 +186,31 @@ static bool ensure_shared_staging(SpoutReceiverBridge* bridge,
         bridge->sharedStaging = nullptr;
         return false;
     }
+
+    // Mint the NT handle once; per-frame we DuplicateHandle out of this.
+    IDXGIResource1* dxgi = nullptr;
+    hr = bridge->sharedStaging->QueryInterface(
+        __uuidof(IDXGIResource1), reinterpret_cast<void**>(&dxgi));
+    if (FAILED(hr) || !dxgi) {
+        bridge->sharedStaging->Release();
+        bridge->sharedStaging = nullptr;
+        return false;
+    }
+
+    HANDLE nt_handle = nullptr;
+    hr = dxgi->CreateSharedHandle(
+        nullptr,
+        DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
+        nullptr,
+        &nt_handle);
+    dxgi->Release();
+    if (FAILED(hr) || !nt_handle) {
+        bridge->sharedStaging->Release();
+        bridge->sharedStaging = nullptr;
+        return false;
+    }
+
+    bridge->cachedNtHandle = nt_handle;
     bridge->stagingWidth = width;
     bridge->stagingHeight = height;
     return true;
@@ -191,6 +224,7 @@ void* spout_receiver_create(const char* sender_name) {
     bridge->sharedStaging = nullptr;
     bridge->stagingWidth = 0;
     bridge->stagingHeight = 0;
+    bridge->cachedNtHandle = nullptr;
     memset(bridge->senderName, 0, sizeof(bridge->senderName));
 
     if (sender_name && sender_name[0]) {
@@ -213,6 +247,13 @@ void spout_receiver_destroy(void* handle) {
     if (!handle) return;
 
     SpoutReceiverBridge* bridge = static_cast<SpoutReceiverBridge*>(handle);
+    // Close the cached NT handle before releasing sharedStaging. Any duplicates
+    // already handed out to Electron are independent kernel handles and remain
+    // valid until Electron (or closeNativeHandle) closes them.
+    if (bridge->cachedNtHandle) {
+        CloseHandle(bridge->cachedNtHandle);
+        bridge->cachedNtHandle = nullptr;
+    }
     if (bridge->sharedStaging) {
         bridge->sharedStaging->Release();
         bridge->sharedStaging = nullptr;
@@ -354,36 +395,23 @@ int32_t spout_receiver_receive_shared_texture(void* handle,
     context->Flush();
     received->Release();
 
-    // TODO(perf, P1): CreateSharedHandle is a syscall (~2 syscalls/frame = 120/s at
-    // 60fps). Optimize by caching a single NT handle on the bridge alongside
-    // sharedStaging (reminted on resize, closed in destroy) and using
-    // DuplicateHandle(GetCurrentProcess(), cached, GetCurrentProcess(),
-    // out_nt_handle, 0, FALSE, DUPLICATE_SAME_ACCESS) per call. Skipped here
-    // because the lifecycle (invalidate on resize, close on destroy, handoff
-    // to Electron or native_close_shared_handle) needs careful verification.
-    //
-    // Mint a fresh NT handle from our staging texture. Electron will take
-    // ownership via importSharedTexture and close it at release time.
-    IDXGIResource1* dxgi = nullptr;
-    HRESULT hr = bridge->sharedStaging->QueryInterface(
-        __uuidof(IDXGIResource1), reinterpret_cast<void**>(&dxgi));
-    if (FAILED(hr) || !dxgi) {
+    // Hand Electron a DuplicateHandle of our cached NT handle. Electron takes
+    // ownership of the duplicate and closes it on release; our cached handle
+    // remains valid for future frames (and is closed in destroy/resize).
+    HANDLE duplicate = nullptr;
+    BOOL ok_dup = DuplicateHandle(
+        GetCurrentProcess(),
+        bridge->cachedNtHandle,
+        GetCurrentProcess(),
+        &duplicate,
+        0,
+        FALSE,
+        DUPLICATE_SAME_ACCESS);
+    if (!ok_dup || !duplicate) {
         return -2;
     }
 
-    HANDLE nt_handle = nullptr;
-    hr = dxgi->CreateSharedHandle(
-        nullptr,
-        DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
-        nullptr,
-        &nt_handle);
-    dxgi->Release();
-
-    if (FAILED(hr) || !nt_handle) {
-        return -2;
-    }
-
-    *out_nt_handle = nt_handle;
+    *out_nt_handle = duplicate;
     *out_width = bridge->width;
     *out_height = bridge->height;
     *out_format = static_cast<uint32_t>(DXGI_FORMAT_B8G8R8A8_UNORM); // 87
