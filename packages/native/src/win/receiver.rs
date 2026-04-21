@@ -4,6 +4,7 @@ use std::ffi::CString;
 pub struct Receiver {
     handle: Option<ffi::SpoutReceiverHandle>,
     buffer: Vec<u8>,
+    #[allow(dead_code)]
     sender_name: String,
 }
 
@@ -37,6 +38,7 @@ impl Receiver {
         })
     }
 
+    #[allow(dead_code)]
     pub fn sender_name(&self) -> &str {
         &self.sender_name
     }
