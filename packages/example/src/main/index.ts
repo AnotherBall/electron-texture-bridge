@@ -7,8 +7,8 @@
 
 import { app, BrowserWindow, globalShortcut, ipcMain } from "electron";
 import path from "path";
-import { createTextureBridge } from "@napolab/texture-bridge-renderer";
-import { TextureReceiver, listSenders } from "@napolab/texture-bridge";
+import { createTextureBridge, createSharedTextureReceiver } from "@napolab/texture-bridge-renderer";
+import { listSenders } from "@napolab/texture-bridge";
 
 // GPU acceleration flags
 app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer");
@@ -52,21 +52,30 @@ app.whenReady().then(async () => {
     console.error("[example] did-fail-load:", errorCode, errorDesc);
   });
 
-  // ---- Receiver Test Window ----
-  let activeReceiver: InstanceType<typeof TextureReceiver> | null = null;
-  let activePollTimer: ReturnType<typeof setInterval> | null = null;
+  // ---- Receiver Test Window (zero-copy GPU path) ----
+  //
+  // We drive the receiver via `createSharedTextureReceiver`, which polls
+  // `receiveSharedTexture` (NT HANDLE / IOSurface) and delivers the imported
+  // texture to the receiver window's renderer via Electron's
+  // `sharedTexture.sendSharedTexture`. The renderer consumes each frame as a
+  // `VideoFrame` and draws it via `drawImage`, which hits the GPU path
+  // without any CPU readback or IPC pixel copy.
+  type SharedTextureReceiver = ReturnType<typeof createSharedTextureReceiver>;
+  let activeReceiver: SharedTextureReceiver | null = null;
 
   const stopActiveReceiver = () => {
-    if (activePollTimer !== null) {
-      clearInterval(activePollTimer);
-      activePollTimer = null;
-    }
     if (activeReceiver) {
-      activeReceiver.stop();
+      activeReceiver.dispose();
       activeReceiver = null;
     }
   };
 
+  // Receiver window needs `nodeIntegration: true` + `contextIsolation: false`
+  // so the bundled renderer module can import
+  // `@napolab/texture-bridge-renderer/client` and call
+  // `installSharedTextureReceiver` / `consumeSharedTexture` directly. This is
+  // acceptable for an in-repo demo; production apps should keep isolation on
+  // and forward frames via a preload bridge.
   const receiverWindow = new BrowserWindow({
     width: 960,
     height: 600,
@@ -74,6 +83,8 @@ app.whenReady().then(async () => {
     webPreferences: {
       preload: path.join(__dirname, "../preload/receiver.js"),
       sandbox: false,
+      nodeIntegration: true,
+      contextIsolation: false,
     },
   });
 
@@ -97,22 +108,22 @@ app.whenReady().then(async () => {
 
   ipcMain.handle("connect-receiver", (_event, senderName: string) => {
     stopActiveReceiver();
-    const receiver = new TextureReceiver(senderName);
-    console.log(`[receiver-test] connecting to "${senderName}"`, receiver.isConnected());
+    console.log(`[receiver-test] connecting to "${senderName}" (zero-copy)`);
 
-    activePollTimer = setInterval(() => {
-      const frame = receiver.receiveFrame();
-      if (!frame) return;
+    activeReceiver = createSharedTextureReceiver({
+      senderName,
+      target: receiverWindow.webContents,
+      pollIntervalMs: 8,
+    });
+    activeReceiver.on("fps", (fps) => {
       if (!receiverWindow.isDestroyed()) {
-        receiverWindow.webContents.send("receiver-frame", {
-          data: frame.data,
-          width: frame.width,
-          height: frame.height,
-        });
+        receiverWindow.webContents.send("receiver-fps", fps);
       }
-    }, 16);
-
-    activeReceiver = receiver;
+    });
+    activeReceiver.on("error", (err) => {
+      console.error("[receiver-test] bridge error:", err.message);
+    });
+    activeReceiver.start();
   });
 
   ipcMain.handle("disconnect-receiver", () => {
