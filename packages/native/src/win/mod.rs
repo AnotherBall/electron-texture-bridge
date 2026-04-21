@@ -30,6 +30,7 @@ impl Sender {
         }
     }
 
+    #[allow(dead_code)]
     pub fn resize(&self, width: u32, height: u32) -> Result<(), String> {
         let ret = unsafe { ffi::spout_bridge_resize(self.handle, width, height) };
         if ret != 0 {
