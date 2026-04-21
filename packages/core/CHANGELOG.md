@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.10.0](https://github.com/naporin0624/electron-texture-bridge/compare/core-v0.9.0...core-v0.10.0) (2026-04-21)
+
+
+### Features
+
+* add zero-copy GPU shared-texture receiver (Windows) ([2d1ad79](https://github.com/naporin0624/electron-texture-bridge/commit/2d1ad79d6ebdfadde48b740b9565d3903d8e8f3c))
+* add zero-copy GPU shared-texture receiver (Windows) ([7909b5f](https://github.com/naporin0624/electron-texture-bridge/commit/7909b5f11f5a7de410a0c404886f8cb2af791853))
+* **core:** re-export closeNativeHandle from native ([5bf928d](https://github.com/naporin0624/electron-texture-bridge/commit/5bf928d062afed1a265a3ba39300c419eadd1d05))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @napolab/texture-bridge bumped to 0.10.0
+
 ## [0.9.0](https://github.com/naporin0624/electron-texture-bridge/compare/core-v0.8.2...core-v0.9.0) (2026-04-17)
 
 

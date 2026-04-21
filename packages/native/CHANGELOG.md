@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.10.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.9.0...native-v0.10.0) (2026-04-21)
+
+
+### Features
+
+* add zero-copy GPU shared-texture receiver (Windows) ([2d1ad79](https://github.com/naporin0624/electron-texture-bridge/commit/2d1ad79d6ebdfadde48b740b9565d3903d8e8f3c))
+* add zero-copy GPU shared-texture receiver (Windows) ([7909b5f](https://github.com/naporin0624/electron-texture-bridge/commit/7909b5f11f5a7de410a0c404886f8cb2af791853))
+* **example:** receiver window uses zero-copy GPU path ([e1a29fa](https://github.com/naporin0624/electron-texture-bridge/commit/e1a29fa43c439fca3e12fecc89a59553ca63ed49))
+* **native:** add closeNativeHandle + fix disconnected/pixelFormat/metal leaks ([f4b0ef8](https://github.com/naporin0624/electron-texture-bridge/commit/f4b0ef8be8b98804a3de2629dcaf7279512650e9))
+* **native:** implement macOS IOSurface path for receiveSharedTexture ([8cf7e1a](https://github.com/naporin0624/electron-texture-bridge/commit/8cf7e1a2a4b4a226e0a65dd96d79d463f2e1e98b))
+
+
+### Bug Fixes
+
+* **native:** address receiver review feedback ([71fbfe4](https://github.com/naporin0624/electron-texture-bridge/commit/71fbfe4628bb42368024e53d0f599ef00559c08e))
+* **native:** rewrite Windows receiver without SpoutDX ([e1a29fa](https://github.com/naporin0624/electron-texture-bridge/commit/e1a29fa43c439fca3e12fecc89a59553ca63ed49))
+
+
+### Performance Improvements
+
+* **native:** cache shared NT handle, use DuplicateHandle per frame (win) ([bf1ea0e](https://github.com/naporin0624/electron-texture-bridge/commit/bf1ea0efd45407e0a1c1bda518f5ec0be3e30412))
+
 ## [0.9.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.8.2...native-v0.9.0) (2026-04-17)
 
 
