@@ -27,6 +27,12 @@ import {
   installSharedTextureReceiver,
 } from "../client/shared-texture-consumer";
 
+// `installSharedTextureReceiver` defers `imported.release()` by one macrotask
+// to avoid racing ahead of Electron's main-side tracker update (see
+// implementation comment). Tests that assert on release side effects must
+// flush the macrotask queue after invoking the registered callback.
+const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
 const makeMockVideoFrame = () =>
   ({
     close: vi.fn(),
@@ -157,6 +163,23 @@ describe("consumeSharedTexture", () => {
     expect(frameArg).toMatchObject({ textureId: "tex-abc", videoFrame });
     expect(extra1).toBe("extra1");
     expect(extra2).toBe(7);
+    await flush();
+    expect(imported.release).toHaveBeenCalledTimes(1);
+
+    reg.dispose();
+  });
+
+  it("defers imported.release() to the next macrotask so the release IPC cannot race ahead of main-side tracker registration", async () => {
+    const reg = consumeSharedTexture({ onFrame: vi.fn() });
+
+    const imported = makeMockImported();
+    await registeredCallback!(makeMockData(imported));
+
+    // The callback has resolved, the consumer has run, but release is
+    // queued on the next macrotask — not fired yet.
+    expect(imported.release).not.toHaveBeenCalled();
+
+    await flush();
     expect(imported.release).toHaveBeenCalledTimes(1);
 
     reg.dispose();
@@ -184,6 +207,7 @@ describe("consumeSharedTexture", () => {
     expect(frameA.close).toHaveBeenCalledTimes(1);
     expect(frameB.close).toHaveBeenCalledTimes(1);
     // Imported texture is released exactly once after all consumers finish.
+    await flush();
     expect(imported.release).toHaveBeenCalledTimes(1);
 
     regA.dispose();
@@ -202,6 +226,7 @@ describe("consumeSharedTexture", () => {
     });
 
     await registeredCallback!(makeMockData(imported));
+    await flush();
 
     expect(videoFrame.close).toHaveBeenCalledTimes(1);
     expect(imported.release).toHaveBeenCalledTimes(1);
@@ -223,6 +248,7 @@ describe("consumeSharedTexture", () => {
     });
 
     await registeredCallback!(makeMockData(imported));
+    await flush();
 
     expect(videoFrame.close).toHaveBeenCalledTimes(1);
     expect(imported.release).toHaveBeenCalledTimes(1);
@@ -241,6 +267,7 @@ describe("consumeSharedTexture", () => {
     const reg = consumeSharedTexture({ onFrame: vi.fn() });
 
     await expect(registeredCallback!(makeMockData(imported))).resolves.toBeUndefined();
+    await flush();
     expect(imported.release).toHaveBeenCalledTimes(1);
 
     reg.dispose();
@@ -256,6 +283,7 @@ describe("consumeSharedTexture", () => {
 
     const imported = makeMockImported();
     await registeredCallback!(makeMockData(imported));
+    await flush();
 
     expect(onFrameBad).toHaveBeenCalledTimes(1);
     expect(onFrameGood).toHaveBeenCalledTimes(1);
@@ -275,6 +303,7 @@ describe("consumeSharedTexture", () => {
 
     const imported = makeMockImported();
     await registeredCallback!(makeMockData(imported));
+    await flush();
 
     expect(onFrameA).not.toHaveBeenCalled();
     expect(onFrameB).toHaveBeenCalledTimes(1);
@@ -300,6 +329,7 @@ describe("consumeSharedTexture", () => {
 
     const imported = makeMockImported();
     await registeredCallback!(makeMockData(imported));
+    await flush();
 
     expect(onFrame).not.toHaveBeenCalled();
     expect(imported.release).toHaveBeenCalledTimes(1);
@@ -353,12 +383,16 @@ describe("consumeSharedTexture", () => {
     // release() will throw, but must be swallowed.
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     await expect(registeredCallback!(makeMockData(misbehavingImported))).resolves.toBeUndefined();
+    // The outer release is deferred by one macrotask; flush to let it (and its
+    // swallowed throw) fire.
+    await flush();
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
 
     // A subsequent frame with a well-behaved imported still reaches consumers.
     const cleanImported = makeMockImported();
     await registeredCallback!(makeMockData(cleanImported));
+    await flush();
     expect(healthyOnFrame).toHaveBeenCalledTimes(2); // called on both frames
     expect(cleanImported.release).toHaveBeenCalledTimes(1);
 
@@ -384,6 +418,7 @@ describe("consumeSharedTexture", () => {
     // The onError throw must be swallowed so finally + outer release still run.
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     await expect(registeredCallback!(makeMockData(imported))).resolves.toBeUndefined();
+    await flush();
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
 
