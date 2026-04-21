@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.10.0](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.9.0...renderer-v0.10.0) (2026-04-21)
+
+
+### Features
+
+* add zero-copy GPU shared-texture receiver (Windows) ([2d1ad79](https://github.com/naporin0624/electron-texture-bridge/commit/2d1ad79d6ebdfadde48b740b9565d3903d8e8f3c))
+* add zero-copy GPU shared-texture receiver (Windows) ([7909b5f](https://github.com/naporin0624/electron-texture-bridge/commit/7909b5f11f5a7de410a0c404886f8cb2af791853))
+
+
+### Bug Fixes
+
+* **consumer:** release handler closure on dispose to avoid GC retention ([8a65eeb](https://github.com/naporin0624/electron-texture-bridge/commit/8a65eeb4f24834f03a79b57740e45fa4c7ee88bc))
+* **renderer:** address shared-texture-receiver review feedback ([8546105](https://github.com/naporin0624/electron-texture-bridge/commit/854610580529eb8be412b72148eed606d548e59c))
+* **renderer:** close native handle leaks + harden consumer/dispatcher/bridge ([1b7b7ec](https://github.com/naporin0624/electron-texture-bridge/commit/1b7b7ecc195a137b074eaa5e337307c0be026407))
+* **renderer:** count _send() errors toward circuit breaker ([82ad3c4](https://github.com/naporin0624/electron-texture-bridge/commit/82ad3c4080b514b1612df96d2bc685d7ad986a9c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @napolab/texture-bridge-core bumped to 0.10.0
+
 ## [0.9.0](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.8.2...renderer-v0.9.0) (2026-04-17)
 
 
