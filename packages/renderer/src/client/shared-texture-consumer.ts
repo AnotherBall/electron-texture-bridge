@@ -90,15 +90,30 @@ export const installSharedTextureReceiver = (): void => {
     try {
       await dispatcher.handler(data, ...args);
     } finally {
-      // A misbehaving consumer that called `.release()` inside its own
-      // `onFrame` would otherwise throw here and kill the permanent slot
-      // (DoS). Log and swallow so the slot stays healthy for every other
-      // consumer.
-      try {
-        imported.release();
-      } catch (err) {
-        console.error("[shared-texture] imported.release() threw (possibly double-released):", err);
-      }
+      // Defer imported.release() to the next macrotask. sendSharedTexture
+      // registers the renderer-frame reference in its tracker *after* it
+      // receives our sync-token ACK from this transfer handler. If we release
+      // synchronously here, the resulting RELEASE_RENDERER_TO_MAIN IPC can be
+      // processed by main in the same tick as the ACK — the release handler
+      // then runs before the ACK continuation microtask has updated the
+      // tracker, and Electron throws
+      // "Shared texture X is not referenced by renderer frame N", silently
+      // leaking the tracker entry. One macrotask of slack puts the release
+      // IPC on main's next tick, by which point microtasks have drained.
+      setTimeout(() => {
+        // A misbehaving consumer that called `.release()` inside its own
+        // `onFrame` would otherwise throw here and kill the permanent slot
+        // (DoS). Log and swallow so the slot stays healthy for every other
+        // consumer.
+        try {
+          imported.release();
+        } catch (err) {
+          console.error(
+            "[shared-texture] imported.release() threw (possibly double-released):",
+            err,
+          );
+        }
+      }, 0);
     }
   });
 };
