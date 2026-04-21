@@ -23,24 +23,40 @@ The entire send pipeline stays on the GPU. No CPU readback. Sub-frame latency.
 
 ### Receiving (VJ Software → Electron)
 
+Two paths are available depending on what you want to do with the frame:
+
+**RGBA readback (works on both platforms):**
+
 ```
 [External Apps]          [Native Addon]                  [Electron App]
  Resolume Arena   ──→    texture-bridge   ──→ RGBA buf ──→  Process frames
  VDMX, OBS, etc.         Syphon Client / Spout Receiver     Display, analyze, etc.
 ```
 
-Receiving involves GPU→CPU readback (Metal blit / D3D11 staging) to provide RGBA pixel data.
+Involves a GPU→CPU readback (Metal blit / D3D11 staging) plus an ArrayBuffer IPC hop. Use when you need to inspect pixels in JS (analysis, save-to-disk, custom color pipelines).
+
+**Zero-copy GPU shared texture (Windows shipped, macOS in progress):**
+
+```
+[External Apps]          [Native Addon]        [Electron main]         [Electron renderer]
+ Resolume Arena   ──→   texture-bridge   ──→  importSharedTexture ──→  VideoFrame
+ VDMX, OBS, etc.        Shared Handle /       + sendSharedTexture       drawImage / WebGPU
+                        IOSurface             (zero-copy GPU)           importExternalTexture
+```
+
+The texture stays GPU-resident from the sender all the way to the consumer canvas or WebGPU device. No CPU readback, no IPC pixel copy — `drawImage(videoFrame, 0, 0)` is a GPU blit in Chromium when the source is a shared-texture-backed `VideoFrame`.
 
 ## Features
 
 - **GPU Zero-Copy Sending**: Textures are shared directly on the GPU via IOSurface (macOS) or DXGI Shared Handle (Windows)
-- **Texture Receiving**: Pull textures from external Syphon/Spout servers as RGBA buffers
+- **GPU Zero-Copy Receiving** (Windows shipped, macOS in progress): Pull textures from Syphon/Spout servers straight into a renderer `VideoFrame` via Electron's `importSharedTexture` — no CPU readback, no IPC pixel copy
+- **RGBA Readback Receiving**: `TextureReceiver.receiveFrame()` returns pixels as a `Buffer` on both platforms
 - **Sender Discovery**: Enumerate available Syphon servers / Spout senders with real-time change events
 - **Cross-Platform**: Syphon Metal on macOS, Spout on Windows
-- **Electron Native**: Built for Electron 40+'s `useSharedTexture` paint event API
+- **Electron Native**: Built for Electron 40+'s `useSharedTexture` paint events and `sharedTexture` module
 - **WebGPU Preview**: Optional zero-copy preview window using `importExternalTexture`
-- **Factory APIs**: `createTextureBridge()` for sending, `createTextureReceiver()` for receiving — handle all boilerplate
-- **Low-Level API**: `sendTextureFromPaintEvent()` and `TextureReceiver` for full control
+- **Factory APIs**: `createTextureBridge()` for sending, `createTextureReceiver()` for RGBA readback, `createSharedTextureReceiver()` for zero-copy GPU delivery — handle all boilerplate
+- **Low-Level API**: `sendTextureFromPaintEvent()`, `TextureReceiver`, and `closeNativeHandle()` for full control
 - **napi-rs**: Type-safe Rust → Node.js bindings with prebuilt binaries
 
 ## Supported Platforms
@@ -50,6 +66,15 @@ Receiving involves GPU→CPU readback (Metal blit / D3D11 staging) to provide RG
 | macOS (Apple Silicon) | Syphon Metal | IOSurface + Metal | `aarch64-apple-darwin` |
 | macOS (Intel) | Syphon Metal | IOSurface + Metal | `x86_64-apple-darwin` |
 | Windows x64 | Spout | DXGI Shared Handle + D3D11 | `x86_64-pc-windows-msvc` |
+
+### Feature support by platform
+
+| Feature | Windows (Spout) | macOS (Syphon Metal) |
+|---------|:---------------:|:--------------------:|
+| Sender (Electron paint → external apps) | Yes | Yes |
+| Receiver, RGBA readback (`receiveFrame()`) | Yes | Yes |
+| Receiver, zero-copy GPU (`receiveSharedTexture()` + `createSharedTextureReceiver`) | Yes | In progress ([plan](docs/superpowers/plans/2026-04-22-mac-metal-shared-texture-receiver.md)) |
+| Sender discovery (`listSenders()` / `SenderDiscovery`) | Yes | Yes |
 
 ## Requirements
 
@@ -233,6 +258,140 @@ win.webContents.on("paint", (event) => {
 win.webContents.setFrameRate(60);
 ```
 
+## Receiving textures from Spout/Syphon
+
+There are two receive paths, and they solve different problems:
+
+- **`TextureReceiver.receiveFrame()` / `createTextureReceiver()`** — RGBA readback. The native side performs a GPU→CPU blit (D3D11 staging / Metal blit), then hands you an `ArrayBuffer` via an IPC hop. Roughly ~8 MB per 1080p frame copied through IPC. Use it when you actually want pixel data in JavaScript (analysis, image export, custom color pipelines).
+- **`TextureReceiver.receiveSharedTexture()` / `createSharedTextureReceiver()` / `consumeSharedTexture()`** — zero-copy GPU delivery. The native side mints a platform-native shared handle (DXGI NT handle on Windows, IOSurface pointer on macOS) per frame and passes it through Electron's `sharedTexture.importSharedTexture` + `sendSharedTexture` pair into the renderer as a `VideoFrame`. No CPU readback, no ArrayBuffer IPC copy. `ctx.drawImage(videoFrame, 0, 0)` stays on the GPU and `GPUDevice.importExternalTexture({ source: videoFrame })` exposes the same texture to WebGPU without a copy. Use it when you just want to display or GPU-process the incoming video.
+
+Pick whichever matches what you will do with the frame.
+
+> **Status.** The zero-copy GPU path is verified end-to-end on Windows (Spout) on this branch. macOS (Syphon Metal) has the C++/Rust plumbing in place (`closeNativeHandle`, IOSurface pointer packing) but is still wiring the persistent IOSurface-backed staging texture — track progress in [`docs/superpowers/plans/2026-04-22-mac-metal-shared-texture-receiver.md`](docs/superpowers/plans/2026-04-22-mac-metal-shared-texture-receiver.md). Until then, use `createTextureReceiver()` for macOS or gate the call on `process.platform === "win32"`.
+
+### Main process: `createSharedTextureReceiver`
+
+```typescript
+// main process
+import { app, BrowserWindow } from "electron";
+import { createSharedTextureReceiver } from "@napolab/texture-bridge-renderer";
+
+app.whenReady().then(() => {
+  const receiverWindow = new BrowserWindow({
+    width: 960,
+    height: 540,
+    webPreferences: {
+      preload: /* path to preload that installs the consumer */ undefined,
+    },
+  });
+
+  const bridge = createSharedTextureReceiver({
+    senderName: "Resolume Arena",   // required
+    target: receiverWindow.webContents,
+    pollIntervalMs: 8,              // optional, defaults to 16
+    appName: undefined,             // optional, macOS filter
+    serverUuid: undefined,          // optional, macOS UUID
+    extraArgs: [],                  // optional, forwarded to sendSharedTexture(..., ...args)
+  });
+
+  bridge.on("fps", (fps) => console.log(`[receiver] ${fps.toFixed(1)} fps`));
+  bridge.on("error", (err) => console.error("[receiver]", err.message));
+  bridge.on("disposed", () => console.log("[receiver] disposed"));
+
+  bridge.start();
+
+  receiverWindow.on("closed", () => {
+    bridge.dispose();   // stops polling, releases the native receiver, emits "disposed"
+  });
+});
+```
+
+The bridge runs with a drop-latest policy: if a previous `sendSharedTexture` is still in flight when the next poll fires, the tick is skipped. This keeps at most one imported-texture reference alive on the main process and prevents frame pile-up when the renderer is slow.
+
+### Renderer process: `installSharedTextureReceiver` + `consumeSharedTexture`
+
+```typescript
+// renderer process (or preload with nodeIntegration: true, contextIsolation: false)
+import {
+  installSharedTextureReceiver,
+  consumeSharedTexture,
+} from "@napolab/texture-bridge-renderer/client";
+
+// Call once at startup. Binds Electron's single
+// sharedTexture.setSharedTextureReceiver slot to an internal pool so multiple
+// consumers can coexist. Idempotent.
+installSharedTextureReceiver();
+
+const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+const ctx = canvas.getContext("2d")!;
+
+const registration = consumeSharedTexture({
+  onFrame: ({ textureId, videoFrame }) => {
+    if (canvas.width !== videoFrame.displayWidth) canvas.width = videoFrame.displayWidth;
+    if (canvas.height !== videoFrame.displayHeight) canvas.height = videoFrame.displayHeight;
+    // Zero-copy GPU blit in Chromium when the source is a shared-texture VideoFrame.
+    ctx.drawImage(videoFrame, 0, 0);
+  },
+  onError: (err) => console.error("[consumer]", err),
+});
+
+// registration.dispose();  // optional — removes this consumer from the pool
+```
+
+`videoFrame` is a standard Web `VideoFrame`. For WebGPU, hand it to `device.importExternalTexture({ source: videoFrame })` instead of `drawImage` — that path is also zero-copy. You do **not** need to call `videoFrame.close()` yourself; the consumer wrapper closes it after your handler's returned promise settles.
+
+### Optional: polling `TextureReceiver.receiveSharedTexture()` directly
+
+If you want to drive the poll loop yourself (e.g. to integrate with a custom scheduler), use the low-level primitive and forward the handle to `sharedTexture.importSharedTexture` by hand:
+
+```typescript
+import { TextureReceiver, closeNativeHandle } from "@napolab/texture-bridge";
+import { sharedTexture } from "electron";
+
+const receiver = new TextureReceiver("Resolume Arena");
+const frame = receiver.receiveSharedTexture();
+if (frame) {
+  const handle =
+    process.platform === "win32" ? { ntHandle: frame.handle } : { ioSurface: frame.handle };
+  try {
+    const imported = sharedTexture.importSharedTexture({
+      textureInfo: {
+        codedSize: { width: frame.width, height: frame.height },
+        handle,
+        pixelFormat: frame.pixelFormat,   // "bgra" | "rgba" | "rgbaf16"
+      },
+    });
+    // ... deliver `imported` via sendSharedTexture, then imported.release() ...
+  } catch (err) {
+    // importSharedTexture threw before taking ownership — release ourselves.
+    closeNativeHandle(frame.handle);
+    throw err;
+  }
+}
+```
+
+> **Ownership contract.** Every `SharedTextureFrame.handle` returned by `receiveSharedTexture()` is a freshly-minted native handle. On a successful `importSharedTexture` Electron takes ownership and releases it when the imported texture is released. On **any** path that does not feed the handle into `importSharedTexture` (unknown pixel format, target destroyed, `importSharedTexture` threw, you decided to skip the frame), you **must** call `closeNativeHandle(frame.handle)` or you will leak an NT HANDLE (Windows) / `IOSurfaceRef` (macOS) per frame.
+
+### Discovering available senders
+
+```typescript
+import { listSenders } from "@napolab/texture-bridge-renderer";
+
+for (const s of listSenders()) {
+  console.log(s.name, s.appName ?? "", s.uuid ?? "");
+}
+// [{ name: "Resolume Arena", appName: "Resolume Arena", uuid: "..." }, ...]
+```
+
+For continuous change notifications, use `SenderDiscovery` (see [API Reference](#senderdiscovery)).
+
+### Renderer context isolation
+
+Electron's `sharedTexture` module is only accessible from the main and renderer processes that have `electron` resolvable at runtime. Importing `@napolab/texture-bridge-renderer/client` directly from a Vite-driven renderer can fail during dev pre-bundle (`path.join is not a function`), because Vite cannot pre-bundle the `electron` CJS module. Two ways out:
+
+1. **Recommended for simple cases:** put `installSharedTextureReceiver()` and `consumeSharedTexture()` in a **preload script** (bundled by electron-vite / electron-builder with `externalizeDepsPlugin`), and run the receiver window with `nodeIntegration: true, contextIsolation: false`. The example app does this — see [`packages/example/src/preload/receiver.ts`](packages/example/src/preload/receiver.ts).
+2. **Context-isolated setups:** bind the consumer in the preload, then forward each `VideoFrame` to the isolated renderer world via `window.postMessage(videoFrame, "*", [videoFrame])` (the `VideoFrame` is a transferable). Close it on the renderer side after use.
+
 ## API Reference
 
 ### `@napolab/texture-bridge-renderer`
@@ -296,6 +455,69 @@ createWorkerRenderer({
   height: 1080,
 });
 ```
+
+#### `installSharedTextureReceiver()` (from `renderer/client`)
+
+```typescript
+import { installSharedTextureReceiver } from "@napolab/texture-bridge-renderer/client";
+
+installSharedTextureReceiver();
+```
+
+Binds Electron's single `sharedTexture.setSharedTextureReceiver` slot to an internal consumer pool so multiple `consumeSharedTexture` calls can coexist. Idempotent — call once at renderer startup before any `consumeSharedTexture` call. Requires Electron 40+.
+
+#### `consumeSharedTexture(handlers)` (from `renderer/client`)
+
+```typescript
+import { consumeSharedTexture } from "@napolab/texture-bridge-renderer/client";
+
+const registration = consumeSharedTexture({
+  onFrame: ({ textureId, videoFrame }, ...extraArgs) => {
+    // videoFrame is a Web VideoFrame backed by the shared texture.
+    // drawImage(videoFrame) — zero-copy GPU blit
+    // device.importExternalTexture({ source: videoFrame }) — WebGPU path
+  },
+  onError: (err) => console.error(err),
+});
+
+registration.dispose();   // remove this consumer from the pool (idempotent)
+```
+
+Registers a consumer in the pool bound by `installSharedTextureReceiver`. Each active consumer receives its own `VideoFrame` per incoming imported texture; the wrapper closes the `VideoFrame` after `onFrame` settles and releases the underlying imported texture exactly once after all consumers have finished.
+
+#### `createMultiDispatcher(options)` (from `renderer/client`)
+
+Low-level fan-out primitive: one `handler(...)` invokes all registered callbacks and reduces their results through a user-supplied `combine` function. `installSharedTextureReceiver` is built on top of it, but it is exported so you can build your own "one upstream slot, many downstream consumers" adapters (e.g. a preload-to-renderer bridge). See JSDoc in `packages/renderer/src/client/multi-dispatcher.ts` for the full API.
+
+#### `createSharedTextureReceiver(options): SharedTextureReceiverBridge`
+
+Factory function that creates a **zero-copy GPU** receiver bridge. Polls `TextureReceiver.receiveSharedTexture()` and delivers each frame to a target renderer via Electron's `sharedTexture.importSharedTexture` + `sendSharedTexture` pair. Status: verified on Windows; macOS support is in progress.
+
+```typescript
+interface SharedTextureReceiverOptions {
+  senderName: string;                 // Syphon server / Spout sender name
+  target: Electron.WebContents;       // Receiver window webContents
+  pollIntervalMs?: number;            // default 16 (~60 fps); drop-latest applied
+  appName?: string;                   // (macOS only) filter by application name
+  serverUuid?: string;                // (macOS only) connect by server UUID
+  extraArgs?: readonly unknown[];     // forwarded to sendSharedTexture(..., ...args)
+}
+
+interface SharedTextureReceiverBridge {
+  on(event: "fps", listener: (fps: number) => void): this;
+  on(event: "error", listener: (error: Error) => void): this;
+  on(event: "disposed", listener: () => void): this;
+
+  start(): void;                      // begin polling
+  stop(): void;                       // pause polling (bridge can be started again)
+  dispose(): void;                    // terminal: stop + release native receiver
+  [Symbol.dispose](): void;           // same as dispose()
+
+  readonly isDisposed: boolean;
+}
+```
+
+`dispose()` is terminal and idempotent. After 10 consecutive `"error"` events the bridge stops itself automatically (circuit breaker) and emits one final error describing the shutdown.
 
 #### `createTextureReceiver(options): TextureReceiverBridge`
 
@@ -400,14 +622,33 @@ Native class for receiving textures from Syphon/Spout senders.
 class TextureReceiver {
   constructor(senderName: string, appName?: string, serverUuid?: string);
   hasNewFrame(): boolean;
-  receiveFrame(): ReceivedFrame | null;  // { data: Buffer, width, height }
+  receiveFrame(): ReceivedFrame | null;                  // RGBA readback
+  receiveSharedTexture(): SharedTextureFrame | null;     // zero-copy GPU handle (Windows; macOS WIP)
   isConnected(): boolean;
   getWidth(): number;
   getHeight(): number;
   platform(): string;
   stop(): void;  // Terminal — releases native resources immediately
 }
+
+interface SharedTextureFrame {
+  width: number;
+  height: number;
+  pixelFormat: "bgra" | "rgba" | "rgbaf16";
+  ownerPid: number;        // process ID that owns the handle (usually process.pid)
+  handle: Buffer;          // 8-byte LE: NT HANDLE on Windows, IOSurfaceRef pointer on macOS
+}
 ```
+
+Each `handle` is a fresh, owning native reference. Either hand it to `sharedTexture.importSharedTexture` (Electron takes ownership) or call `closeNativeHandle(handle)` — otherwise you leak an NT HANDLE / IOSurface per frame.
+
+#### `closeNativeHandle(handle)`
+
+```typescript
+function closeNativeHandle(handle: Buffer): void;
+```
+
+Releases a native shared-texture handle (NT HANDLE on Windows, `IOSurfaceRef` on macOS) that was minted by `receiveSharedTexture()` but never consumed by Electron's `importSharedTexture`. Only call this for handles you have **not** forwarded to Electron; Electron releases handles it has taken ownership of on its own.
 
 #### Resource Lifecycle
 
@@ -481,10 +722,12 @@ type Platform = "spout" | "syphon-metal" | "unsupported";
 
 ### Receiving
 
-| Resolution | Bandwidth | Notes |
-|-----------|-----------|-------|
-| 1080p @ 60fps | ~500 MB/s | GPU→CPU readback via Metal blit / D3D11 staging |
-| 4K @ 60fps | ~2 GB/s | Consider reducing poll rate or resolution |
+| Path | GPU Copies | IPC Copy | Latency | Notes |
+|------|-----------|----------|---------|-------|
+| Shared Texture (`createSharedTextureReceiver` / `receiveSharedTexture`) | 0 (zero-copy) | None (handle only) | < 1 frame | Windows shipped; macOS in progress. Frame delivered as `VideoFrame` — use `drawImage` or WebGPU `importExternalTexture` |
+| RGBA Readback (`createTextureReceiver` / `receiveFrame`) | 1 (GPU → CPU staging) | ~8 MB per 1080p frame | 2–3 frames | Use when you actually need pixel data in JS |
+
+Approx. readback bandwidth at 60 fps: ~500 MB/s at 1080p, ~2 GB/s at 4K — consider reducing poll rate or switching to the shared-texture path for display-only workloads.
 
 ## Example Application
 
@@ -584,6 +827,13 @@ electron-texture-bridge/
 - Verify Spout2 is installed on the system
 - Ensure GPU drivers are up to date
 - DirectX 11 compatible GPU is required
+
+### Zero-copy shared-texture receiver
+
+- **Requires Electron 40+** — uses the `sharedTexture.importSharedTexture` / `sendSharedTexture` / `setSharedTextureReceiver` module. Older Electron will throw at import time.
+- **`listSenders()` shows `<sender>_1` suffixes.** A previous sender process of the same name was killed uncleanly and its shared-memory directory entry is lingering. Start (or restart) the real sender — it will either reclaim the clean name or the stale suffix will go away on its own on the next publisher cycle.
+- **Handle leak after the target window closes.** If you poll `receiveSharedTexture()` directly, always call `closeNativeHandle(frame.handle)` on any path that does not forward the handle to `sharedTexture.importSharedTexture` — including "target was destroyed", "unknown pixel format", and "I decided to drop this frame". `createSharedTextureReceiver` does this for you.
+- **Windows staging texture.** The receiver creates its staging texture with `MISC_SHARED_NTHANDLE | MISC_SHARED` (no keyed mutex), so consumers do not need to `AcquireSync` per frame — Electron imports it directly.
 
 ### Freezing / paint events stop
 
