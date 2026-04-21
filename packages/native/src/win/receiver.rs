@@ -109,7 +109,7 @@ impl Receiver {
     /// Returns `Ok(Some(info))` on success. The caller owns `info.nt_handle`
     /// and must either pass it to Electron's `importSharedTexture` or close
     /// it explicitly to avoid leaking a kernel handle.
-    pub fn receive_shared_texture(&mut self) -> Result<Option<SharedTextureHandleInfo>, String> {
+    pub fn receive_shared_texture(&self) -> Result<Option<SharedTextureHandleInfo>, String> {
         let handle = match self.handle {
             Some(h) => h,
             None => return Ok(None),

@@ -179,6 +179,8 @@ impl TextureSender {
         return "spout".to_string();
         #[cfg(target_os = "macos")]
         return "syphon-metal".to_string();
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        return "unsupported".to_string();
     }
 }
 
@@ -254,14 +256,24 @@ fn parse_senders_json(json: &str) -> std::result::Result<Vec<SenderInfo>, String
 /// - macOS: an `IOSurfaceRef` pointer (retained by this call, released when the
 ///   imported texture is released by Electron).
 ///
+/// **Ownership contract.** The handle is fresh per frame and is always owned by
+/// the caller. On a successful `sharedTexture.importSharedTexture` the imported
+/// texture takes ownership and frees the handle on its own `release()`. On any
+/// path that does *not* feed the handle into `importSharedTexture` — unknown
+/// pixelFormat, target WebContents destroyed, `importSharedTexture` threw — the
+/// caller MUST feed the handle to `closeNativeHandle()` to avoid leaking an
+/// NT HANDLE / IOSurface per frame.
+///
 /// The `ownerPid` field is the process ID in which the handle is valid, so
 /// Chromium's GPU process can duplicate it correctly.
 #[napi(object)]
 pub struct SharedTextureFrame {
     pub width: u32,
     pub height: u32,
-    /// Matches Electron's `SharedTextureImportTextureInfo.pixelFormat` values:
-    /// `"bgra" | "rgba" | "rgbaf16" | "nv12"`.
+    /// Subset of Electron's `SharedTextureImportTextureInfo.pixelFormat` values
+    /// that this receiver ever emits: `"bgra" | "rgba" | "rgbaf16"`. Kept in
+    /// lockstep with `dxgi_format_to_pixel_format` (Windows) and
+    /// `SharedIoSurfaceInfo::pixel_format_string` (macOS).
     pub pixel_format: String,
     /// Process ID that owns the handle. Almost always `process.pid` of the
     /// Node process that called `receiveSharedTexture`.
@@ -374,8 +386,8 @@ impl TextureReceiver {
     /// under the appropriate platform key (`ntHandle` on Windows,
     /// `ioSurface` on macOS).
     #[napi]
-    pub fn receive_shared_texture(&mut self) -> Result<Option<SharedTextureFrame>> {
-        let inner = match &mut self.inner {
+    pub fn receive_shared_texture(&self) -> Result<Option<SharedTextureFrame>> {
+        let inner = match &self.inner {
             Some(r) => r,
             None => return Ok(None),
         };
@@ -474,6 +486,8 @@ impl TextureReceiver {
         return "spout".to_string();
         #[cfg(target_os = "macos")]
         return "syphon-metal".to_string();
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        return "unsupported".to_string();
     }
 }
 

@@ -20,6 +20,14 @@ export declare function getPlatform(): string
  * - macOS: an `IOSurfaceRef` pointer (retained by this call, released when the
  *   imported texture is released by Electron).
  *
+ * **Ownership contract.** The handle is fresh per frame and is always owned by
+ * the caller. On a successful `sharedTexture.importSharedTexture` the imported
+ * texture takes ownership and frees the handle on its own `release()`. On any
+ * path that does *not* feed the handle into `importSharedTexture` — unknown
+ * pixelFormat, target WebContents destroyed, `importSharedTexture` threw — the
+ * caller MUST feed the handle to `closeNativeHandle()` to avoid leaking an
+ * NT HANDLE / IOSurface per frame.
+ *
  * The `ownerPid` field is the process ID in which the handle is valid, so
  * Chromium's GPU process can duplicate it correctly.
  */
@@ -27,8 +35,10 @@ export interface SharedTextureFrame {
   width: number
   height: number
   /**
-   * Matches Electron's `SharedTextureImportTextureInfo.pixelFormat` values:
-   * `"bgra" | "rgba" | "rgbaf16" | "nv12"`.
+   * Subset of Electron's `SharedTextureImportTextureInfo.pixelFormat` values
+   * that this receiver ever emits: `"bgra" | "rgba" | "rgbaf16"`. Kept in
+   * lockstep with `dxgi_format_to_pixel_format` (Windows) and
+   * `SharedIoSurfaceInfo::pixel_format_string` (macOS).
    */
   pixelFormat: string
   /**

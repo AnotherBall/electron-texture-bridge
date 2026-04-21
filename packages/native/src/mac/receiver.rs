@@ -135,7 +135,7 @@ impl Receiver {
     /// Returns `Ok(Some(info))` on success. The caller owns `info.iosurface_ptr`
     /// and must either pass it to Electron's `importSharedTexture` or `CFRelease`
     /// it directly.
-    pub fn receive_shared_iosurface(&mut self) -> Result<Option<SharedIoSurfaceInfo>, String> {
+    pub fn receive_shared_iosurface(&self) -> Result<Option<SharedIoSurfaceInfo>, String> {
         let handle = match self.handle {
             Some(h) => h,
             None => return Ok(None),
