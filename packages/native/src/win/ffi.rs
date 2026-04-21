@@ -19,6 +19,13 @@ extern "C" {
         out_width: *mut u32,
         out_height: *mut u32,
     ) -> i32;
+    pub fn spout_receiver_receive_shared_texture(
+        handle: SpoutReceiverHandle,
+        out_nt_handle: *mut *mut std::ffi::c_void,
+        out_width: *mut u32,
+        out_height: *mut u32,
+        out_format: *mut u32,
+    ) -> i32;
     pub fn spout_receiver_is_connected(handle: SpoutReceiverHandle) -> i32;
     pub fn spout_receiver_get_width(handle: SpoutReceiverHandle) -> u32;
     pub fn spout_receiver_get_height(handle: SpoutReceiverHandle) -> u32;
@@ -34,6 +41,9 @@ extern "C" {
     // ---- Consolidated Discovery ----
     pub fn spout_discovery_list_senders() -> *mut c_char;
     pub fn spout_discovery_free_string(str: *mut c_char);
+
+    // ---- Shared-handle lifecycle ----
+    pub fn native_close_shared_handle(raw_handle: usize) -> i32;
 }
 
 pub type SpoutReceiverHandle = *mut std::ffi::c_void;

@@ -7,17 +7,21 @@ fn main() {
         .unwrap() // packages/
         .parent()
         .unwrap(); // root
-    let vendor_dir = workspace_root.join("vendor");
+    // `_vendor_dir` is only consumed on mac/win; silence unused warning on others.
+    let _vendor_dir = workspace_root.join("vendor");
 
     #[cfg(target_os = "windows")]
-    build_windows(&vendor_dir);
+    build_windows(&_vendor_dir);
 
     #[cfg(target_os = "macos")]
-    build_macos(&vendor_dir);
+    build_macos(&_vendor_dir);
 }
 
 #[cfg(target_os = "windows")]
 fn build_windows(vendor_dir: &std::path::Path) {
+    // C++ ソースの変更を検知してリビルドする
+    println!("cargo:rerun-if-changed=cpp/win/spout_bridge.cpp");
+
     // vendor/Spout2/ に SPOUTSDK の構造を保持して配置:
     //   Spout2/SpoutDirectX/SpoutDX/ — SpoutDX.cpp, SpoutDX.h
     //   Spout2/SpoutGL/              — SpoutDirectX.cpp, SpoutCommon.h, etc.

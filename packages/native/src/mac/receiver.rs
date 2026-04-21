@@ -5,6 +5,31 @@ pub struct Receiver {
     handle: Option<ffi::SyphonReceiverHandle>,
 }
 
+/// Metadata + raw IOSurfaceRef pointer for a Syphon frame received as a shared
+/// GPU texture.
+///
+/// `iosurface_ptr` is CFRetained. Ownership transfers to the caller: either
+/// pass to Electron's `importSharedTexture` (which CFReleases on release) or
+/// manually `CFRelease` it to avoid leaking.
+pub struct SharedIoSurfaceInfo {
+    pub iosurface_ptr: u64,
+    pub width: u32,
+    pub height: u32,
+    /// 0 = bgra, 1 = rgba, 2 = rgbaf16. See [`pixel_format_string`].
+    pub pixel_format_code: u32,
+}
+
+impl SharedIoSurfaceInfo {
+    /// Convert the numeric code to an Electron-compatible pixel format string.
+    pub fn pixel_format_string(&self) -> String {
+        match self.pixel_format_code {
+            1 => "rgba".to_string(),
+            2 => "rgbaf16".to_string(),
+            _ => "bgra".to_string(),
+        }
+    }
+}
+
 unsafe impl Send for Receiver {}
 
 impl Receiver {
@@ -89,7 +114,7 @@ impl Receiver {
         //  0 = frame received
         //  1 = no new frame (poll again)
         //  2 = buffer too small — dimensions updated, next poll will allocate correctly
-        // -1 = error (not connected, etc.)
+        // -1 = not connected (sender disconnected or never appeared)
         match ret {
             0 => {
                 let actual_size = (width as usize) * (height as usize) * 4;
@@ -97,7 +122,54 @@ impl Receiver {
                 Ok(Some((buffer, width, height)))
             }
             1 | 2 => Ok(None), // No new frame or buffer too small — next poll uses updated dimensions
-            _ => Ok(None),     // Error or not connected — return None
+            -1 => Err(
+                "Shared texture receiver is not connected (sender disconnected or never appeared)"
+                    .into(),
+            ),
+            _ => Ok(None),
+        }
+    }
+
+    /// Receive the current frame as an IOSurfaceRef (zero-copy for GPU consumers).
+    ///
+    /// Returns `Ok(Some(info))` on success. The caller owns `info.iosurface_ptr`
+    /// and must either pass it to Electron's `importSharedTexture` or `CFRelease`
+    /// it directly.
+    pub fn receive_shared_iosurface(&self) -> Result<Option<SharedIoSurfaceInfo>, String> {
+        let handle = match self.handle {
+            Some(h) => h,
+            None => return Ok(None),
+        };
+
+        let mut iosurface: *mut std::ffi::c_void = std::ptr::null_mut();
+        let mut width: u32 = 0;
+        let mut height: u32 = 0;
+        let mut pixel_format: u32 = 0;
+
+        let ret = unsafe {
+            ffi::syphon_receiver_receive_shared_iosurface(
+                handle,
+                &mut iosurface,
+                &mut width,
+                &mut height,
+                &mut pixel_format,
+            )
+        };
+
+        match ret {
+            0 => Ok(Some(SharedIoSurfaceInfo {
+                iosurface_ptr: iosurface as u64,
+                width,
+                height,
+                pixel_format_code: pixel_format,
+            })),
+            1 => Ok(None),
+            -1 => Err(
+                "Shared texture receiver is not connected (sender disconnected or never appeared)"
+                    .into(),
+            ),
+            -2 => Err("Syphon texture is not IOSurface-backed".into()),
+            _ => Ok(None),
         }
     }
 
@@ -149,6 +221,52 @@ pub fn list_servers_json() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- SharedIoSurfaceInfo::pixel_format_string ----
+
+    #[test]
+    fn pixel_format_string_bgra_for_code_0() {
+        let info = SharedIoSurfaceInfo {
+            iosurface_ptr: 0,
+            width: 0,
+            height: 0,
+            pixel_format_code: 0,
+        };
+        assert_eq!(info.pixel_format_string(), "bgra");
+    }
+
+    #[test]
+    fn pixel_format_string_rgba_for_code_1() {
+        let info = SharedIoSurfaceInfo {
+            iosurface_ptr: 0,
+            width: 0,
+            height: 0,
+            pixel_format_code: 1,
+        };
+        assert_eq!(info.pixel_format_string(), "rgba");
+    }
+
+    #[test]
+    fn pixel_format_string_rgbaf16_for_code_2() {
+        let info = SharedIoSurfaceInfo {
+            iosurface_ptr: 0,
+            width: 0,
+            height: 0,
+            pixel_format_code: 2,
+        };
+        assert_eq!(info.pixel_format_string(), "rgbaf16");
+    }
+
+    #[test]
+    fn pixel_format_string_unknown_defaults_to_bgra() {
+        let info = SharedIoSurfaceInfo {
+            iosurface_ptr: 0,
+            width: 0,
+            height: 0,
+            pixel_format_code: 99,
+        };
+        assert_eq!(info.pixel_format_string(), "bgra");
+    }
 
     // ---- Pixel format utility tests ----
 

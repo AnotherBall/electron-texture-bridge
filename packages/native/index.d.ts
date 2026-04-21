@@ -5,6 +5,50 @@
 
 /** Returns the current platform's texture sharing protocol name. */
 export declare function getPlatform(): string
+/**
+ * napi-rs object returned from `receiveSharedTexture()`.
+ *
+ * Zero-copy GPU frame metadata, designed to be passed almost verbatim into
+ * Electron's `sharedTexture.importSharedTexture({ textureInfo: ... })` in the
+ * main process.
+ *
+ * `handle` is an 8-byte little-endian encoding of the platform-native shared
+ * resource descriptor:
+ * - Windows: an NT HANDLE (freshly minted for this frame via
+ *   `IDXGIResource1::CreateSharedHandle`). Ownership transfers to the consumer;
+ *   Electron will close it when the imported texture is released.
+ * - macOS: an `IOSurfaceRef` pointer (retained by this call, released when the
+ *   imported texture is released by Electron).
+ *
+ * **Ownership contract.** The handle is fresh per frame and is always owned by
+ * the caller. On a successful `sharedTexture.importSharedTexture` the imported
+ * texture takes ownership and frees the handle on its own `release()`. On any
+ * path that does *not* feed the handle into `importSharedTexture` — unknown
+ * pixelFormat, target WebContents destroyed, `importSharedTexture` threw — the
+ * caller MUST feed the handle to `closeNativeHandle()` to avoid leaking an
+ * NT HANDLE / IOSurface per frame.
+ *
+ * The `ownerPid` field is the process ID in which the handle is valid, so
+ * Chromium's GPU process can duplicate it correctly.
+ */
+export interface SharedTextureFrame {
+  width: number
+  height: number
+  /**
+   * Subset of Electron's `SharedTextureImportTextureInfo.pixelFormat` values
+   * that this receiver ever emits: `"bgra" | "rgba" | "rgbaf16"`. Kept in
+   * lockstep with `dxgi_format_to_pixel_format` (Windows) and
+   * `SharedIoSurfaceInfo::pixel_format_string` (macOS).
+   */
+  pixelFormat: string
+  /**
+   * Process ID that owns the handle. Almost always `process.pid` of the
+   * Node process that called `receiveSharedTexture`.
+   */
+  ownerPid: number
+  /** 8-byte little-endian encoding of the platform-native handle/pointer. */
+  handle: Buffer
+}
 /** napi-rs object returned from receiveFrame() */
 export interface ReceivedFrame {
   data: Buffer
@@ -17,6 +61,12 @@ export interface JsSenderInfo {
   appName?: string
   uuid?: string
 }
+/**
+ * Release a native shared texture handle (NT HANDLE on Windows, IOSurfaceRef
+ * on macOS) that was minted by receiveSharedTexture() but never consumed by
+ * Electron's importSharedTexture. Buffer must be 8 bytes LE.
+ */
+export declare function closeNativeHandle(handle: Buffer): void
 /** List all available texture senders (Syphon servers / Spout senders). */
 export declare function listSenders(): Array<JsSenderInfo>
 export declare class TextureSender {
@@ -85,6 +135,16 @@ export declare class TextureReceiver {
    * Returns null if no frame is available or if `stop()` has been called.
    */
   receiveFrame(): ReceivedFrame | null
+  /**
+   * Receive the current frame as a GPU-shared texture descriptor.
+   *
+   * Returns `null` if no new frame is available or if `stop()` has been called.
+   * The returned object can be handed to Electron's
+   * `sharedTexture.importSharedTexture` after wrapping the `handle` Buffer
+   * under the appropriate platform key (`ntHandle` on Windows,
+   * `ioSurface` on macOS).
+   */
+  receiveSharedTexture(): SharedTextureFrame | null
   /**
    * Returns true if the receiver has a valid connection to a server.
    * Returns false if `stop()` has been called.

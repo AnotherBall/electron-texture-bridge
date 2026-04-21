@@ -1,4 +1,10 @@
-import { TextureSender, TextureReceiver, getPlatform, listSenders } from "@napolab/texture-bridge";
+import {
+  TextureSender,
+  TextureReceiver,
+  closeNativeHandle,
+  getPlatform,
+  listSenders,
+} from "@napolab/texture-bridge";
 import type {
   TextureInfo,
   PaintTexture,
@@ -29,8 +35,9 @@ declare module "@napolab/texture-bridge" {
   }
 }
 
-export { TextureSender, TextureReceiver, getPlatform, listSenders };
+export { TextureSender, TextureReceiver, closeNativeHandle, getPlatform, listSenders };
 export type { TextureInfo, PaintTexture, Platform, PixelFormat, SenderInfo, ReceivedFrame };
+export type { SharedTextureFrame } from "@napolab/texture-bridge";
 
 /**
  * Send a texture from an Electron paint event to Syphon/Spout.

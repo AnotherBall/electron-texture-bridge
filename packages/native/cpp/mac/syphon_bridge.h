@@ -76,6 +76,28 @@ uint32_t syphon_receiver_get_width(SyphonReceiverHandle handle);
 // Returns the height of the last received texture (0 if none).
 uint32_t syphon_receiver_get_height(SyphonReceiverHandle handle);
 
+// Receive the current frame as an IOSurface pointer (zero-copy for GPU consumers).
+// On success, writes a CFRetained IOSurfaceRef into *out_iosurface. Caller must
+// either CFRelease it or hand ownership to Electron's
+// sharedTexture.importSharedTexture (which will CFRelease on import-texture
+// release).
+//
+// out_pixel_format is one of:
+//   0 = "bgra"
+//   1 = "rgba"
+//   2 = "rgbaf16"
+//
+// Return codes:
+//   0 = frame received successfully
+//   1 = no new frame (poll again later)
+//  -1 = not connected / no valid client
+//  -2 = texture is not IOSurface-backed (should not occur for Syphon clients)
+int syphon_receiver_receive_shared_iosurface(SyphonReceiverHandle handle,
+                                             void** out_iosurface,
+                                             uint32_t* out_width,
+                                             uint32_t* out_height,
+                                             uint32_t* out_pixel_format);
+
 // ============================================================
 // Pixel format utilities
 // ============================================================
@@ -92,6 +114,12 @@ void syphon_convert_bgra_to_rgba(const uint8_t* src, uint8_t* dst, uint32_t pixe
 //   kCVPixelFormatType_32BGRA ('BGRA')     → MTLPixelFormatBGRA8Unorm (80)
 //   Unknown formats                        → MTLPixelFormatBGRA8Unorm (80, default)
 uint64_t syphon_map_pixel_format(uint32_t iosurface_pixel_format);
+
+// Release a raw IOSurfaceRef minted by syphon_receiver_receive_shared_iosurface
+// but never consumed by Electron's importSharedTexture. Use when the caller
+// decides not to import the surface (e.g. target destroyed, import threw).
+// Returns 0 on success, -1 if the pointer is null.
+int32_t native_close_shared_iosurface(uintptr_t raw_ptr);
 
 // ============================================================
 // Discovery (SyphonServerDirectory)

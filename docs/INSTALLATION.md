@@ -219,13 +219,19 @@ xattr -dr com.apple.quarantine vendor/Syphon.framework
 
 #### Windows: Fetch Spout2 SDK
 
-Download the SpoutDX source files from the Spout2 repository:
+Download both the `SpoutDirectX/` and `SpoutGL/` trees from the Spout2
+repository. The C++ wrapper in `SpoutDX.h` uses relative includes (e.g.
+`../../SpoutGL/SpoutCommon.h`), so the original `vendor/Spout2/<subdir>`
+layout must be preserved — `build.rs` expects `vendor/Spout2/SpoutDirectX/SpoutDX/`
+and `vendor/Spout2/SpoutGL/`.
 
 **PowerShell:**
 
 ```powershell
 git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
-Copy-Item -Recurse _spout2_tmp\SPOUTSDK\SpoutDirectX\SpoutDX vendor\SpoutDX
+New-Item -ItemType Directory -Force vendor\Spout2 | Out-Null
+Copy-Item -Recurse _spout2_tmp\SPOUTSDK\SpoutDirectX vendor\Spout2\SpoutDirectX
+Copy-Item -Recurse _spout2_tmp\SPOUTSDK\SpoutGL vendor\Spout2\SpoutGL
 Remove-Item -Recurse -Force _spout2_tmp
 ```
 
@@ -233,15 +239,17 @@ Remove-Item -Recurse -Force _spout2_tmp
 
 ```bash
 git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
-cp -r _spout2_tmp/SPOUTSDK/SpoutDirectX/SpoutDX vendor/SpoutDX
+mkdir -p vendor/Spout2
+cp -r _spout2_tmp/SPOUTSDK/SpoutDirectX vendor/Spout2/SpoutDirectX
+cp -r _spout2_tmp/SPOUTSDK/SpoutGL vendor/Spout2/SpoutGL
 rm -rf _spout2_tmp
 ```
 
 Verify:
 
 ```bash
-ls vendor/SpoutDX/SpoutDX.h
-# Should show the header file
+ls vendor/Spout2/SpoutDirectX/SpoutDX/SpoutDX.h vendor/Spout2/SpoutGL/SpoutCommon.h
+# Should list both header files
 ```
 
 ### 3. Install Dependencies and Build
@@ -545,13 +553,17 @@ The Syphon submodule was not cloned:
 git submodule update --init --recursive
 ```
 
-#### `fatal error: 'SpoutDX.h' file not found`
+#### `fatal error: 'SpoutDX.h' file not found` (or `'SpoutCommon.h' file not found`)
 
-The Spout SDK was not fetched:
+The Spout SDK was not fetched, or only the old `vendor/SpoutDX/` layout is
+present. `build.rs` expects `vendor/Spout2/SpoutDirectX/SpoutDX/` and
+`vendor/Spout2/SpoutGL/` — re-fetch both trees:
 
 ```bash
 git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
-cp -r _spout2_tmp/SPOUTSDK/SpoutDirectX/SpoutDX vendor/SpoutDX
+mkdir -p vendor/Spout2
+cp -r _spout2_tmp/SPOUTSDK/SpoutDirectX vendor/Spout2/SpoutDirectX
+cp -r _spout2_tmp/SPOUTSDK/SpoutGL vendor/Spout2/SpoutGL
 rm -rf _spout2_tmp
 ```
 

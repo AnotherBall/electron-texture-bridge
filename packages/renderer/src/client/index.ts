@@ -1,6 +1,19 @@
 import type { MainToWorkerMessage } from "./worker-protocol";
 
 export type { MainToWorkerMessage, WorkerToMainMessage, WorkerMessage } from "./worker-protocol";
+export { consumeSharedTexture, installSharedTextureReceiver } from "./shared-texture-consumer";
+export type {
+  SharedTextureConsumerFrame,
+  SharedTextureConsumerHandlers,
+  SharedTextureConsumerRegistration,
+} from "./shared-texture-consumer";
+export { createMultiDispatcher } from "./multi-dispatcher";
+export type {
+  MultiDispatcher,
+  CreateMultiDispatcherOptions,
+  MultiDispatcherEvent,
+  MultiDispatcherEventType,
+} from "./multi-dispatcher";
 
 export interface WorkerRendererOptions {
   /** An existing Worker instance */

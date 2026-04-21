@@ -45,6 +45,13 @@ extern "C" {
     pub fn syphon_receiver_is_valid(handle: SyphonReceiverHandle) -> i32;
     pub fn syphon_receiver_get_width(handle: SyphonReceiverHandle) -> u32;
     pub fn syphon_receiver_get_height(handle: SyphonReceiverHandle) -> u32;
+    pub fn syphon_receiver_receive_shared_iosurface(
+        handle: SyphonReceiverHandle,
+        out_iosurface: *mut *mut std::ffi::c_void,
+        out_width: *mut u32,
+        out_height: *mut u32,
+        out_pixel_format: *mut u32,
+    ) -> i32;
 
     // ---- Discovery ----
     pub fn syphon_discovery_list_servers() -> *mut c_char;
@@ -55,6 +62,9 @@ extern "C" {
     pub fn syphon_convert_bgra_to_rgba(src: *const u8, dst: *mut u8, pixel_count: u32);
     #[allow(dead_code)]
     pub fn syphon_map_pixel_format(iosurface_pixel_format: u32) -> u64;
+
+    // ---- Shared-handle lifecycle ----
+    pub fn native_close_shared_iosurface(raw_ptr: usize) -> i32;
 }
 
 pub type SyphonReceiverHandle = *mut std::ffi::c_void;

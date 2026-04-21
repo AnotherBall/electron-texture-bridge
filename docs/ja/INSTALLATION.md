@@ -219,13 +219,19 @@ xattr -dr com.apple.quarantine vendor/Syphon.framework
 
 #### Windows: Spout2 SDK の取得
 
-Spout2 リポジトリから SpoutDX ソースファイルをダウンロードします：
+Spout2 リポジトリから `SpoutDirectX/` と `SpoutGL/` の両方をダウンロードします。
+C++ ラッパー (`SpoutDX.h`) が `../../SpoutGL/SpoutCommon.h` のような相対 include を
+使用するため、オリジナルの `vendor/Spout2/<サブディレクトリ>` 構造を保持する必要が
+あります。`build.rs` は `vendor/Spout2/SpoutDirectX/SpoutDX/` と
+`vendor/Spout2/SpoutGL/` を参照します。
 
 **PowerShell:**
 
 ```powershell
 git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
-Copy-Item -Recurse _spout2_tmp\SPOUTSDK\SpoutDirectX\SpoutDX vendor\SpoutDX
+New-Item -ItemType Directory -Force vendor\Spout2 | Out-Null
+Copy-Item -Recurse _spout2_tmp\SPOUTSDK\SpoutDirectX vendor\Spout2\SpoutDirectX
+Copy-Item -Recurse _spout2_tmp\SPOUTSDK\SpoutGL vendor\Spout2\SpoutGL
 Remove-Item -Recurse -Force _spout2_tmp
 ```
 
@@ -233,15 +239,17 @@ Remove-Item -Recurse -Force _spout2_tmp
 
 ```bash
 git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
-cp -r _spout2_tmp/SPOUTSDK/SpoutDirectX/SpoutDX vendor/SpoutDX
+mkdir -p vendor/Spout2
+cp -r _spout2_tmp/SPOUTSDK/SpoutDirectX vendor/Spout2/SpoutDirectX
+cp -r _spout2_tmp/SPOUTSDK/SpoutGL vendor/Spout2/SpoutGL
 rm -rf _spout2_tmp
 ```
 
 確認：
 
 ```bash
-ls vendor/SpoutDX/SpoutDX.h
-# ヘッダファイルが表示されれば OK
+ls vendor/Spout2/SpoutDirectX/SpoutDX/SpoutDX.h vendor/Spout2/SpoutGL/SpoutCommon.h
+# 両方のヘッダファイルが表示されれば OK
 ```
 
 ### 3. 依存関係のインストールとビルド
@@ -545,13 +553,17 @@ Syphon サブモジュールがクローンされていません：
 git submodule update --init --recursive
 ```
 
-#### `fatal error: 'SpoutDX.h' file not found`
+#### `fatal error: 'SpoutDX.h' file not found`（または `'SpoutCommon.h' file not found`）
 
-Spout SDK が取得されていません：
+Spout SDK が取得されていない、または古い `vendor/SpoutDX/` レイアウトのみが存在します。
+`build.rs` は `vendor/Spout2/SpoutDirectX/SpoutDX/` と `vendor/Spout2/SpoutGL/` を
+参照するため、両ツリーを取得してください：
 
 ```bash
 git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
-cp -r _spout2_tmp/SPOUTSDK/SpoutDirectX/SpoutDX vendor/SpoutDX
+mkdir -p vendor/Spout2
+cp -r _spout2_tmp/SPOUTSDK/SpoutDirectX vendor/Spout2/SpoutDirectX
+cp -r _spout2_tmp/SPOUTSDK/SpoutGL vendor/Spout2/SpoutGL
 rm -rf _spout2_tmp
 ```
 

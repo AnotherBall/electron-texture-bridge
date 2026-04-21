@@ -99,9 +99,15 @@ cd ../..
 
 #### Windows: Spout2 SDK の取得
 
+ネイティブアドオンは `SpoutDX/`（C++ ラッパー）と `SpoutGL/`（`SpoutDX.h` が相対
+include する共有メモリ/D3D ヘルパー）の両方をビルドするため、Spout2 のサブディレクトリ
+構造を `vendor/Spout2/` 配下にそのまま保持してください：
+
 ```powershell
 git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
-Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutDirectX/SpoutDX vendor/SpoutDX
+New-Item -ItemType Directory -Force vendor/Spout2 | Out-Null
+Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutDirectX vendor/Spout2/SpoutDirectX
+Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutGL vendor/Spout2/SpoutGL
 Remove-Item -Recurse -Force _spout2_tmp
 ```
 
@@ -387,7 +393,7 @@ electron-texture-bridge/
 ├── vendor/                    # サードパーティ SDK（gitignore、ローカルでビルド）
 │   ├── syphon-src/            # Syphon Framework ソース（git サブモジュール）
 │   ├── Syphon.framework/     # ビルド済みフレームワーク（macOS）
-│   └── SpoutDX/              # Spout SDK（Windows）
+│   └── Spout2/               # Spout SDK（Windows）— SpoutDirectX/ + SpoutGL/
 ├── specs/
 │   └── ARCHITECTURE.md        # 詳細なアーキテクチャドキュメント
 ├── Cargo.toml                 # Rust ワークスペースルート
