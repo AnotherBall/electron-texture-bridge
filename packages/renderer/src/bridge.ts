@@ -51,8 +51,16 @@ class TextureBridgeImpl extends EventEmitter implements TextureBridge {
     const texture = event.texture;
     if (!texture?.textureInfo) return;
 
+    // If we've been disposed between the paint event and this callback, the
+    // underlying sender has been stopped and calling into it would throw
+    // "TextureSender has been stopped" for every in-flight paint. Drop the
+    // texture cleanly instead of emitting a stream of teardown errors.
+    if (this._disposed) {
+      texture.release?.();
+      return;
+    }
+
     try {
-      if (this._disposed) return;
       sendTextureFromPaintEvent(this.sender, texture.textureInfo);
       this.previewManager?.sendFrame(texture);
     } catch (err) {

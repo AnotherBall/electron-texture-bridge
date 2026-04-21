@@ -60,7 +60,15 @@ export interface MultiDispatcher<Args extends readonly unknown[], R> {
   ): () => void;
 }
 
-export interface CreateMultiDispatcherOptions<Args extends readonly unknown[], R> {
+/**
+ * Options for {@link createMultiDispatcher}.
+ *
+ * The leading `_Args` generic is kept (but unused inside this interface) for
+ * source-compatibility with the two-parameter shape
+ * `CreateMultiDispatcherOptions<Args, R>` exported prior to 0.9.x. Downstream
+ * code that spells out both parameters continues to type-check unchanged.
+ */
+export interface CreateMultiDispatcherOptions<_Args extends readonly unknown[], R> {
   /**
    * Reducer from per-callback results to the single return value of
    * `handler(...)`. Required because the dispatcher cannot infer what it
@@ -87,8 +95,9 @@ export const createMultiDispatcher = <Args extends readonly unknown[], R>(
   const emit = (type: MultiDispatcherEventType, size: number, previous: number): void => {
     const event: MultiDispatcherEvent = { type, size, previous };
     // Snapshot so a listener that unsubscribes during dispatch does not
-    // perturb iteration of the current emit.
-    for (const listener of [...listeners[type]]) {
+    // perturb iteration of the current emit. Array.from is intentional here.
+    const snapshot = Array.from(listeners[type]);
+    for (const listener of snapshot) {
       // One throwing listener must not block its siblings.
       try {
         listener(event);

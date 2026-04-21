@@ -29,18 +29,16 @@ const releaseUnconsumedHandle = (handle: Buffer): void => {
 };
 
 /**
- * Pixel formats that Electron's `sharedTexture.importSharedTexture` accepts.
- * Anything outside this set is rejected before reaching the Electron API to
- * avoid smuggling invalid strings through an `as` cast.
+ * Pixel formats the native receiver ever emits and that Electron's
+ * `sharedTexture.importSharedTexture` accepts. Kept in lockstep with
+ * `dxgi_format_to_pixel_format` (Windows) and `SharedIoSurfaceInfo::
+ * pixel_format_string` (macOS). Anything outside this set is rejected before
+ * reaching the Electron API to avoid smuggling invalid strings through an
+ * `as` cast.
  */
-type SharedTexturePixelFormat = "bgra" | "rgba" | "rgbaf16" | "nv12";
+type SharedTexturePixelFormat = "bgra" | "rgba" | "rgbaf16";
 
-const VALID_PIXEL_FORMATS: readonly SharedTexturePixelFormat[] = [
-  "bgra",
-  "rgba",
-  "rgbaf16",
-  "nv12",
-];
+const VALID_PIXEL_FORMATS: readonly SharedTexturePixelFormat[] = ["bgra", "rgba", "rgbaf16"];
 
 const isValidPixelFormat = (value: string): value is SharedTexturePixelFormat => {
   return (VALID_PIXEL_FORMATS as readonly string[]).includes(value);

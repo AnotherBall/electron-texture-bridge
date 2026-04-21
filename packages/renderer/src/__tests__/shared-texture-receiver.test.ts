@@ -644,8 +644,8 @@ describe("createSharedTextureReceiver", () => {
     bridge.dispose();
   });
 
-  it("accepts every documented pixelFormat (bgra/rgba/rgbaf16/nv12)", async () => {
-    const formats: readonly string[] = ["bgra", "rgba", "rgbaf16", "nv12"];
+  it("accepts every pixelFormat the native receiver emits (bgra/rgba/rgbaf16)", async () => {
+    const formats: readonly string[] = ["bgra", "rgba", "rgbaf16"];
 
     for (const fmt of formats) {
       mockImportSharedTexture.mockClear();
