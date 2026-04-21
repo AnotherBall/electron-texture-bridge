@@ -138,9 +138,15 @@ cd ../..
 
 #### Windows: Fetch Spout2 SDK
 
+The native addon compiles sources from both `SpoutDX/` (C++ wrapper) and
+`SpoutGL/` (shared-memory + D3D helpers that `SpoutDX.h` relative-includes), so
+preserve the Spout2 subdirectory layout under `vendor/Spout2/`:
+
 ```powershell
 git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
-Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutDirectX/SpoutDX vendor/SpoutDX
+New-Item -ItemType Directory -Force vendor/Spout2 | Out-Null
+Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutDirectX vendor/Spout2/SpoutDirectX
+Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutGL vendor/Spout2/SpoutGL
 Remove-Item -Recurse -Force _spout2_tmp
 ```
 
@@ -795,7 +801,7 @@ electron-texture-bridge/
 ├── vendor/                    # Third-party SDKs (gitignored, built locally)
 │   ├── syphon-src/            # Syphon Framework source (git submodule)
 │   ├── Syphon.framework/     # Built framework (macOS)
-│   └── SpoutDX/              # Spout SDK (Windows)
+│   └── Spout2/               # Spout SDK (Windows) — SpoutDirectX/ + SpoutGL/
 ├── specs/
 │   └── ARCHITECTURE.md        # Detailed architecture documentation
 ├── Cargo.toml                 # Rust workspace root

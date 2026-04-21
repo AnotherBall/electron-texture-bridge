@@ -525,6 +525,110 @@ describe("createSharedTextureReceiver", () => {
     bridge.dispose();
   });
 
+  it("trips the circuit breaker after 10 consecutive importSharedTexture failures", async () => {
+    const errorHandler = vi.fn();
+    mockReceiver.receiveSharedTexture.mockReturnValue(makeFrame());
+    mockImportSharedTexture.mockImplementation(() => {
+      throw new Error("import failed");
+    });
+
+    const bridge = createSharedTextureReceiver({
+      senderName: "test",
+      target: makeMockTarget() as unknown as Electron.WebContents,
+      pollIntervalMs: 10,
+    });
+    bridge.on("error", errorHandler);
+    bridge.start();
+
+    // 10 consecutive import failures must emit 10 per-tick errors + 1
+    // circuit-breaker error. In the buggy version `_tick` unconditionally
+    // resets `_consecutiveErrors` when `_send` returns, so this would fail.
+    await vi.advanceTimersByTimeAsync(120);
+
+    const circuitBreakerErrs = errorHandler.mock.calls.filter((c) =>
+      (c[0] as Error).message.includes("stopped after"),
+    );
+    expect(circuitBreakerErrs).toHaveLength(1);
+
+    // Receiver must now be stopped: further timer advancement must not invoke
+    // importSharedTexture again.
+    const callsBefore = mockImportSharedTexture.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(mockImportSharedTexture.mock.calls.length).toBe(callsBefore);
+
+    bridge.dispose();
+  });
+
+  it("trips the circuit breaker after 10 consecutive sendSharedTexture rejections", async () => {
+    const errorHandler = vi.fn();
+    mockReceiver.receiveSharedTexture.mockReturnValue(makeFrame());
+    mockSendSharedTexture.mockRejectedValue(new Error("send failed"));
+
+    const bridge = createSharedTextureReceiver({
+      senderName: "test",
+      target: makeMockTarget() as unknown as Electron.WebContents,
+      pollIntervalMs: 10,
+    });
+    bridge.on("error", errorHandler);
+    bridge.start();
+
+    await vi.advanceTimersByTimeAsync(300);
+
+    const circuitBreakerErrs = errorHandler.mock.calls.filter((c) =>
+      (c[0] as Error).message.includes("stopped after"),
+    );
+    expect(circuitBreakerErrs).toHaveLength(1);
+
+    bridge.dispose();
+  });
+
+  it("trips the circuit breaker after 10 consecutive unsupported pixelFormat frames", async () => {
+    const errorHandler = vi.fn();
+    mockReceiver.receiveSharedTexture.mockReturnValue(
+      makeFrame({ pixelFormat: "something-weird" }),
+    );
+
+    const bridge = createSharedTextureReceiver({
+      senderName: "test",
+      target: makeMockTarget() as unknown as Electron.WebContents,
+      pollIntervalMs: 10,
+    });
+    bridge.on("error", errorHandler);
+    bridge.start();
+
+    await vi.advanceTimersByTimeAsync(120);
+
+    const circuitBreakerErrs = errorHandler.mock.calls.filter((c) =>
+      (c[0] as Error).message.includes("stopped after"),
+    );
+    expect(circuitBreakerErrs).toHaveLength(1);
+
+    bridge.dispose();
+  });
+
+  it("does not trip the circuit breaker on destroyed target (expected shutdown path)", async () => {
+    const errorHandler = vi.fn();
+    const target = makeMockTarget();
+    target.isDestroyed.mockReturnValue(true);
+    mockReceiver.receiveSharedTexture.mockReturnValue(makeFrame());
+
+    const bridge = createSharedTextureReceiver({
+      senderName: "test",
+      target: target as unknown as Electron.WebContents,
+      pollIntervalMs: 10,
+    });
+    bridge.on("error", errorHandler);
+    bridge.start();
+
+    await vi.advanceTimersByTimeAsync(300);
+
+    // A destroyed target is an expected shutdown path and must not count as a
+    // circuit-breaker error — no error of any kind must be emitted.
+    expect(errorHandler).not.toHaveBeenCalled();
+
+    bridge.dispose();
+  });
+
   // -- pixelFormat validation ----------------------------------------------
 
   it("emits 'error' and skips import when pixelFormat is unknown", async () => {

@@ -1,7 +1,7 @@
 target/
 node_modules/
 *.node
-vendor/SpoutDX/
+vendor/Spout2/
 vendor/Syphon.framework/
 vendor/syphon-src/build/
 /build

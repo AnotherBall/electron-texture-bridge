@@ -158,14 +158,23 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
   }
 
   /**
-   * Record a `_tick`-level error. Emits `"error"` and, once the consecutive
-   * count crosses `MAX_CONSECUTIVE_TICK_ERRORS`, stops the receiver and emits
-   * a final circuit-breaker error. Does NOT call `dispose()` — releasing
-   * native resources is the caller's responsibility.
+   * Emit `"error"` and count it toward the circuit breaker. If the consecutive
+   * count crosses `MAX_CONSECUTIVE_TICK_ERRORS`, stop the receiver and emit a
+   * final shutdown error. Does NOT call `dispose()` — releasing native
+   * resources is the caller's responsibility.
    */
   private _recordTickError(error: Error): void {
-    this._consecutiveErrors += 1;
     this.emit("error", error);
+    this._countTickError();
+  }
+
+  /**
+   * Count a tick-level error without re-emitting. Used when `_send()` already
+   * emitted the error itself (so we don't emit twice) but the failure should
+   * still count toward the circuit breaker.
+   */
+  private _countTickError(): void {
+    this._consecutiveErrors += 1;
     if (this._consecutiveErrors >= MAX_CONSECUTIVE_TICK_ERRORS) {
       this.stop();
       this.emit(
@@ -197,10 +206,26 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
     if (!frame) return;
 
     this._inFlight = true;
+    let result: SendResult;
     try {
-      await this._send(frame);
+      result = await this._send(frame);
     } finally {
       this._inFlight = false;
+    }
+
+    if (this._disposed) return;
+
+    if (result === "failed") {
+      // The error itself was already emitted inside `_send()`. Still count it
+      // toward the circuit breaker so a stuck pipeline eventually stops.
+      this._countTickError();
+      return;
+    }
+
+    if (result === "skipped") {
+      // Not a failure (e.g. destroyed target during teardown). Don't touch the
+      // error counter and don't tick FPS.
+      return;
     }
 
     // Successful frame delivery — reset the consecutive-error counter.
@@ -210,13 +235,13 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
     if (fps !== null) this.emit("fps", fps);
   }
 
-  private async _send(frame: SharedTextureFrame): Promise<void> {
+  private async _send(frame: SharedTextureFrame): Promise<SendResult> {
     if (this.target.isDestroyed()) {
       // Target is gone — handle was minted but Electron will never consume it.
       // Release it directly via the native helper so we don't leak
       // NT HANDLE / IOSurface per frame during window teardown.
       releaseUnconsumedHandle(frame.handle);
-      return;
+      return "skipped";
     }
 
     if (!isValidPixelFormat(frame.pixelFormat)) {
@@ -227,7 +252,7 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
       // Handle was minted but will never reach importSharedTexture — release it
       // here to avoid leaking an NT HANDLE / IOSurface on unknown pixelFormat.
       releaseUnconsumedHandle(frame.handle);
-      return;
+      return "failed";
     }
 
     // Wrap the raw handle under the platform-specific key that Electron's
@@ -250,13 +275,13 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
       // importSharedTexture threw before taking ownership — release the handle
       // ourselves so we don't leak a per-frame NT HANDLE / IOSurface.
       releaseUnconsumedHandle(frame.handle);
-      return;
+      return "failed";
     }
 
     const targetFrame = this.target.mainFrame;
     if (!targetFrame) {
       imported.release();
-      return;
+      return "skipped";
     }
 
     try {
@@ -264,15 +289,30 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
         { frame: targetFrame, importedSharedTexture: imported },
         ...this.extraArgs,
       );
+      return "delivered";
     } catch (err) {
-      if (this._disposed) return;
+      if (this._disposed) return "skipped";
       const error = err instanceof Error ? err : new Error(String(err));
       this.emit("error", error);
+      return "failed";
     } finally {
       imported.release();
     }
   }
 }
+
+/**
+ * Outcome of a single `_send()` call.
+ *
+ * - `"delivered"`: frame reached `sendSharedTexture` and resolved. Resets the
+ *   circuit-breaker counter and ticks FPS.
+ * - `"failed"`: a user-visible pipeline error fired (invalid pixel format,
+ *   `importSharedTexture` threw, `sendSharedTexture` rejected). Counts toward
+ *   the circuit breaker.
+ * - `"skipped"`: an expected non-error path (target webContents destroyed, no
+ *   mainFrame, disposed mid-send). Neither counts nor resets.
+ */
+type SendResult = "delivered" | "failed" | "skipped";
 
 /**
  * Create a shared-texture receiver bridge.
