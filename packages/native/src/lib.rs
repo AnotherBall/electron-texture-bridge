@@ -115,15 +115,14 @@ impl TextureSender {
             inner
                 .send_surface(surface_ptr, width, height)
                 .map_err(|e| Error::from_reason(e))?;
+            Ok(())
         }
 
-        #[cfg(target_os = "windows")]
+        #[cfg(not(target_os = "macos"))]
         {
-            let _ = inner;
-            return Err(Error::from_reason("send_surface is macOS only"));
+            let _ = (inner, surface_buffer);
+            Err(Error::from_reason("send_surface is macOS only"))
         }
-
-        Ok(())
     }
 
     /// Stop the sender and release native resources immediately.
@@ -323,6 +322,7 @@ impl TextureReceiver {
     /// - `app_name`: (macOS only) Filter by application name
     /// - `server_uuid`: (macOS only) Connect by server UUID (highest priority)
     #[napi(constructor)]
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
     pub fn new(
         sender_name: String,
         app_name: Option<String>,
