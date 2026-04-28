@@ -161,7 +161,7 @@ export function buildBrowserWindowOptions(
 ): Electron.BrowserWindowConstructorOptions {
   const { width, height, webPreferences, includeAlpha } = options;
 
-  const ctorOptions: Electron.BrowserWindowConstructorOptions = {
+  return {
     width,
     height,
     show: false,
@@ -171,16 +171,12 @@ export function buildBrowserWindowOptions(
       offscreen: { useSharedTexture: true },
       ...webPreferences,
     },
-  };
-
-  if (includeAlpha) {
-    ctorOptions.transparent = true;
     // Hex `#RRGGBBAA` with alpha=0x00 is the explicit "fully transparent
-    // backdrop" signal Chromium honors on offscreen render surfaces.
-    ctorOptions.backgroundColor = "#00000000";
-  }
-
-  return ctorOptions;
+    // backdrop" signal Chromium honors on offscreen render surfaces. The
+    // `transparent: true` flag alone leaves the compositor painting opaque,
+    // so both keys must be applied together.
+    ...(includeAlpha ? { transparent: true, backgroundColor: "#00000000" } : {}),
+  };
 }
 
 /**
