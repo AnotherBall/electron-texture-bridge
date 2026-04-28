@@ -212,7 +212,7 @@ void main() {
   col = pow(col, vec3(0.4545));
   col = clamp(col, 0.0, 1.0);
 
-  // Alpha emission for the createTextureBridge `transparent` demo:
+  // Alpha emission for the createTextureBridge `includeAlpha` demo:
   // - Solid raymarched surfaces are fully opaque.
   // - Background pixels (ray missed) modulate alpha by their luminance, so
   //   bright glow remains visible while empty void becomes fully

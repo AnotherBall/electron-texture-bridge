@@ -150,16 +150,16 @@ class TextureBridgeImpl extends EventEmitter implements TextureBridge {
  * Electron's native module — the actual `new BrowserWindow(...)` call lives
  * in `createTextureBridge`.
  *
- * `options.transparent` flips the OSR pipeline into alpha-preserving mode:
- * `transparent: true` plus `backgroundColor: "#00000000"` is the documented
- * recipe for Chromium to emit per-pixel alpha into the shared texture. The
- * page itself must use a transparent background (`html, body { background:
- * transparent }`) for the alpha to mean anything.
+ * `options.includeAlpha` flips the OSR pipeline into alpha-preserving mode:
+ * `transparent: true` plus `backgroundColor: "#00000000"` on the BrowserWindow
+ * is the documented recipe for Chromium to emit per-pixel alpha into the
+ * shared texture. The page itself must use a transparent background
+ * (`html, body { background: transparent }`) for the alpha to mean anything.
  */
 export function buildBrowserWindowOptions(
   options: TextureBridgeOptions,
 ): Electron.BrowserWindowConstructorOptions {
-  const { width, height, webPreferences, transparent } = options;
+  const { width, height, webPreferences, includeAlpha } = options;
 
   const ctorOptions: Electron.BrowserWindowConstructorOptions = {
     width,
@@ -173,7 +173,7 @@ export function buildBrowserWindowOptions(
     },
   };
 
-  if (transparent) {
+  if (includeAlpha) {
     ctorOptions.transparent = true;
     // Hex `#RRGGBBAA` with alpha=0x00 is the explicit "fully transparent
     // backdrop" signal Chromium honors on offscreen render surfaces.

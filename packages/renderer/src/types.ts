@@ -36,7 +36,7 @@ export interface TextureBridgeOptions {
    * VJ software (Resolume, VDMX, etc.) consumes the alpha channel as the
    * layer's transparency mask, enabling overlay / lower-third compositing.
    */
-  transparent?: boolean;
+  includeAlpha?: boolean;
 }
 
 /** Events emitted by TextureBridge */

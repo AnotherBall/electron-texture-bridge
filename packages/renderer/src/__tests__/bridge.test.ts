@@ -47,18 +47,18 @@ describe("buildBrowserWindowOptions", () => {
     expect(out.backgroundColor).toBeUndefined();
   });
 
-  it("sets transparent + alpha-zero backgroundColor when transparent: true", () => {
+  it("sets transparent + alpha-zero backgroundColor when includeAlpha: true", () => {
     // The compositor only emits per-pixel alpha into the OSR shared texture
-    // when both flags are set. transparent:true alone leaves Chromium
-    // painting an opaque backdrop; backgroundColor with the alpha byte zero
-    // is what flips the initial fill to fully-transparent.
-    const out = buildBrowserWindowOptions({ ...baseOpts, transparent: true });
+    // when both flags are set on the BrowserWindow. transparent:true alone
+    // leaves Chromium painting an opaque backdrop; backgroundColor with the
+    // alpha byte zero is what flips the initial fill to fully-transparent.
+    const out = buildBrowserWindowOptions({ ...baseOpts, includeAlpha: true });
     expect(out.transparent).toBe(true);
     expect(out.backgroundColor).toBe("#00000000");
   });
 
-  it("treats transparent: false the same as omitted", () => {
-    const out = buildBrowserWindowOptions({ ...baseOpts, transparent: false });
+  it("treats includeAlpha: false the same as omitted", () => {
+    const out = buildBrowserWindowOptions({ ...baseOpts, includeAlpha: false });
     expect(out.transparent).toBeUndefined();
     expect(out.backgroundColor).toBeUndefined();
   });

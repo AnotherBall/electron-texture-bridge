@@ -41,7 +41,7 @@ app.whenReady().then(async () => {
     // Forward the page's alpha channel into the Syphon/Spout texture so
     // VJ software can use this output as an overlay layer. The renderer's
     // raymarching shader emits alpha=0 for background pixels.
-    transparent: true,
+    includeAlpha: true,
   });
 
   bridge.on("fps", (fps) => {

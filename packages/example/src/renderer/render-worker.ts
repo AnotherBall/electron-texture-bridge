@@ -76,7 +76,7 @@ function init(canvas: OffscreenCanvas) {
     antialias: true,
     // alpha:true + clearAlpha:0 lets the fragment shader's gl_FragColor.a
     // flow through to the framebuffer, which the createTextureBridge
-    // `transparent` option then forwards into the Syphon/Spout BGRA texture.
+    // `includeAlpha` option then forwards into the Syphon/Spout BGRA texture.
     alpha: true,
     premultipliedAlpha: false,
     powerPreference: "high-performance",
