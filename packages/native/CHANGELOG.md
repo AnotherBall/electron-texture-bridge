@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.10.0...native-v0.11.0) (2026-04-28)
+
+
+### Features
+
+* add zero-copy GPU shared-texture receiver (macOS) ([1f37662](https://github.com/naporin0624/electron-texture-bridge/commit/1f37662ae39ba24db605789af3be996f52ce7fcd))
+* add zero-copy GPU shared-texture receiver (macOS) ([f5d60aa](https://github.com/naporin0624/electron-texture-bridge/commit/f5d60aaff87f8806adf47a45c504e23c8a7e6759))
+
 ## [0.10.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.9.0...native-v0.10.0) (2026-04-21)
 
 
