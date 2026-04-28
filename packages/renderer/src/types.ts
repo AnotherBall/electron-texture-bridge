@@ -24,6 +24,19 @@ export interface TextureBridgeOptions {
   preview?: PreviewOptions;
   /** Additional webPreferences for the offscreen BrowserWindow */
   webPreferences?: Electron.WebPreferences;
+  /**
+   * Include the page's alpha channel in the captured texture (default: false).
+   *
+   * When true, the offscreen BrowserWindow is created with `transparent: true`
+   * and a fully-transparent backgroundColor so Chromium's compositor preserves
+   * per-pixel alpha into the BGRA shared texture. The page (or its body / root
+   * elements) must use a transparent background — opaque CSS will overwrite
+   * the alpha and produce a fully-opaque output regardless of this flag.
+   *
+   * VJ software (Resolume, VDMX, etc.) consumes the alpha channel as the
+   * layer's transparency mask, enabling overlay / lower-third compositing.
+   */
+  transparent?: boolean;
 }
 
 /** Events emitted by TextureBridge */

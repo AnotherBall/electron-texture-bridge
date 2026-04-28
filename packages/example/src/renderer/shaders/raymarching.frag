@@ -212,5 +212,14 @@ void main() {
   col = pow(col, vec3(0.4545));
   col = clamp(col, 0.0, 1.0);
 
-  gl_FragColor = vec4(col, 1.0);
+  // Alpha emission for the createTextureBridge `transparent` demo:
+  // - Solid raymarched surfaces are fully opaque.
+  // - Background pixels (ray missed) modulate alpha by their luminance, so
+  //   bright glow remains visible while empty void becomes fully
+  //   transparent. VJ software receives a layer with proper transparency
+  //   instead of an opaque black backdrop.
+  float alpha = (d < MAX_DIST) ? 1.0 : clamp(dot(col, vec3(0.299, 0.587, 0.114)), 0.0, 1.0);
+  alpha *= vignette;
+
+  gl_FragColor = vec4(col, alpha);
 }
