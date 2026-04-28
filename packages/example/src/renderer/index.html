@@ -8,6 +8,13 @@
         margin: 0;
         padding: 0;
       }
+      /* Transparent compositor backdrop so the createTextureBridge alpha
+         path receives per-pixel alpha from the WebGL canvas instead of the
+         opaque CSS-default. */
+      html,
+      body {
+        background: transparent;
+      }
       canvas {
         display: block;
       }

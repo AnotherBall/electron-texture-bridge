@@ -144,6 +144,42 @@ class TextureBridgeImpl extends EventEmitter implements TextureBridge {
 }
 
 /**
+ * Build the BrowserWindow constructor options for the offscreen renderer.
+ *
+ * Extracted as a pure function so it can be unit tested without touching
+ * Electron's native module — the actual `new BrowserWindow(...)` call lives
+ * in `createTextureBridge`.
+ *
+ * `options.includeAlpha` flips the OSR pipeline into alpha-preserving mode:
+ * `transparent: true` plus `backgroundColor: "#00000000"` on the BrowserWindow
+ * is the documented recipe for Chromium to emit per-pixel alpha into the
+ * shared texture. The page itself must use a transparent background
+ * (`html, body { background: transparent }`) for the alpha to mean anything.
+ */
+export function buildBrowserWindowOptions(
+  options: TextureBridgeOptions,
+): Electron.BrowserWindowConstructorOptions {
+  const { width, height, webPreferences, includeAlpha } = options;
+
+  return {
+    width,
+    height,
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      offscreen: { useSharedTexture: true },
+      ...webPreferences,
+    },
+    // Hex `#RRGGBBAA` with alpha=0x00 is the explicit "fully transparent
+    // backdrop" signal Chromium honors on offscreen render surfaces. The
+    // `transparent: true` flag alone leaves the compositor painting opaque,
+    // so both keys must be applied together.
+    ...(includeAlpha ? { transparent: true, backgroundColor: "#00000000" } : {}),
+  };
+}
+
+/**
  * Create a fully-wired texture bridge: offscreen window, native sender,
  * optional preview, and FPS tracking.
  *
@@ -154,20 +190,10 @@ export async function createTextureBridge(options: TextureBridgeOptions): Promis
     throw new Error("createTextureBridge() must be called after app.whenReady()");
   }
 
-  const { name, width, height, frameRate = 60, rendererUrl, preview, webPreferences } = options;
+  const { name, width, height, frameRate = 60, rendererUrl, preview } = options;
 
   // ---- Offscreen BrowserWindow ----
-  const renderWindow = new BrowserWindow({
-    width,
-    height,
-    show: false,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      offscreen: { useSharedTexture: true },
-      ...webPreferences,
-    },
-  });
+  const renderWindow = new BrowserWindow(buildBrowserWindowOptions(options));
 
   // ---- Native sender ----
   const sender = new TextureSender(name, width, height);
