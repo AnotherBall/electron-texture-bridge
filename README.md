@@ -35,7 +35,7 @@ Two paths are available depending on what you want to do with the frame:
 
 Involves a GPU→CPU readback (Metal blit / D3D11 staging) plus an ArrayBuffer IPC hop. Use when you need to inspect pixels in JS (analysis, save-to-disk, custom color pipelines).
 
-**Zero-copy GPU shared texture (Windows shipped, macOS in progress):**
+**Zero-copy GPU shared texture (Windows + macOS):**
 
 ```
 [External Apps]          [Native Addon]        [Electron main]         [Electron renderer]
@@ -49,7 +49,8 @@ The texture stays GPU-resident from the sender all the way to the consumer canva
 ## Features
 
 - **GPU Zero-Copy Sending**: Textures are shared directly on the GPU via IOSurface (macOS) or DXGI Shared Handle (Windows)
-- **GPU Zero-Copy Receiving** (Windows shipped, macOS in progress): Pull textures from Syphon/Spout servers straight into a renderer `VideoFrame` via Electron's `importSharedTexture` — no CPU readback, no IPC pixel copy
+- **GPU Zero-Copy Receiving** (Windows + macOS): Pull textures from Syphon/Spout servers straight into a renderer `VideoFrame` via Electron's `importSharedTexture` — no CPU readback, no IPC pixel copy
+- **Transparent Capture**: `includeAlpha: true` makes the offscreen window forward per-pixel alpha into the shared texture, so VJ software receives a layer with proper transparency for overlay / lower-third compositing
 - **RGBA Readback Receiving**: `TextureReceiver.receiveFrame()` returns pixels as a `Buffer` on both platforms
 - **Sender Discovery**: Enumerate available Syphon servers / Spout senders with real-time change events
 - **Cross-Platform**: Syphon Metal on macOS, Spout on Windows
@@ -73,8 +74,9 @@ The texture stays GPU-resident from the sender all the way to the consumer canva
 |---------|:---------------:|:--------------------:|
 | Sender (Electron paint → external apps) | Yes | Yes |
 | Receiver, RGBA readback (`receiveFrame()`) | Yes | Yes |
-| Receiver, zero-copy GPU (`receiveSharedTexture()` + `createSharedTextureReceiver`) | Yes | In progress ([plan](docs/superpowers/plans/2026-04-22-mac-metal-shared-texture-receiver.md)) |
+| Receiver, zero-copy GPU (`receiveSharedTexture()` + `createSharedTextureReceiver`) | Yes | Yes |
 | Sender discovery (`listSenders()` / `SenderDiscovery`) | Yes | Yes |
+| Transparent capture (`createTextureBridge({ includeAlpha: true })`) | Yes | Yes |
 
 ## Requirements
 
@@ -196,6 +198,28 @@ app.whenReady().then(async () => {
 </script>
 ```
 
+### Sending with transparency (`includeAlpha`)
+
+Pass `includeAlpha: true` to forward the page's per-pixel alpha into the shared BGRA texture. VJ software (Resolume, VDMX, etc.) will then receive the layer with its transparency mask intact, so it can be composited over other layers.
+
+```typescript
+const bridge = await createTextureBridge({
+  name: "MyApp",
+  width: 1920,
+  height: 1080,
+  rendererUrl: "path/to/index.html",
+  includeAlpha: true,
+});
+```
+
+The flag is opt-in (default `false`). When set, `createTextureBridge` builds the offscreen `BrowserWindow` with `transparent: true` and `backgroundColor: "#00000000"` — both keys are required for Chromium's compositor to emit a transparent backdrop into the shared texture. The page itself must also use a transparent background or the alpha will be overwritten:
+
+```css
+html, body { background: transparent; }
+```
+
+WebGL/Canvas content rendered with non-1.0 alpha (or pre-multiplied alpha disabled appropriately for your pipeline) will then flow through to the shared texture's alpha channel.
+
 ### Receiving: Factory API
 
 Pull textures from external Syphon/Spout servers into your Electron app.
@@ -273,7 +297,7 @@ There are two receive paths, and they solve different problems:
 
 Pick whichever matches what you will do with the frame.
 
-> **Status.** The zero-copy GPU path is verified end-to-end on Windows (Spout) on this branch. macOS (Syphon Metal) has the C++/Rust plumbing in place (`closeNativeHandle`, IOSurface pointer packing) but is still wiring the persistent IOSurface-backed staging texture — track progress in [`docs/superpowers/plans/2026-04-22-mac-metal-shared-texture-receiver.md`](docs/superpowers/plans/2026-04-22-mac-metal-shared-texture-receiver.md). Until then, use `createTextureReceiver()` for macOS or gate the call on `process.platform === "win32"`.
+> **Status.** The zero-copy GPU path is verified end-to-end on both Windows (Spout) and macOS (Syphon Metal). On macOS the receiver mints a fresh per-frame `IOSurfaceRef` backed by a per-receiver staging `MTLTexture` and Y-flips it through a tiny render pass so `drawImage(videoFrame)` / `importExternalTexture({ source: videoFrame })` render right-side-up. The same `closeNativeHandle()` ownership contract applies on both platforms.
 
 ### Main process: `createSharedTextureReceiver`
 
@@ -415,6 +439,7 @@ interface TextureBridgeOptions {
   rendererUrl: string;     // URL to load (file path, file://, or http://)
   preview?: PreviewOptions;
   webPreferences?: Electron.WebPreferences;
+  includeAlpha?: boolean;  // Forward per-pixel alpha into the shared texture (default: false)
 }
 
 interface PreviewOptions {
@@ -497,7 +522,7 @@ Low-level fan-out primitive: one `handler(...)` invokes all registered callbacks
 
 #### `createSharedTextureReceiver(options): SharedTextureReceiverBridge`
 
-Factory function that creates a **zero-copy GPU** receiver bridge. Polls `TextureReceiver.receiveSharedTexture()` and delivers each frame to a target renderer via Electron's `sharedTexture.importSharedTexture` + `sendSharedTexture` pair. Status: verified on Windows; macOS support is in progress.
+Factory function that creates a **zero-copy GPU** receiver bridge. Polls `TextureReceiver.receiveSharedTexture()` and delivers each frame to a target renderer via Electron's `sharedTexture.importSharedTexture` + `sendSharedTexture` pair. Verified end-to-end on both Windows (Spout) and macOS (Syphon Metal).
 
 ```typescript
 interface SharedTextureReceiverOptions {
@@ -629,7 +654,7 @@ class TextureReceiver {
   constructor(senderName: string, appName?: string, serverUuid?: string);
   hasNewFrame(): boolean;
   receiveFrame(): ReceivedFrame | null;                  // RGBA readback
-  receiveSharedTexture(): SharedTextureFrame | null;     // zero-copy GPU handle (Windows; macOS WIP)
+  receiveSharedTexture(): SharedTextureFrame | null;     // zero-copy GPU handle (Windows + macOS)
   isConnected(): boolean;
   getWidth(): number;
   getHeight(): number;
@@ -730,7 +755,7 @@ type Platform = "spout" | "syphon-metal" | "unsupported";
 
 | Path | GPU Copies | IPC Copy | Latency | Notes |
 |------|-----------|----------|---------|-------|
-| Shared Texture (`createSharedTextureReceiver` / `receiveSharedTexture`) | 0 (zero-copy) | None (handle only) | < 1 frame | Windows shipped; macOS in progress. Frame delivered as `VideoFrame` — use `drawImage` or WebGPU `importExternalTexture` |
+| Shared Texture (`createSharedTextureReceiver` / `receiveSharedTexture`) | 0 (zero-copy) | None (handle only) | < 1 frame | Windows + macOS. Frame delivered as `VideoFrame` — use `drawImage` or WebGPU `importExternalTexture` |
 | RGBA Readback (`createTextureReceiver` / `receiveFrame`) | 1 (GPU → CPU staging) | ~8 MB per 1080p frame | 2–3 frames | Use when you actually need pixel data in JS |
 
 Approx. readback bandwidth at 60 fps: ~500 MB/s at 1080p, ~2 GB/s at 4K — consider reducing poll rate or switching to the shared-texture path for display-only workloads.
