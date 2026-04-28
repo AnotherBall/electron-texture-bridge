@@ -11,6 +11,7 @@ pub struct Receiver {
 /// `iosurface_ptr` is CFRetained. Ownership transfers to the caller: either
 /// pass to Electron's `importSharedTexture` (which CFReleases on release) or
 /// manually `CFRelease` it to avoid leaking.
+#[derive(Debug)]
 pub struct SharedIoSurfaceInfo {
     pub iosurface_ptr: u64,
     pub width: u32,
@@ -27,6 +28,46 @@ impl SharedIoSurfaceInfo {
             2 => "rgbaf16".to_string(),
             _ => "bgra".to_string(),
         }
+    }
+}
+
+/// Decode a return value from `syphon_receiver_receive_shared_iosurface` into a
+/// Rust-shaped `Result`. Kept as a free function so it can be unit tested
+/// without standing up a real Syphon server.
+///
+/// Return codes — kept in lockstep with the Windows
+/// `spout_receiver_receive_shared_texture` table:
+/// - `0`  — frame received successfully
+/// - `1`  — no new frame (caller polls again)
+/// - `2`  — dimensions or pixel format changed; staging was just (re)allocated
+///          and no frame was blitted yet. Caller polls again next tick.
+/// - `-1` — receiver is not connected (sender disconnected or never appeared)
+/// - `-2` — Syphon texture is not IOSurface-backed (should not happen in
+///          practice — Syphon vends IOSurface-backed textures)
+/// - `-3` — texture pixel format is not one we map to an Electron-compatible
+///          string (`bgra` / `rgba` / `rgbaf16`)
+fn decode_iosurface_return(
+    ret: i32,
+    iosurface_ptr: u64,
+    width: u32,
+    height: u32,
+    pixel_format: u32,
+) -> Result<Option<SharedIoSurfaceInfo>, String> {
+    match ret {
+        0 => Ok(Some(SharedIoSurfaceInfo {
+            iosurface_ptr,
+            width,
+            height,
+            pixel_format_code: pixel_format,
+        })),
+        1 | 2 => Ok(None),
+        -1 => Err(
+            "Shared texture receiver is not connected (sender disconnected or never appeared)"
+                .into(),
+        ),
+        -2 => Err("Syphon texture is not IOSurface-backed".into()),
+        -3 => Err("Syphon texture pixel format is not supported".into()),
+        _ => Ok(None),
     }
 }
 
@@ -156,21 +197,7 @@ impl Receiver {
             )
         };
 
-        match ret {
-            0 => Ok(Some(SharedIoSurfaceInfo {
-                iosurface_ptr: iosurface as u64,
-                width,
-                height,
-                pixel_format_code: pixel_format,
-            })),
-            1 => Ok(None),
-            -1 => Err(
-                "Shared texture receiver is not connected (sender disconnected or never appeared)"
-                    .into(),
-            ),
-            -2 => Err("Syphon texture is not IOSurface-backed".into()),
-            _ => Ok(None),
-        }
+        decode_iosurface_return(ret, iosurface as u64, width, height, pixel_format)
     }
 
     pub fn is_valid(&self) -> bool {
@@ -266,6 +293,69 @@ mod tests {
             pixel_format_code: 99,
         };
         assert_eq!(info.pixel_format_string(), "bgra");
+    }
+
+    // ---- decode_iosurface_return: maps the C return-code table into a Rust
+    // Result<Option<…>>. Each branch is the contract the C bridge promises
+    // — keep these in lockstep with the codes documented at
+    // syphon_bridge.h:syphon_receiver_receive_shared_iosurface.
+
+    #[test]
+    fn decode_iosurface_return_code_0_returns_some_info_with_handle() {
+        let result = decode_iosurface_return(0, 0xdead_beef_0000_1234, 1920, 1080, 1);
+        let info = result.expect("ret=0 must not error").expect("ret=0 must yield Some");
+        assert_eq!(info.iosurface_ptr, 0xdead_beef_0000_1234);
+        assert_eq!(info.width, 1920);
+        assert_eq!(info.height, 1080);
+        assert_eq!(info.pixel_format_code, 1);
+        assert_eq!(info.pixel_format_string(), "rgba");
+    }
+
+    #[test]
+    fn decode_iosurface_return_code_1_returns_none_no_new_frame() {
+        let result = decode_iosurface_return(1, 0, 0, 0, 0);
+        assert!(result.expect("ret=1 must not error").is_none());
+    }
+
+    #[test]
+    fn decode_iosurface_return_code_2_returns_none_dimensions_changed() {
+        // Mirrors Windows: ret=2 means the staging texture was just resized
+        // and the caller should poll again on the next tick.
+        let result = decode_iosurface_return(2, 0, 1920, 1080, 0);
+        assert!(result.expect("ret=2 must not error").is_none());
+    }
+
+    #[test]
+    fn decode_iosurface_return_code_minus_1_returns_err_not_connected() {
+        let result = decode_iosurface_return(-1, 0, 0, 0, 0);
+        let err = result.expect_err("ret=-1 must be Err");
+        assert!(err.contains("not connected"), "got: {err}");
+    }
+
+    #[test]
+    fn decode_iosurface_return_code_minus_2_returns_err_not_iosurface_backed() {
+        let result = decode_iosurface_return(-2, 0, 0, 0, 0);
+        let err = result.expect_err("ret=-2 must be Err");
+        assert!(err.contains("IOSurface-backed"), "got: {err}");
+    }
+
+    #[test]
+    fn decode_iosurface_return_code_minus_3_returns_err_unsupported_pixel_format() {
+        // New code: aligns with Windows where dxgi_format_to_pixel_format
+        // surfaces an Err on unknown formats. Prevents silently lying about
+        // a texture's layout to Electron's importSharedTexture.
+        let result = decode_iosurface_return(-3, 0, 0, 0, 0);
+        let err = result.expect_err("ret=-3 must be Err");
+        assert!(err.contains("pixel format"), "got: {err}");
+    }
+
+    #[test]
+    fn decode_iosurface_return_code_unknown_returns_none_safely() {
+        // Unknown codes degrade to "no frame" rather than panicking — defensive
+        // for forward compatibility if the C side adds a new code we haven't
+        // wired through yet.
+        let result = decode_iosurface_return(99, 0, 0, 0, 0);
+        assert!(result.expect("unknown code must not error").is_none());
     }
 
     // ---- Pixel format utility tests ----
