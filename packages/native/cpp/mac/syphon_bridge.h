@@ -77,21 +77,31 @@ uint32_t syphon_receiver_get_width(SyphonReceiverHandle handle);
 uint32_t syphon_receiver_get_height(SyphonReceiverHandle handle);
 
 // Receive the current frame as an IOSurface pointer (zero-copy for GPU consumers).
-// On success, writes a CFRetained IOSurfaceRef into *out_iosurface. Caller must
-// either CFRelease it or hand ownership to Electron's
-// sharedTexture.importSharedTexture (which will CFRelease on import-texture
-// release).
+//
+// On success the frame is blitted into a per-receiver staging IOSurface-backed
+// MTLTexture and a CFRetained IOSurfaceRef of that staging texture is written
+// to *out_iosurface. The staging IOSurface is owned by this bridge — we hand
+// out a fresh retain per frame so Electron's importSharedTexture (or
+// native_close_shared_iosurface for unconsumed handles) can balance it. This
+// mirrors the Windows receiver's per-frame DuplicateHandle pattern: callers
+// never see Syphon's pool-recycled texture directly.
 //
 // out_pixel_format is one of:
 //   0 = "bgra"
 //   1 = "rgba"
 //   2 = "rgbaf16"
 //
-// Return codes:
+// Return codes (kept in lockstep with spout_receiver_receive_shared_texture):
 //   0 = frame received successfully
 //   1 = no new frame (poll again later)
+//   2 = dimensions or pixel format changed; staging was just (re)allocated and
+//       no frame was blitted yet. out_width/out_height/out_pixel_format hold
+//       the new dims; caller should poll again on the next tick.
 //  -1 = not connected / no valid client
 //  -2 = texture is not IOSurface-backed (should not occur for Syphon clients)
+//  -3 = Syphon texture pixel format is not one we map to an Electron-compatible
+//       string. Ensures we never lie about a texture's layout to
+//       importSharedTexture.
 int syphon_receiver_receive_shared_iosurface(SyphonReceiverHandle handle,
                                              void** out_iosurface,
                                              uint32_t* out_width,
