@@ -74,7 +74,11 @@ function init(canvas: OffscreenCanvas) {
   renderer = new THREE.WebGLRenderer({
     canvas: canvas as unknown as HTMLCanvasElement,
     antialias: true,
-    alpha: false,
+    // alpha:true + clearAlpha:0 lets the fragment shader's gl_FragColor.a
+    // flow through to the framebuffer, which the createTextureBridge
+    // `includeAlpha` option then forwards into the Syphon/Spout BGRA texture.
+    alpha: true,
+    premultipliedAlpha: false,
     powerPreference: "high-performance",
     preserveDrawingBuffer: false,
   });
@@ -83,6 +87,7 @@ function init(canvas: OffscreenCanvas) {
   renderer.setSize(canvasSize.width, canvasSize.height, false);
   renderer.setPixelRatio(1);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.setClearColor(0x000000, 0);
 
   scene = new THREE.Scene();
   camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
