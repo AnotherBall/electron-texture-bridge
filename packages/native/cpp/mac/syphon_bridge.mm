@@ -243,9 +243,236 @@ struct SyphonReceiverBridge {
     uint32_t            lastWidth;
     uint32_t            lastHeight;
     std::atomic<bool>   hasNewFrameFlag{false};
+
+    // CPU readback path: shared MTLBuffer reused per-frame.
     id<MTLBuffer>       stagingBuffer;
     uint32_t            stagingSize;
+
+    // Zero-copy GPU receive path: per-receiver IOSurface-backed MTLTexture.
+    // Mirrors the Windows ntStaging invariant — we hand Electron a retained
+    // reference to *our* IOSurface, never to Syphon's pool-recycled texture.
+    // Re-created in `ensure_shared_staging` whenever w/h/format changes.
+    id<MTLTexture>             sharedStagingTexture;
+    IOSurfaceRef               sharedStagingIOSurface;
+    uint32_t                   sharedStagingWidth;
+    uint32_t                   sharedStagingHeight;
+    MTLPixelFormat             sharedStagingPixelFormat;
+
+    // Y-flip render pipeline. Syphon senders publish with `flipped:YES`
+    // (origin top-left in publisher → Syphon stores Y-UP per convention), so
+    // receivers consuming via image-coordinate APIs (drawImage(VideoFrame),
+    // WebGPU importExternalTexture) must un-flip. MTLBlitCommandEncoder cannot
+    // express coordinate transforms, so we run a fullscreen-triangle render
+    // pass into the staging texture instead. Mirrors the row-reverse loop in
+    // syphon_receiver_receive_rgba (line ~575).
+    id<MTLLibrary>             yFlipLibrary;
+    id<MTLRenderPipelineState> yFlipPipeline;
+    MTLPixelFormat             yFlipPipelinePixelFormat;
 };
+
+// MSL source for the receive-side Y-flip pass. Compiled lazily per pixel format
+// in ensure_y_flip_pipeline. The Y-flip is encoded directly in the UV mapping:
+// vertex 0 (NDC bottom-left, rasterizes to pixel-row H-1) maps to UV (0, 0),
+// so the bottom of the destination receives the top of the source. The
+// fullscreen triangle covers the framebuffer with NDC (-1,-1), (3,-1), (-1,3)
+// — the rasterizer clips beyond NDC ±1.
+static NSString* const kYFlipShaderSource =
+    @"#include <metal_stdlib>\n"
+    @"using namespace metal;\n"
+    @"struct VertexOut {\n"
+    @"    float4 position [[position]];\n"
+    @"    float2 uv;\n"
+    @"};\n"
+    @"vertex VertexOut texture_bridge_y_flip_vertex(uint vid [[vertex_id]]) {\n"
+    @"    float2 positions[3] = { float2(-1.0, -1.0), float2( 3.0, -1.0), float2(-1.0,  3.0) };\n"
+    @"    float2 uvs[3]       = { float2( 0.0,  0.0), float2( 2.0,  0.0), float2( 0.0,  2.0) };\n"
+    @"    VertexOut out;\n"
+    @"    out.position = float4(positions[vid], 0.0, 1.0);\n"
+    @"    out.uv = uvs[vid];\n"
+    @"    return out;\n"
+    @"}\n"
+    @"fragment float4 texture_bridge_y_flip_fragment(VertexOut in [[stage_in]],\n"
+    @"                                                texture2d<float> src [[texture(0)]]) {\n"
+    @"    constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::nearest);\n"
+    @"    return src.sample(s, in.uv);\n"
+    @"}\n";
+
+// Compile + cache a render pipeline that draws a Y-flipped fullscreen triangle
+// into a render target of the given pixel format. Idempotent: returns true
+// without rebuilding when the cached pipeline already matches `fmt`.
+static bool ensure_y_flip_pipeline(SyphonReceiverBridge* bridge, MTLPixelFormat fmt) {
+    if (bridge->yFlipPipeline && bridge->yFlipPipelinePixelFormat == fmt) {
+        return true;
+    }
+
+    if (!bridge->yFlipLibrary) {
+        NSError* err = nil;
+        bridge->yFlipLibrary = [bridge->device newLibraryWithSource:kYFlipShaderSource
+                                                            options:nil
+                                                              error:&err];
+        if (!bridge->yFlipLibrary) {
+            NSLog(@"[SyphonReceiver] ensure_y_flip_pipeline: shader compile failed: %@", err);
+            return false;
+        }
+    }
+
+    id<MTLFunction> vfn = [bridge->yFlipLibrary newFunctionWithName:@"texture_bridge_y_flip_vertex"];
+    id<MTLFunction> ffn = [bridge->yFlipLibrary newFunctionWithName:@"texture_bridge_y_flip_fragment"];
+    if (!vfn || !ffn) {
+        NSLog(@"[SyphonReceiver] ensure_y_flip_pipeline: missing shader functions");
+        return false;
+    }
+
+    MTLRenderPipelineDescriptor* desc = [[MTLRenderPipelineDescriptor alloc] init];
+    desc.vertexFunction = vfn;
+    desc.fragmentFunction = ffn;
+    desc.colorAttachments[0].pixelFormat = fmt;
+
+    NSError* err = nil;
+    id<MTLRenderPipelineState> pipeline =
+        [bridge->device newRenderPipelineStateWithDescriptor:desc error:&err];
+    if (!pipeline) {
+        NSLog(@"[SyphonReceiver] ensure_y_flip_pipeline: pipeline creation failed (fmt=%lu): %@",
+              (unsigned long)fmt, err);
+        return false;
+    }
+
+    bridge->yFlipPipeline = pipeline;
+    bridge->yFlipPipelinePixelFormat = fmt;
+    return true;
+}
+
+// IOSurface OSType FourCC literals. Spelled out so the file remains readable
+// when grep'd for the Metal pixel format constants alongside.
+//   'BGRA' = kCVPixelFormatType_32BGRA
+//   'RGBA' = kCVPixelFormatType_32RGBA
+//   'RGhA' = kCVPixelFormatType_64RGBAHalf (RGBA half-float, 16 bits per channel)
+static constexpr uint32_t kOSTypeBGRA = 'BGRA';
+static constexpr uint32_t kOSTypeRGBA = 'RGBA';
+static constexpr uint32_t kOSTypeRGBAHalf = 'RGhA';
+
+// Map a Metal pixel format to the small integer code the Rust wrapper decodes
+// into a Electron-compatible pixel-format string. Returns -1 for formats we do
+// not yet support so the caller can surface a clear error rather than guess.
+static int32_t metal_pixel_format_to_code(MTLPixelFormat fmt) {
+    switch (fmt) {
+        case MTLPixelFormatBGRA8Unorm:  return 0;
+        case MTLPixelFormatRGBA8Unorm:  return 1;
+        case MTLPixelFormatRGBA16Float: return 2;
+        default: return -1;
+    }
+}
+
+// Map a Metal pixel format to the IOSurface OSType used when we allocate the
+// backing IOSurface for the staging MTLTexture. Returns 0 for unsupported.
+static uint32_t metal_pixel_format_to_iosurface_ostype(MTLPixelFormat fmt) {
+    switch (fmt) {
+        case MTLPixelFormatBGRA8Unorm:  return kOSTypeBGRA;
+        case MTLPixelFormatRGBA8Unorm:  return kOSTypeRGBA;
+        case MTLPixelFormatRGBA16Float: return kOSTypeRGBAHalf;
+        default: return 0;
+    }
+}
+
+// Bytes-per-element for the Metal formats we support. Used when sizing the
+// IOSurface row stride.
+static uint32_t metal_pixel_format_bytes_per_element(MTLPixelFormat fmt) {
+    switch (fmt) {
+        case MTLPixelFormatBGRA8Unorm:
+        case MTLPixelFormatRGBA8Unorm:
+            return 4;
+        case MTLPixelFormatRGBA16Float:
+            return 8;
+        default:
+            return 0;
+    }
+}
+
+// Allocate or reallocate the per-receiver shared staging IOSurface + MTLTexture
+// to match (width, height, pixelFormat). Idempotent: returns true without
+// touching anything when the cached staging already matches. Returns false on
+// allocation failure (out of memory, unsupported format, etc.).
+//
+// On success, bridge->sharedStagingIOSurface holds a single CFRetain owned by
+// the bridge. Per-frame retains for callers are minted on top of that, and
+// CFReleased when the imported-texture release fires (or when the unconsumed
+// path calls native_close_shared_iosurface).
+static bool ensure_shared_staging(SyphonReceiverBridge* bridge,
+                                  uint32_t width,
+                                  uint32_t height,
+                                  MTLPixelFormat pixelFormat) {
+    if (bridge->sharedStagingTexture &&
+        bridge->sharedStagingIOSurface &&
+        bridge->sharedStagingWidth == width &&
+        bridge->sharedStagingHeight == height &&
+        bridge->sharedStagingPixelFormat == pixelFormat) {
+        return true;
+    }
+
+    if (bridge->sharedStagingTexture) {
+        bridge->sharedStagingTexture = nil;
+    }
+    if (bridge->sharedStagingIOSurface) {
+        CFRelease(bridge->sharedStagingIOSurface);
+        bridge->sharedStagingIOSurface = nullptr;
+    }
+    bridge->sharedStagingWidth = 0;
+    bridge->sharedStagingHeight = 0;
+    bridge->sharedStagingPixelFormat = (MTLPixelFormat)0;
+
+    if (!bridge->device || width == 0 || height == 0) return false;
+
+    const uint32_t bytesPerElement = metal_pixel_format_bytes_per_element(pixelFormat);
+    const uint32_t osType = metal_pixel_format_to_iosurface_ostype(pixelFormat);
+    if (bytesPerElement == 0 || osType == 0) {
+        NSLog(@"[SyphonReceiver] ensure_shared_staging: unsupported pixel format %lu",
+              (unsigned long)pixelFormat);
+        return false;
+    }
+
+    const size_t bytesPerRow = (size_t)width * (size_t)bytesPerElement;
+    NSDictionary* surfaceProps = @{
+        (NSString*)kIOSurfaceWidth: @(width),
+        (NSString*)kIOSurfaceHeight: @(height),
+        (NSString*)kIOSurfaceBytesPerElement: @(bytesPerElement),
+        (NSString*)kIOSurfaceBytesPerRow: @(bytesPerRow),
+        (NSString*)kIOSurfacePixelFormat: @(osType),
+        (NSString*)kIOSurfaceAllocSize: @(bytesPerRow * (size_t)height),
+    };
+
+    IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef)surfaceProps);
+    if (!surface) {
+        NSLog(@"[SyphonReceiver] ensure_shared_staging: IOSurfaceCreate failed (w=%u h=%u fmt=%lu)",
+              width, height, (unsigned long)pixelFormat);
+        return false;
+    }
+
+    MTLTextureDescriptor* desc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pixelFormat
+                                                           width:width
+                                                          height:height
+                                                       mipmapped:NO];
+    // Both reads (e.g. WebGPU importExternalTexture downstream) and writes
+    // (our blit destination) need to be allowed.
+    desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+    desc.storageMode = MTLStorageModeShared;
+
+    id<MTLTexture> texture = [bridge->device newTextureWithDescriptor:desc
+                                                            iosurface:surface
+                                                                plane:0];
+    if (!texture) {
+        NSLog(@"[SyphonReceiver] ensure_shared_staging: newTextureWithDescriptor:iosurface: failed");
+        CFRelease(surface);
+        return false;
+    }
+
+    bridge->sharedStagingIOSurface = surface; // bridge owns one retain
+    bridge->sharedStagingTexture = texture;
+    bridge->sharedStagingWidth = width;
+    bridge->sharedStagingHeight = height;
+    bridge->sharedStagingPixelFormat = pixelFormat;
+    return true;
+}
 
 SyphonReceiverHandle syphon_receiver_create(const char* server_uuid,
                                              const char* server_name,
@@ -289,6 +516,14 @@ SyphonReceiverHandle syphon_receiver_create(const char* server_uuid,
         bridge->lastHeight = 0;
         bridge->stagingBuffer = nil;
         bridge->stagingSize = 0;
+        bridge->sharedStagingTexture = nil;
+        bridge->sharedStagingIOSurface = nullptr;
+        bridge->sharedStagingWidth = 0;
+        bridge->sharedStagingHeight = 0;
+        bridge->sharedStagingPixelFormat = (MTLPixelFormat)0;
+        bridge->yFlipLibrary = nil;
+        bridge->yFlipPipeline = nil;
+        bridge->yFlipPipelinePixelFormat = (MTLPixelFormat)0;
 
         bridge->device = MTLCreateSystemDefaultDevice();
         if (!bridge->device) {
@@ -327,6 +562,20 @@ void syphon_receiver_destroy(SyphonReceiverHandle handle) {
         [bridge->client stop];
         bridge->client        = nil;
         bridge->stagingBuffer = nil;
+
+        // Release the per-receiver shared staging IOSurface + texture. Any
+        // per-frame retains we minted on top of `sharedStagingIOSurface` are
+        // independent — they outlive this destroy call and stay valid until
+        // their consumer (Electron's imported texture, or
+        // native_close_shared_iosurface) releases them.
+        bridge->sharedStagingTexture = nil;
+        if (bridge->sharedStagingIOSurface) {
+            CFRelease(bridge->sharedStagingIOSurface);
+            bridge->sharedStagingIOSurface = nullptr;
+        }
+        bridge->yFlipPipeline = nil;
+        bridge->yFlipLibrary = nil;
+
         bridge->commandQueue  = nil;
         bridge->device        = nil;
         delete bridge;
@@ -346,10 +595,14 @@ int syphon_receiver_receive_rgba(SyphonReceiverHandle handle,
 
     auto* bridge = static_cast<SyphonReceiverBridge*>(handle);
 
-    // Fast path: atomically consume the new-frame flag.
-    // Using exchange instead of separate load+store prevents a race where
-    // the newFrameHandler sets the flag between our load and store.
-    if (!bridge->hasNewFrameFlag.exchange(false, std::memory_order_acq_rel)) {
+    // Peek at the new-frame flag without consuming it. The IOSurface zero-copy
+    // path (syphon_receiver_receive_shared_iosurface) is the sole consumer —
+    // having both paths exchange would race when a future debug toggle drives
+    // both at once. See plan
+    // docs/superpowers/plans/2026-04-22-mac-metal-shared-texture-receiver.md.
+    // [bridge->client newFrameImage] is documented as thread-safe and always
+    // returns the latest frame, so a load() here is sufficient.
+    if (!bridge->hasNewFrameFlag.load(std::memory_order_acquire)) {
         *out_width = bridge->lastWidth;
         *out_height = bridge->lastHeight;
         return 1; // no new frame
@@ -453,8 +706,10 @@ int syphon_receiver_receive_shared_iosurface(SyphonReceiverHandle handle,
     auto* bridge = static_cast<SyphonReceiverBridge*>(handle);
     *out_iosurface = nullptr;
 
-    // Mirror receive_rgba: atomically consume the new-frame flag so we don't
-    // hand the same IOSurface out twice.
+    // This is the production consumer of the new-frame flag. The RGBA path
+    // peeks via load() (see syphon_receiver_receive_rgba) so concurrent dual
+    // polling does not silently drop frames on this path. See
+    // docs/superpowers/plans/2026-04-22-mac-metal-shared-texture-receiver.md.
     if (!bridge->hasNewFrameFlag.exchange(false, std::memory_order_acq_rel)) {
         *out_width = bridge->lastWidth;
         *out_height = bridge->lastHeight;
@@ -465,33 +720,83 @@ int syphon_receiver_receive_shared_iosurface(SyphonReceiverHandle handle,
         id<MTLTexture> texture = [bridge->client newFrameImage];
         if (!texture) return -1;
 
-        IOSurfaceRef iosurface = texture.iosurface;
-        if (!iosurface) return -2; // Syphon textures are always IOSurface-backed
+        IOSurfaceRef sourceSurface = texture.iosurface;
+        if (!sourceSurface) return -2; // Syphon textures should always be IOSurface-backed
 
-        uint32_t w = (uint32_t)texture.width;
-        uint32_t h = (uint32_t)texture.height;
+        const uint32_t w = (uint32_t)texture.width;
+        const uint32_t h = (uint32_t)texture.height;
+        const MTLPixelFormat sourceFmt = texture.pixelFormat;
+
         bridge->lastWidth = w;
         bridge->lastHeight = h;
 
-        // Encode the pixel format as a small integer the Rust side decodes into
-        // an Electron-compatible string: 0 = bgra, 1 = rgba, 2 = rgbaf16.
-        uint32_t fmt_code = 0;
-        switch (texture.pixelFormat) {
-            case MTLPixelFormatBGRA8Unorm:  fmt_code = 0; break;
-            case MTLPixelFormatRGBA8Unorm:  fmt_code = 1; break;
-            case MTLPixelFormatRGBA16Float: fmt_code = 2; break;
-            default:                        fmt_code = 0; break;
+        const int32_t fmt_code = metal_pixel_format_to_code(sourceFmt);
+        if (fmt_code < 0) {
+            // Surface a clear error rather than silently lying about the
+            // texture layout to importSharedTexture. Mirrors Windows
+            // dxgi_format_to_pixel_format which Errs on unknown formats.
+            *out_width = w;
+            *out_height = h;
+            return -3;
         }
 
-        // Transfer ownership to the caller. The IOSurface stays alive while
-        // Electron's imported texture references it; `release()` on that
-        // imported texture will CFRelease.
-        CFRetain(iosurface);
+        // (Re-)allocate the per-receiver staging IOSurface + MTLTexture if
+        // this is the first frame or if dims/format changed since last frame.
+        if (!bridge->sharedStagingTexture ||
+            bridge->sharedStagingWidth != w ||
+            bridge->sharedStagingHeight != h ||
+            bridge->sharedStagingPixelFormat != sourceFmt) {
+            if (!ensure_shared_staging(bridge, w, h, sourceFmt)) {
+                return -2;
+            }
+            // Flag was already consumed by exchange() above. Restore it so
+            // the next poll picks up this same frame and proceeds to blit.
+            bridge->hasNewFrameFlag.store(true, std::memory_order_release);
+            *out_width = w;
+            *out_height = h;
+            *out_pixel_format = (uint32_t)fmt_code;
+            return 2; // dimensions/format changed — caller polls again
+        }
 
-        *out_iosurface = (void*)iosurface;
+        // Render Syphon's vended texture into our staging texture with a
+        // fullscreen Y-flip pass. This both decouples Electron's imported
+        // texture from Syphon's pool-recycled IOSurface (the Windows
+        // ntStaging invariant) and undoes the sender-side `flipped:YES`
+        // (Syphon stores Y-UP; drawImage(VideoFrame) / WebGPU expect Y-DOWN).
+        if (!ensure_y_flip_pipeline(bridge, sourceFmt)) {
+            return -2;
+        }
+
+        MTLRenderPassDescriptor* passDesc = [MTLRenderPassDescriptor renderPassDescriptor];
+        passDesc.colorAttachments[0].texture = bridge->sharedStagingTexture;
+        passDesc.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+        passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+        id<MTLCommandBuffer> cmdBuf = [bridge->commandQueue commandBuffer];
+        id<MTLRenderCommandEncoder> enc =
+            [cmdBuf renderCommandEncoderWithDescriptor:passDesc];
+        [enc setRenderPipelineState:bridge->yFlipPipeline];
+        [enc setFragmentTexture:texture atIndex:0];
+        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        [enc endEncoding];
+        [cmdBuf commit];
+        [cmdBuf waitUntilCompleted];
+
+        if (cmdBuf.error) {
+            NSLog(@"[SyphonReceiver] receive_shared_iosurface render failed: %@", cmdBuf.error);
+            return -2;
+        }
+
+        // Mint a fresh per-frame retain on top of the bridge-owned retain.
+        // The caller — Electron's importSharedTexture or
+        // native_close_shared_iosurface for the unconsumed path — balances
+        // exactly one CFRelease against this CFRetain.
+        CFRetain(bridge->sharedStagingIOSurface);
+
+        *out_iosurface = (void*)bridge->sharedStagingIOSurface;
         *out_width = w;
         *out_height = h;
-        *out_pixel_format = fmt_code;
+        *out_pixel_format = (uint32_t)fmt_code;
         return 0;
     }
 }
