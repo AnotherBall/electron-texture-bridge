@@ -24,6 +24,9 @@ packages/renderer/dist/
 # worktrees
 .worktrees/
 
+# Per-machine Claude Code state (session lock files etc.)
+.claude/
+
 # claude-mem plugin context files (keep root CLAUDE.md)
 **/CLAUDE.md
 !/CLAUDE.md
