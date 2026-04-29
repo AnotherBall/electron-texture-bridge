@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.11.0](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.10.0...renderer-v0.11.0) (2026-04-28)
+
+
+### Features
+
+* **renderer:** add includeAlpha option to forward alpha into shared texture ([a675d53](https://github.com/naporin0624/electron-texture-bridge/commit/a675d53b3ed60560704ee3c240029a879b6f30eb))
+* **renderer:** add transparent mode to forward alpha into shared texture ([c7f98fe](https://github.com/naporin0624/electron-texture-bridge/commit/c7f98fe399a48997de078b767d3917aa483ff488))
+
+
+### Bug Fixes
+
+* **renderer:** defer imported.release() to avoid renderer tracker race ([a955fea](https://github.com/naporin0624/electron-texture-bridge/commit/a955feaa7bd82d8a534584b3a1dc7395db8c78f8))
+* **renderer:** defer imported.release() to avoid renderer tracker race ([7242ec9](https://github.com/naporin0624/electron-texture-bridge/commit/7242ec965e13c12a2bcf0bb5040d1c98293dad8d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @napolab/texture-bridge-core bumped to 0.11.0
+
 ## [0.10.0](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.9.0...renderer-v0.10.0) (2026-04-21)
 
 
