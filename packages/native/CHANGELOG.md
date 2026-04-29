@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.11.0...native-v0.12.0) (2026-04-29)
+
+
+### Features
+
+* **receiver:** make macOS Y-flip opt-out via flipY option ([5ac4e2b](https://github.com/naporin0624/electron-texture-bridge/commit/5ac4e2b74784a80488da7a2f3dd428081d2f1e5a))
+* **receiver:** make macOS Y-flip opt-out via flipY option ([1849229](https://github.com/naporin0624/electron-texture-bridge/commit/1849229d65c6290ff6ebb1965ec337966ea22c8e))
+
 ## [0.11.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.10.0...native-v0.11.0) (2026-04-28)
 
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.12.0](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.11.0...renderer-v0.12.0) (2026-04-29)
+
+
+### Features
+
+* **example:** add Flip Y checkbox + bridge.setFlipY live toggle ([7bc47ab](https://github.com/naporin0624/electron-texture-bridge/commit/7bc47ab36818b9d88fe316df81844f4a4352249c))
+* **receiver:** make macOS Y-flip opt-out via flipY option ([5ac4e2b](https://github.com/naporin0624/electron-texture-bridge/commit/5ac4e2b74784a80488da7a2f3dd428081d2f1e5a))
+* **receiver:** make macOS Y-flip opt-out via flipY option ([1849229](https://github.com/naporin0624/electron-texture-bridge/commit/1849229d65c6290ff6ebb1965ec337966ea22c8e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @napolab/texture-bridge-core bumped to 0.12.0
+
 ## [0.11.0](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.10.0...renderer-v0.11.0) (2026-04-28)
 
 
