@@ -110,14 +110,15 @@ app.whenReady().then(async () => {
     }
   });
 
-  ipcMain.handle("connect-receiver", (_event, senderName: string) => {
+  ipcMain.handle("connect-receiver", (_event, senderName: string, flipY: boolean) => {
     stopActiveReceiver();
-    console.log(`[receiver-test] connecting to "${senderName}" (zero-copy)`);
+    console.log(`[receiver-test] connecting to "${senderName}" (zero-copy, flipY=${flipY})`);
 
     activeReceiver = createSharedTextureReceiver({
       senderName,
       target: receiverWindow.webContents,
       pollIntervalMs: 8,
+      flipY,
     });
     activeReceiver.on("fps", (fps) => {
       if (!receiverWindow.isDestroyed()) {
@@ -128,6 +129,12 @@ app.whenReady().then(async () => {
       console.error("[receiver-test] bridge error:", err.message);
     });
     activeReceiver.start();
+  });
+
+  ipcMain.handle("set-flip-y", (_event, flipY: boolean) => {
+    if (!activeReceiver) return;
+    activeReceiver.setFlipY(flipY);
+    console.log(`[receiver-test] live toggle flipY=${flipY}`);
   });
 
   ipcMain.handle("disconnect-receiver", () => {
@@ -141,6 +148,7 @@ app.whenReady().then(async () => {
     stopActiveReceiver();
     ipcMain.removeHandler("list-senders");
     ipcMain.removeHandler("connect-receiver");
+    ipcMain.removeHandler("set-flip-y");
     ipcMain.removeHandler("disconnect-receiver");
   });
 });

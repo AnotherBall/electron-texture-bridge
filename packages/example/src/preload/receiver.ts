@@ -25,6 +25,7 @@ interface ReceiverUI {
   refreshBtn: HTMLButtonElement;
   connectBtn: HTMLButtonElement;
   disconnectBtn: HTMLButtonElement;
+  flipYCheckbox: HTMLInputElement;
 }
 
 const state = {
@@ -106,13 +107,23 @@ window.addEventListener("DOMContentLoaded", () => {
   const refreshBtn = document.getElementById("refreshBtn") as HTMLButtonElement | null;
   const connectBtn = document.getElementById("connectBtn") as HTMLButtonElement | null;
   const disconnectBtn = document.getElementById("disconnectBtn") as HTMLButtonElement | null;
+  const flipYCheckbox = document.getElementById("flipYCheckbox") as HTMLInputElement | null;
 
-  if (!canvas || !ctx || !info || !senderList || !refreshBtn || !connectBtn || !disconnectBtn) {
+  if (
+    !canvas ||
+    !ctx ||
+    !info ||
+    !senderList ||
+    !refreshBtn ||
+    !connectBtn ||
+    !disconnectBtn ||
+    !flipYCheckbox
+  ) {
     console.error("[receiver-test] required DOM elements missing");
     return;
   }
 
-  ui = { canvas, ctx, info, senderList, refreshBtn, connectBtn, disconnectBtn };
+  ui = { canvas, ctx, info, senderList, refreshBtn, connectBtn, disconnectBtn, flipYCheckbox };
   state.lastFpsTime = performance.now();
 
   senderList.addEventListener("change", () => {
@@ -123,13 +134,21 @@ window.addEventListener("DOMContentLoaded", () => {
     void refreshSenders();
   });
 
+  // Live-toggle the native flipY flag so the checkbox affects the running
+  // receiver immediately without a reconnect. When disconnected, the checkbox
+  // just sets the initial value used at the next connect.
+  flipYCheckbox.addEventListener("change", () => {
+    if (!state.connected) return;
+    void ipcRenderer.invoke("set-flip-y", flipYCheckbox.checked);
+  });
+
   connectBtn.addEventListener("click", async () => {
     const name = senderList.value;
     if (!name) return;
     state.currentSenderName = name;
     info.textContent = `Connecting to "${name}"...`;
     try {
-      await ipcRenderer.invoke("connect-receiver", name);
+      await ipcRenderer.invoke("connect-receiver", name, flipYCheckbox.checked);
       state.connected = true;
       connectBtn.disabled = true;
       disconnectBtn.disabled = false;

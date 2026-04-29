@@ -220,6 +220,16 @@ impl Receiver {
             None => 0,
         }
     }
+
+    /// Toggle the receive-side Y-flip pass. See
+    /// `syphon_receiver_set_flip_y` for the semantics — `true` (default)
+    /// applies the fullscreen Y-flip render pipeline; `false` falls back to
+    /// a straight blit that preserves the upstream Syphon orientation.
+    pub fn set_flip_y(&self, flip: bool) {
+        if let Some(h) = self.handle {
+            unsafe { ffi::syphon_receiver_set_flip_y(h, if flip { 1 } else { 0 }) };
+        }
+    }
 }
 
 impl Drop for Receiver {

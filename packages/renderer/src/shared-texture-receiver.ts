@@ -68,6 +68,21 @@ export interface SharedTextureReceiverOptions {
    * texture (via Electron's `sendSharedTexture(..., ...args)` varargs).
    */
   readonly extraArgs?: readonly unknown[];
+  /**
+   * Whether the receive path should apply a vertical flip when staging the
+   * frame for `importSharedTexture`. Defaults to `true` on macOS — matches
+   * the historical behavior shipped in the macOS receiver, suitable when
+   * the consumer expects Y-DOWN image-coord layout (`drawImage(VideoFrame)`,
+   * WebGPU `importExternalTexture`).
+   *
+   * Pass `false` when the upstream Syphon source already publishes the
+   * orientation Electron's `importSharedTexture` expects — e.g. if the
+   * sender lives in another Electron window that publishes via this same
+   * library and does not need an additional flip on receive.
+   *
+   * No-op on Windows (Spout's receive path does not have a flip stage).
+   */
+  readonly flipY?: boolean;
 }
 
 export interface SharedTextureReceiverBridgeEvents {
@@ -95,6 +110,12 @@ export interface SharedTextureReceiverBridge {
   dispose(): void;
   [Symbol.dispose](): void;
   readonly isDisposed: boolean;
+  /**
+   * Live-toggle the receive-side Y-flip pass without recreating the
+   * receiver. Same semantics as the constructor `flipY` option. No-op on
+   * Windows.
+   */
+  setFlipY(flip: boolean): void;
 }
 
 class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedTextureReceiverBridge {
@@ -155,6 +176,11 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
 
   [Symbol.dispose](): void {
     this.dispose();
+  }
+
+  setFlipY(flip: boolean): void {
+    if (this._disposed) return;
+    this.receiver.setFlipY(flip);
   }
 
   /**
@@ -327,7 +353,15 @@ type SendResult = "delivered" | "failed" | "skipped";
 export function createSharedTextureReceiver(
   options: SharedTextureReceiverOptions,
 ): SharedTextureReceiverBridge {
-  const { senderName, appName, serverUuid, pollIntervalMs = 16, target, extraArgs = [] } = options;
+  const {
+    senderName,
+    appName,
+    serverUuid,
+    pollIntervalMs = 16,
+    target,
+    extraArgs = [],
+    flipY,
+  } = options;
 
   if (options.pollIntervalMs !== undefined) {
     if (!Number.isFinite(pollIntervalMs) || pollIntervalMs <= 0) {
@@ -336,5 +370,8 @@ export function createSharedTextureReceiver(
   }
 
   const receiver = new TextureReceiver(senderName, appName, serverUuid);
+  if (flipY !== undefined) {
+    receiver.setFlipY(flipY);
+  }
   return new SharedTextureReceiverBridgeImpl(receiver, target, extraArgs, pollIntervalMs);
 }

@@ -166,6 +166,18 @@ export declare class TextureReceiver {
    * Repeated calls are safe and idempotent.
    */
   stop(): void
+  /**
+   * Toggle whether `receiveSharedTexture` applies a vertical flip when
+   * staging the frame for `importSharedTexture`. Defaults to `true`
+   * (matches PR #46 behavior, suitable for `drawImage(VideoFrame)` /
+   * WebGPU `importExternalTexture` consumers expecting Y-DOWN). Pass
+   * `false` when the upstream Syphon source already publishes the
+   * orientation Electron's `importSharedTexture` expects.
+   *
+   * macOS only — a no-op on Windows (Spout's receive path does not have
+   * a flip stage).
+   */
+  setFlipY(flip: boolean): void
   /** Get the current platform name. */
   platform(): string
 }

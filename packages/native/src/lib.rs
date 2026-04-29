@@ -473,6 +473,25 @@ impl TextureReceiver {
         Ok(())
     }
 
+    /// Toggle whether `receiveSharedTexture` applies a vertical flip when
+    /// staging the frame for `importSharedTexture`. Defaults to `true`
+    /// (matches PR #46 behavior, suitable for `drawImage(VideoFrame)` /
+    /// WebGPU `importExternalTexture` consumers expecting Y-DOWN). Pass
+    /// `false` when the upstream Syphon source already publishes the
+    /// orientation Electron's `importSharedTexture` expects.
+    ///
+    /// macOS only — a no-op on Windows (Spout's receive path does not have
+    /// a flip stage).
+    #[napi]
+    #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+    pub fn set_flip_y(&self, flip: bool) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        if let Some(r) = &self.inner {
+            r.set_flip_y(flip);
+        }
+        Ok(())
+    }
+
     /// Returns true if native resources have been released via `stop()`.
     #[cfg(test)]
     pub fn is_stopped(&self) -> bool {

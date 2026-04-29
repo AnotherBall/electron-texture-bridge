@@ -108,6 +108,14 @@ int syphon_receiver_receive_shared_iosurface(SyphonReceiverHandle handle,
                                              uint32_t* out_height,
                                              uint32_t* out_pixel_format);
 
+// Toggle the receive-side Y-flip pass on/off. flip != 0 enables the
+// fullscreen Y-flip render pipeline (default — matches PR #46 behavior, used
+// when the consumer expects Y-DOWN image-coord layout). flip == 0 falls back
+// to a straight blit that preserves orientation, for downstream apps whose
+// upstream Syphon source already publishes the orientation Electron's
+// importSharedTexture expects.
+void syphon_receiver_set_flip_y(SyphonReceiverHandle handle, int flip);
+
 // ============================================================
 // Pixel format utilities
 // ============================================================
