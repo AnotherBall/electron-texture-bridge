@@ -52,6 +52,7 @@ extern "C" {
         out_height: *mut u32,
         out_pixel_format: *mut u32,
     ) -> i32;
+    pub fn syphon_receiver_set_flip_y(handle: SyphonReceiverHandle, flip: i32);
 
     // ---- Discovery ----
     pub fn syphon_discovery_list_servers() -> *mut c_char;

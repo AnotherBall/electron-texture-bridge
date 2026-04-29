@@ -11,6 +11,7 @@ type MockFrame = {
 const mockReceiver = {
   receiveSharedTexture: vi.fn<() => MockFrame | null>().mockReturnValue(null),
   stop: vi.fn(),
+  setFlipY: vi.fn<(flip: boolean) => void>(),
 };
 
 const mockImported = {
@@ -43,6 +44,7 @@ vi.mock("@napolab/texture-bridge-core", () => ({
   TextureReceiver: class MockTextureReceiver {
     receiveSharedTexture = mockReceiver.receiveSharedTexture;
     stop = mockReceiver.stop;
+    setFlipY = mockReceiver.setFlipY;
   },
   closeNativeHandle: (handle: Buffer) => mockCloseNativeHandle(handle),
 }));
@@ -454,6 +456,40 @@ describe("createSharedTextureReceiver", () => {
         target: makeMockTarget() as unknown as Electron.WebContents,
       }),
     ).not.toThrow();
+  });
+
+  // -- flipY plumbing -------------------------------------------------------
+  //
+  // The native receiver defaults flipY=true. Only call setFlipY when the
+  // caller passed an explicit value, so we don't override the native default
+  // on platforms (Windows) where the call is a documented no-op.
+
+  it("does not call setFlipY when flipY is undefined", () => {
+    createSharedTextureReceiver({
+      senderName: "test",
+      target: makeMockTarget() as unknown as Electron.WebContents,
+    });
+    expect(mockReceiver.setFlipY).not.toHaveBeenCalled();
+  });
+
+  it("calls setFlipY(false) when flipY: false is passed (opt-out)", () => {
+    createSharedTextureReceiver({
+      senderName: "test",
+      target: makeMockTarget() as unknown as Electron.WebContents,
+      flipY: false,
+    });
+    expect(mockReceiver.setFlipY).toHaveBeenCalledTimes(1);
+    expect(mockReceiver.setFlipY).toHaveBeenCalledWith(false);
+  });
+
+  it("calls setFlipY(true) when flipY: true is passed (explicit opt-in)", () => {
+    createSharedTextureReceiver({
+      senderName: "test",
+      target: makeMockTarget() as unknown as Electron.WebContents,
+      flipY: true,
+    });
+    expect(mockReceiver.setFlipY).toHaveBeenCalledTimes(1);
+    expect(mockReceiver.setFlipY).toHaveBeenCalledWith(true);
   });
 
   // -- _tick circuit breaker ------------------------------------------------

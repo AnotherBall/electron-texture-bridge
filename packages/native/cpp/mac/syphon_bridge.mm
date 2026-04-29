@@ -258,24 +258,28 @@ struct SyphonReceiverBridge {
     uint32_t                   sharedStagingHeight;
     MTLPixelFormat             sharedStagingPixelFormat;
 
-    // Y-flip render pipeline. Syphon senders publish with `flipped:YES`
-    // (origin top-left in publisher → Syphon stores Y-UP per convention), so
-    // receivers consuming via image-coordinate APIs (drawImage(VideoFrame),
-    // WebGPU importExternalTexture) must un-flip. MTLBlitCommandEncoder cannot
-    // express coordinate transforms, so we run a fullscreen-triangle render
-    // pass into the staging texture instead. Mirrors the row-reverse loop in
-    // syphon_receiver_receive_rgba (line ~575).
+    // Y-flip render pipeline. Compiled lazily the first time a flip-enabled
+    // frame arrives (see `ensure_y_flip_pipeline`). Used only when the
+    // `flipY` toggle is true; when false the receive path falls back to a
+    // straight `MTLBlitCommandEncoder` copy that preserves orientation.
     id<MTLLibrary>             yFlipLibrary;
     id<MTLRenderPipelineState> yFlipPipeline;
     MTLPixelFormat             yFlipPipelinePixelFormat;
+
+    // Whether the receive path should apply a vertical flip when staging the
+    // frame for Electron's `importSharedTexture`. Defaults to true to match
+    // the historical behavior shipped in PR #46 — receivers consuming via
+    // image-coord APIs (drawImage(VideoFrame), WebGPU importExternalTexture)
+    // expect Y-DOWN. Downstream apps that source Syphon frames already in
+    // Y-DOWN orientation can opt out via `syphon_receiver_set_flip_y`.
+    bool                       flipY;
 };
 
-// MSL source for the receive-side Y-flip pass. Compiled lazily per pixel format
-// in ensure_y_flip_pipeline. The Y-flip is encoded directly in the UV mapping:
-// vertex 0 (NDC bottom-left, rasterizes to pixel-row H-1) maps to UV (0, 0),
-// so the bottom of the destination receives the top of the source. The
-// fullscreen triangle covers the framebuffer with NDC (-1,-1), (3,-1), (-1,3)
-// — the rasterizer clips beyond NDC ±1.
+// MSL source for the receive-side Y-flip pass. The flip is encoded directly
+// in the UV mapping: vertex 0 (NDC bottom-left, rasterizes to pixel-row H-1)
+// maps to UV (0, 0), so the bottom of the destination receives the top of
+// the source. The fullscreen triangle covers the framebuffer with NDC
+// (-1,-1), (3,-1), (-1,3) — the rasterizer clips beyond NDC ±1.
 static NSString* const kYFlipShaderSource =
     @"#include <metal_stdlib>\n"
     @"using namespace metal;\n"
@@ -524,6 +528,7 @@ SyphonReceiverHandle syphon_receiver_create(const char* server_uuid,
         bridge->yFlipLibrary = nil;
         bridge->yFlipPipeline = nil;
         bridge->yFlipPipelinePixelFormat = (MTLPixelFormat)0;
+        bridge->flipY = true;
 
         bridge->device = MTLCreateSystemDefaultDevice();
         if (!bridge->device) {
@@ -758,32 +763,56 @@ int syphon_receiver_receive_shared_iosurface(SyphonReceiverHandle handle,
             return 2; // dimensions/format changed — caller polls again
         }
 
-        // Render Syphon's vended texture into our staging texture with a
-        // fullscreen Y-flip pass. This both decouples Electron's imported
-        // texture from Syphon's pool-recycled IOSurface (the Windows
-        // ntStaging invariant) and undoes the sender-side `flipped:YES`
-        // (Syphon stores Y-UP; drawImage(VideoFrame) / WebGPU expect Y-DOWN).
-        if (!ensure_y_flip_pipeline(bridge, sourceFmt)) {
-            return -2;
-        }
-
-        MTLRenderPassDescriptor* passDesc = [MTLRenderPassDescriptor renderPassDescriptor];
-        passDesc.colorAttachments[0].texture = bridge->sharedStagingTexture;
-        passDesc.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-        passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
-
+        // Stage Syphon's vended texture into our owned staging texture so
+        // Electron's imported texture is decoupled from Syphon's
+        // pool-recycled IOSurface (the Windows ntStaging invariant).
+        //
+        // Two paths, selected by `bridge->flipY`:
+        //  - flipY=true (default):  fullscreen render pass with Y-flip.
+        //    Used when the consumer expects Y-DOWN image-coord layout
+        //    (drawImage(VideoFrame), WebGPU importExternalTexture) and the
+        //    upstream Syphon source publishes Y-UP (Syphon convention).
+        //  - flipY=false:           straight MTLBlitCommandEncoder copy.
+        //    Used when the upstream Syphon source already publishes the
+        //    orientation Electron's importSharedTexture expects (e.g. our
+        //    own example sender, which `flipped:YES`-publishes a frame
+        //    that round-trips back into another Electron window).
         id<MTLCommandBuffer> cmdBuf = [bridge->commandQueue commandBuffer];
-        id<MTLRenderCommandEncoder> enc =
-            [cmdBuf renderCommandEncoderWithDescriptor:passDesc];
-        [enc setRenderPipelineState:bridge->yFlipPipeline];
-        [enc setFragmentTexture:texture atIndex:0];
-        [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-        [enc endEncoding];
+        if (bridge->flipY) {
+            if (!ensure_y_flip_pipeline(bridge, sourceFmt)) {
+                return -2;
+            }
+
+            MTLRenderPassDescriptor* passDesc = [MTLRenderPassDescriptor renderPassDescriptor];
+            passDesc.colorAttachments[0].texture = bridge->sharedStagingTexture;
+            passDesc.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+            passDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+            id<MTLRenderCommandEncoder> enc =
+                [cmdBuf renderCommandEncoderWithDescriptor:passDesc];
+            [enc setRenderPipelineState:bridge->yFlipPipeline];
+            [enc setFragmentTexture:texture atIndex:0];
+            [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            [enc endEncoding];
+        } else {
+            id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
+            [blit copyFromTexture:texture
+                      sourceSlice:0
+                      sourceLevel:0
+                     sourceOrigin:MTLOriginMake(0, 0, 0)
+                       sourceSize:MTLSizeMake(w, h, 1)
+                        toTexture:bridge->sharedStagingTexture
+                 destinationSlice:0
+                 destinationLevel:0
+                destinationOrigin:MTLOriginMake(0, 0, 0)];
+            [blit endEncoding];
+        }
         [cmdBuf commit];
         [cmdBuf waitUntilCompleted];
 
         if (cmdBuf.error) {
-            NSLog(@"[SyphonReceiver] receive_shared_iosurface render failed: %@", cmdBuf.error);
+            NSLog(@"[SyphonReceiver] receive_shared_iosurface stage failed (flipY=%d): %@",
+                  bridge->flipY, cmdBuf.error);
             return -2;
         }
 
@@ -873,6 +902,12 @@ uint64_t syphon_map_pixel_format(uint32_t iosurface_pixel_format) {
         default:
             return 80; // MTLPixelFormatBGRA8Unorm (safe default)
     }
+}
+
+void syphon_receiver_set_flip_y(SyphonReceiverHandle handle, int flip) {
+    if (!handle) return;
+    auto* bridge = static_cast<SyphonReceiverBridge*>(handle);
+    bridge->flipY = (flip != 0);
 }
 
 int32_t native_close_shared_iosurface(uintptr_t raw_ptr) {
