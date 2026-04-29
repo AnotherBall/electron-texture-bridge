@@ -492,6 +492,28 @@ describe("createSharedTextureReceiver", () => {
     expect(mockReceiver.setFlipY).toHaveBeenCalledWith(true);
   });
 
+  it("bridge.setFlipY() forwards to the underlying receiver for live toggle", () => {
+    const bridge = createSharedTextureReceiver({
+      senderName: "test",
+      target: makeMockTarget() as unknown as Electron.WebContents,
+    });
+    bridge.setFlipY(false);
+    bridge.setFlipY(true);
+    expect(mockReceiver.setFlipY).toHaveBeenCalledTimes(2);
+    expect(mockReceiver.setFlipY).toHaveBeenNthCalledWith(1, false);
+    expect(mockReceiver.setFlipY).toHaveBeenNthCalledWith(2, true);
+  });
+
+  it("bridge.setFlipY() is a no-op after dispose", () => {
+    const bridge = createSharedTextureReceiver({
+      senderName: "test",
+      target: makeMockTarget() as unknown as Electron.WebContents,
+    });
+    bridge.dispose();
+    bridge.setFlipY(false);
+    expect(mockReceiver.setFlipY).not.toHaveBeenCalled();
+  });
+
   // -- _tick circuit breaker ------------------------------------------------
 
   it("stops and emits a final circuit-breaker error after 10 consecutive _tick errors", async () => {

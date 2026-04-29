@@ -110,6 +110,12 @@ export interface SharedTextureReceiverBridge {
   dispose(): void;
   [Symbol.dispose](): void;
   readonly isDisposed: boolean;
+  /**
+   * Live-toggle the receive-side Y-flip pass without recreating the
+   * receiver. Same semantics as the constructor `flipY` option. No-op on
+   * Windows.
+   */
+  setFlipY(flip: boolean): void;
 }
 
 class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedTextureReceiverBridge {
@@ -170,6 +176,11 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
 
   [Symbol.dispose](): void {
     this.dispose();
+  }
+
+  setFlipY(flip: boolean): void {
+    if (this._disposed) return;
+    this.receiver.setFlipY(flip);
   }
 
   /**
