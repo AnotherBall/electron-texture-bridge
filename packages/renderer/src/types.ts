@@ -37,6 +37,39 @@ export interface TextureBridgeOptions {
    * layer's transparency mask, enabling overlay / lower-third compositing.
    */
   includeAlpha?: boolean;
+  /**
+   * Pin the offscreen framebuffer to exactly `width × height` pixels regardless
+   * of the host display's device pixel ratio (default: false).
+   *
+   * Chromium's offscreen render surface is normally sized as `width × height`
+   * in DIP (device-independent pixels), so the framebuffer actually delivered
+   * to the GPU shared-texture path is `DIP × display.scaleFactor`. On a
+   * Windows host running at 150% / 175% display scaling, or on a macOS
+   * Retina display, this means a sender declared with `width: 1920` ends up
+   * producing a 2880-pixel-wide (or 3360, etc.) texture — and on Windows the
+   * window can additionally be clamped to the display work area, producing
+   * non-uniform scaling on both axes.
+   *
+   * When set to `true`:
+   * - The BrowserWindow's DIP size is computed as
+   *   `Math.round(width / scaleFactor) × Math.round(height / scaleFactor)`
+   *   so the resulting framebuffer matches the requested pixel dimensions
+   *   on the primary display.
+   * - `enableLargerThanScreen: true` is applied so the window is not
+   *   clamped to the display work area on macOS (Windows allows it by
+   *   default, but the flag is harmless on other platforms).
+   * - The Spout / Syphon sender is registered at the requested `width × height`
+   *   pixel size — receivers always see the requested dimensions.
+   *
+   * Limitations:
+   * - Computed DIP is rounded to integers. Non-divisible scaleFactor ratios
+   *   (e.g., 1920 / 1.75 = 1097.14...) can produce a 1-pixel discrepancy
+   *   between the sender's declared size and the actual framebuffer.
+   * - Only the primary display's scaleFactor at construction time is honored.
+   *   If the system DPI changes mid-session, callers must `resize()` (which
+   *   re-applies the math) for the framebuffer to track the new scale.
+   */
+  pixelExact?: boolean;
 }
 
 /** Events emitted by TextureBridge */
