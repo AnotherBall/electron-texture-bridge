@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.13.0](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.12.0...renderer-v0.13.0) (2026-05-22)
+
+
+### Features
+
+* **renderer:** pixelExact option for DPR-independent framebuffer ([8ba39af](https://github.com/naporin0624/electron-texture-bridge/commit/8ba39afe01b4c7febba941afe73070cb9eff4822))
+* **renderer:** pixelExact option for DPR-independent framebuffer ([ee1a314](https://github.com/naporin0624/electron-texture-bridge/commit/ee1a3147852173d8f6405addfea0d1715b87e418))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @napolab/texture-bridge-core bumped to 0.13.0
+
 ## [0.12.0](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.11.0...renderer-v0.12.0) (2026-04-29)
 
 
