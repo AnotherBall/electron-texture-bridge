@@ -1,5 +1,5 @@
 import { EventEmitter } from "events";
-import { app, BrowserWindow, type Event } from "electron";
+import { app, BrowserWindow, screen, type Event } from "electron";
 import {
   TextureSender,
   sendTextureFromPaintEvent,
@@ -8,6 +8,30 @@ import {
 import { PreviewManager } from "./preview-manager";
 import { FpsCounter } from "./fps-counter";
 import type { TextureBridgeOptions, TextureBridge } from "./types";
+
+/**
+ * Convert a pixel-space size to a device-independent (DIP) size for a given
+ * display scaleFactor. Used when `pixelExact: true` is set so the offscreen
+ * BrowserWindow's DIP size produces the requested framebuffer pixel count.
+ *
+ * Math.round (rather than floor / ceil) minimizes the rounding error when the
+ * scaleFactor does not divide the pixel size evenly (e.g., 1920 / 1.75 =
+ * 1097.14 → 1097 → 1097 × 1.75 = 1919.75, which Chromium typically rounds
+ * back to 1920).
+ */
+export function computeDipSize(
+  pixelWidth: number,
+  pixelHeight: number,
+  scaleFactor: number,
+): { width: number; height: number } {
+  if (scaleFactor <= 0) {
+    return { width: Math.max(1, pixelWidth), height: Math.max(1, pixelHeight) };
+  }
+  return {
+    width: Math.max(1, Math.round(pixelWidth / scaleFactor)),
+    height: Math.max(1, Math.round(pixelHeight / scaleFactor)),
+  };
+}
 
 interface PaintEvent extends Event {
   texture?: PaintTexture;
@@ -99,18 +123,29 @@ class TextureBridgeImpl extends EventEmitter implements TextureBridge {
     const prevOpts = this.options;
     this.options = { ...this.options, width, height };
 
-    // 1. Resize offscreen BrowserWindow
-    this._renderWindow.setSize(width, height);
+    // 1. Resize offscreen BrowserWindow. When `pixelExact` is set the caller's
+    //    width/height are pixel-space, so translate to DIP via the primary
+    //    display's scaleFactor before passing to setSize.
+    const dip =
+      this.options.pixelExact === true
+        ? computeDipSize(width, height, screen.getPrimaryDisplay().scaleFactor)
+        : { width, height };
+    this._renderWindow.setSize(dip.width, dip.height);
 
     // 2. Recreate native sender with new dimensions.
     //    Must stop the old sender first — Spout requires unique sender names.
+    //    Sender always stays in pixel-space regardless of pixelExact.
     //    If the new sender fails, restore one with the original dimensions.
     this.sender.stop();
     try {
       this.sender = new TextureSender(this.options.name, width, height);
     } catch (err) {
       this.options = prevOpts;
-      this._renderWindow.setSize(prevOpts.width, prevOpts.height);
+      const prevDip =
+        prevOpts.pixelExact === true
+          ? computeDipSize(prevOpts.width, prevOpts.height, screen.getPrimaryDisplay().scaleFactor)
+          : { width: prevOpts.width, height: prevOpts.height };
+      this._renderWindow.setSize(prevDip.width, prevDip.height);
       this.sender = new TextureSender(prevOpts.name, prevOpts.width, prevOpts.height);
       throw err;
     }
@@ -159,12 +194,17 @@ class TextureBridgeImpl extends EventEmitter implements TextureBridge {
 export function buildBrowserWindowOptions(
   options: TextureBridgeOptions,
 ): Electron.BrowserWindowConstructorOptions {
-  const { width, height, webPreferences, includeAlpha } = options;
+  const { width, height, webPreferences, includeAlpha, pixelExact } = options;
 
   return {
     width,
     height,
     show: false,
+    // `enableLargerThanScreen` is documented as macOS-only but is harmless on
+    // other platforms. We set it whenever `pixelExact` is requested so the
+    // offscreen window's DIP size — which may be larger than the display when
+    // the system DPI is < 100% — is not clamped to the work area.
+    ...(pixelExact === true ? { enableLargerThanScreen: true } : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -190,10 +230,18 @@ export async function createTextureBridge(options: TextureBridgeOptions): Promis
     throw new Error("createTextureBridge() must be called after app.whenReady()");
   }
 
-  const { name, width, height, frameRate = 60, rendererUrl, preview } = options;
+  const { name, width, height, frameRate = 60, rendererUrl, preview, pixelExact } = options;
 
   // ---- Offscreen BrowserWindow ----
-  const renderWindow = new BrowserWindow(buildBrowserWindowOptions(options));
+  // When pixelExact is set, the caller's width/height are pixel-space — translate
+  // to DIP via the primary display's scaleFactor before constructing the window
+  // so the resulting framebuffer lands at the requested pixel count. The sender
+  // below always uses pixel-space dimensions.
+  const windowOptions: TextureBridgeOptions =
+    pixelExact === true
+      ? { ...options, ...computeDipSize(width, height, screen.getPrimaryDisplay().scaleFactor) }
+      : options;
+  const renderWindow = new BrowserWindow(buildBrowserWindowOptions(windowOptions));
 
   // ---- Native sender ----
   const sender = new TextureSender(name, width, height);
