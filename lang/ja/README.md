@@ -9,6 +9,39 @@
 
 Electron のオフスクリーンレンダリング（`useSharedTexture`）から GPU テクスチャをキャプチャし、Resolume Arena、VDMX、OBS、TouchDesigner などの Syphon/Spout 対応アプリケーションへ CPU リードバックなしで共有する napi-rs ネイティブアドオンです。
 
+## インストール
+
+```bash
+npm i @napolab/texture-bridge-renderer
+```
+
+> **リポジトリ名は npm パッケージ名ではありません。** `electron-texture-bridge` は GitHub のリポジトリ名で、その名前の npm パッケージは**存在しません**（`npm view electron-texture-bridge` → 404）。実体は複数の `@napolab/*` パッケージとして公開されています：
+
+| 用途 | パッケージ | 提供するもの |
+|------|-----------|-------------|
+| **高レベル（推奨）** | [`@napolab/texture-bridge-renderer`](https://www.npmjs.com/package/@napolab/texture-bridge-renderer) | `createTextureBridge()` — ウィンドウ・paint・センダー・プレビューを全配線 |
+| 低レベル（手動 paint ループ） | [`@napolab/texture-bridge-core`](https://www.npmjs.com/package/@napolab/texture-bridge-core) | `TextureSender` + `sendTextureFromPaintEvent()` |
+| ネイティブバインディング | [`@napolab/texture-bridge`](https://www.npmjs.com/package/@napolab/texture-bridge) | napi-rs の生クラス（`TextureSender`, `TextureReceiver`） |
+| プリビルドバイナリ | `@napolab/texture-bridge-darwin-arm64` 他 | プラットフォーム別 `.node`。`optionalDependencies` で自動解決 |
+
+依存方向: `texture-bridge-renderer` → `texture-bridge-core` → `texture-bridge` → `texture-bridge-<platform>`。`-renderer` を入れれば連鎖がすべて入るので、通常は1パッケージに依存するだけで済みます。
+
+## どの API を使うべきか
+
+```
+OSR(useSharedTexture) を Syphon/Spout に出したいだけで、ウィンドウ管理もライブラリに任せたい？
+  YES → createTextureBridge()  (@napolab/texture-bridge-renderer)
+        BrowserWindow・paint 配線・DPR/pixelExact・プレビュー・FPS まで面倒を見る。まずここから。
+
+自前の BrowserWindow / paint ループに後付けで送信だけ足したい？
+  YES → TextureSender + sendTextureFromPaintEvent()  (@napolab/texture-bridge-core)
+        DPR の整合は自分で担保する（後述の「macOS Retina / Windows DPI」警告を参照）。
+
+Electron 無しで生 RGBA を流したい（テスト / CI / サニティチェック）？
+  YES → new TextureSender(...).sendRgbaBuffer()  (@napolab/texture-bridge-core)
+        後述の「Electron 無しの最小サニティチェック」を参照。
+```
+
 ## アーキテクチャ
 
 ```
@@ -157,6 +190,25 @@ app.whenReady().then(async () => {
 </script>
 ```
 
+### 外部ページのキャプチャ（`rendererUrl` + `webPreferences`）
+
+`rendererUrl` はローカル HTML に限りません。`http(s)://` の URL を渡せば、稼働中の Web ページ（例: YouTube の視聴ページ）をキャプチャして Syphon/Spout へ流せます。`webPreferences` はオフスクリーン `BrowserWindow` にマージされるので、`partition`（隔離済み/ログイン済みセッション）の指定、`autoplayPolicy` の緩和、サンドボックスの無効化などが可能です。
+
+```typescript
+const bridge = await createTextureBridge({
+  name: "WebCapture",
+  width: 1920,
+  height: 1080,
+  rendererUrl: "https://www.youtube.com/watch?v=...",
+  preview: { enabled: true },            // プレビューウィンドウで即座に目視確認
+  webPreferences: {
+    partition: "persist:capture",        // 隔離セッション（Cookie/ログインがここに永続化）
+    autoplayPolicy: "no-user-gesture-required",
+    sandbox: false,
+  },
+});
+```
+
 ### 低レベル: Core API
 
 パイプラインを完全に制御する場合は `@napolab/texture-bridge-core` を直接使用します。
@@ -189,6 +241,82 @@ win.webContents.on("paint", (event) => {
 win.webContents.setFrameRate(60);
 ```
 
+#### Electron バージョン別の `paint` イベント形
+
+本ライブラリは **Electron 40+**（`useSharedTexture` paint イベントが入った最初のバージョン）を対象とします。現行 Electron（42+）ではリスナの引数は単一のイベントオブジェクトで、テクスチャの release メソッドは **非 optional** です：
+
+```typescript
+win.webContents.on("paint", (details) => {
+  const texture = details.texture;
+  if (texture === undefined) return;
+  try {
+    sendTextureFromPaintEvent(sender, texture.textureInfo);
+  } finally {
+    texture.release();   // Electron 42: 非 optional（古い型定義では `release?` だった）
+  }
+});
+```
+
+古い例にある `(event, dirtyRect, image, texture)` の分割代入は 40 以前の API で、現行 Electron の型に対しては型エラーになります。`electron@>=42` の型でビルドする場合は `release` のオプショナルチェーンを外してください。
+
+> ### macOS Retina と Windows DPI スケーリング
+>
+> ⚠️ **黒画面・崩れた出力の最大の原因です。** Chromium はオフスクリーン面を **DIP（デバイス非依存ピクセル）** でサイズ指定するため、共有テクスチャに実際に渡されるフレームバッファは `width × height × display.scaleFactor` になります。**macOS Retina**（scaleFactor 2）では `new TextureSender("X", 1280, 720)` と宣言したつもりが **2560×1440** のテクスチャを生成してしまい、センダーの宣言サイズと実フレームバッファが食い違って、レシーバー側が黒や崩れた表示になります。Windows のディスプレイスケーリング（150% / 175%）でも同じ不一致が起きます。
+>
+> - **高レベル `createTextureBridge`** は **`pixelExact: true`** オプション（[`TextureBridgeOptions`](#createtexturebridgeoptions-promisetexturebridge) 参照）でこれを吸収します。BrowserWindow を DIP でサイズ指定してフレームバッファをちょうど `width × height` に着地させ、センダーを要求ピクセルサイズで登録します。
+> - **低レベル core**（手動 `BrowserWindow` + `paint`）には**吸収機構がありません** — センダーの宣言サイズと実フレームバッファサイズの整合は*自分で*取る必要があります。センダーを実フレームバッファサイズ（`宣言 = 論理 × scaleFactor`）で宣言するか、`webContents.setZoomFactor` / 固定スケールのディスプレイで DPR を打ち消すか、`createTextureBridge({ pixelExact: true })` に移行してください。
+
+### Electron 無しの最小サニティチェック
+
+`TextureSender.sendRgbaBuffer()` は Electron を**必要としません** — plain Node（例: `tsx`）から Syphon/Spout サーバを立てて生 RGBA を流せます。問題の切り分けに最速です。これが VJ アプリに映れば、ネイティブバインディングと Syphon/Spout の発行は健全で、問題は Electron OSR 側に確定できます。
+
+```typescript
+// sanity.ts — 実行: npx tsx sanity.ts
+import { TextureSender, getPlatform } from "@napolab/texture-bridge-core";
+
+const W = 512;
+const H = 512;
+const sender = new TextureSender("CHECK", W, H);
+console.log(getPlatform(), sender.platform()); // 例: "syphon-metal" "syphon-metal"
+
+const buf = Buffer.alloc(W * H * 4);
+let t = 0;
+setInterval(() => {
+  t += 1;
+  for (let i = 0; i < W * H; i++) {
+    buf[i * 4 + 0] = (i + t) & 0xff; // R
+    buf[i * 4 + 1] = (i * 2 + t) & 0xff; // G
+    buf[i * 4 + 2] = t & 0xff; // B
+    buf[i * 4 + 3] = 0xff; // A
+  }
+  sender.sendRgbaBuffer(buf, W, H);
+}, 1000 / 30);
+```
+
+VJ アプリ（または任意の Syphon/Spout モニタ）を開き、**CHECK** という名前のセンダーがアニメーションしているか確認します。`sendRgbaBuffer` は CPU→GPU コピーを伴うのでデバッグ/フォールバック用途であり、ゼロコピーの本番経路ではありませんが、「Electron が悪いのかブリッジが悪いのか」の切り分けに非常に有効です。
+
+## electron-vite（ESM）との統合
+
+アプリが ESM（`package.json` の `"type": "module"`）で **electron-vite** ビルドの場合、いくつかの統合上の注意点があります：
+
+- **ネイティブパッケージを external 化する。** `main` と `preload` の両方に `externalizeDepsPlugin()` を入れ、`.node` バイナリが bundle されないようにします：
+
+  ```typescript
+  // electron.vite.config.ts
+  import { defineConfig, externalizeDepsPlugin } from "electron-vite";
+
+  export default defineConfig({
+    main: { plugins: [externalizeDepsPlugin()] },
+    preload: { plugins: [externalizeDepsPlugin()] },
+    renderer: {},
+  });
+  ```
+
+- **ESM モードでは preload は `.mjs` で排出される。** electron-vite は preload を `index.mjs`（`index.js` ではない）として出力するため、main からは `path.join(import.meta.dirname, "../preload/index.mjs")` のように参照します。古い `../preload/index.js` 参照は「preload not found」系の失敗になります。
+- **`import.meta.dirname` は electron-vite が自動注入**するので、自分の main コードに `__dirname` シムは不要です。
+- **プリビルドバイナリは `optionalDependencies` で解決される。** pnpm 10 では初回にネイティブパッケージのビルドを `onlyBuiltDependencies`（`pnpm.onlyBuiltDependencies` / `allowBuilds`）で承認する必要がある場合があります。
+- **プレビューは ESM でも動作する。** `createTextureBridge({ preview: { enabled: true } })` のアセット解決は ESM セーフです（renderer パッケージは ESM ビルドに `__dirname` シムを同梱）。`"type": "module"` 下でもプレビューウィンドウが開きます。
+
 ## API リファレンス
 
 ### `@napolab/texture-bridge-renderer`
@@ -206,6 +334,7 @@ interface TextureBridgeOptions {
   rendererUrl: string;     // 読み込む URL（ファイルパス、file://、http://）
   preview?: PreviewOptions;
   webPreferences?: Electron.WebPreferences;
+  pixelExact?: boolean;    // ディスプレイ DPR に関係なくフレームバッファを正確に width×height に固定（デフォルト: false）
 }
 
 interface PreviewOptions {
@@ -215,6 +344,8 @@ interface PreviewOptions {
   title?: string;          // プレビューウィンドウタイトル
 }
 ```
+
+**`pixelExact`** — `true` のとき、ホストディスプレイの DPR に関係なくオフスクリーンフレームバッファを正確に `width × height` ピクセルに固定します。指定しないと Retina（scaleFactor 2）や Windows スケーリング（150% / 175%）のディスプレイでは宣言したセンダーサイズより大きいフレームバッファが生成され、多くの場合レシーバーで黒画面/崩れになります（[Retina/DPI 警告](#macos-retina-と-windows-dpi-スケーリング)参照）。センダーは常に要求ピクセルサイズで登録されるため、レシーバーは指定どおりの寸法を受け取ります。注意: 割り切れないスケール比（例: `1920 / 1.75`）では 1 ピクセルの誤差が残ることがあり、構築時のプライマリディスプレイの scaleFactor のみが反映されます — DPI 変更後は `resize()` で再適用してください。
 
 #### `TextureBridge`
 
@@ -298,6 +429,14 @@ class TextureSender {
 function getPlatform(): "spout" | "syphon-metal" | "unsupported";
 ```
 
+`getPlatform()` とインスタンスメソッド `sender.platform()` / `receiver.platform()` は同じ文字列集合を返します：
+
+| 値 | 意味 |
+|----|------|
+| `"syphon-metal"` | macOS — Syphon Metal バックエンド有効 |
+| `"spout"` | Windows — Spout バックエンド有効 |
+| `"unsupported"` | バックエンドのないプラットフォーム（送受信は no-op） |
+
 #### 型定義
 
 ```typescript
@@ -355,6 +494,8 @@ pnpm --filter @napolab/texture-bridge-example run build:mac
 pnpm --filter @napolab/texture-bridge-example run build:win
 ```
 
+> **自分のアプリのパッケージング。** ネイティブ `.node` アドオンは ASAR アーカイブ内からロードできないため、electron-builder 設定に `asarUnpack: "node_modules/@napolab/texture-bridge*"` を追加し、macOS では `Syphon.framework` を `Frameworks/` に同梱して codesign してください。コピペできる electron-builder / electron-forge のスニペットは [docs/ja/INSTALLATION.md](../../docs/ja/INSTALLATION.md) にあります。
+
 ## プロジェクト構成
 
 ```
@@ -411,6 +552,8 @@ electron-texture-bridge/
 
 ### テクスチャが真っ黒
 
+- **DPR / Retina のサイズ不一致（最も多い）。** Retina ディスプレイや Windows のディスプレイスケーリング下では実フレームバッファが `width × height × scaleFactor` になり、論理サイズで宣言したセンダーと食い違ってレシーバーが黒/崩れになります。`createTextureBridge({ pixelExact: true })` を使うか、低レベル core 経路ではセンダーを実フレームバッファサイズで宣言するか自分で DPR を打ち消してください（[Retina/DPI 警告](#macos-retina-と-windows-dpi-スケーリング)参照）。
+- **Electron とブリッジの切り分け**には[Electron 無しの最小サニティチェック](#electron-無しの最小サニティチェック)を使ってください — `sendRgbaBuffer` が VJ アプリに映ればネイティブ側は健全で、問題は Electron OSR 経路にあります。
 - `preserveDrawingBuffer` は不要（Chromium のコンポジターが直接読み取る）
 - ピクセルフォーマットの不一致を確認：Chromium は BGRA を出力するので、レシーバー側も BGRA を期待しているか確認
 

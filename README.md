@@ -9,6 +9,39 @@
 
 A napi-rs native addon for bidirectional GPU texture sharing with Electron. **Send** textures from Electron's offscreen rendering (`useSharedTexture`) to VJ software, or **receive** textures from external Syphon/Spout servers into your Electron app. Works with Resolume Arena, VDMX, OBS, TouchDesigner, and other Syphon/Spout-compatible applications.
 
+## Install
+
+```bash
+npm i @napolab/texture-bridge-renderer
+```
+
+> **The repository name is not the npm package name.** `electron-texture-bridge` is the GitHub repo; there is **no** npm package by that name (`npm view electron-texture-bridge` → 404). The code ships as several `@napolab/*` packages:
+
+| Use case | Package | What it gives you |
+|----------|---------|-------------------|
+| **High-level (recommended)** | [`@napolab/texture-bridge-renderer`](https://www.npmjs.com/package/@napolab/texture-bridge-renderer) | `createTextureBridge()` — window + paint + sender + preview, all wired |
+| Low-level (manual paint loop) | [`@napolab/texture-bridge-core`](https://www.npmjs.com/package/@napolab/texture-bridge-core) | `TextureSender` + `sendTextureFromPaintEvent()` |
+| Native binding | [`@napolab/texture-bridge`](https://www.npmjs.com/package/@napolab/texture-bridge) | Raw napi-rs classes (`TextureSender`, `TextureReceiver`) |
+| Prebuilt binary | `@napolab/texture-bridge-darwin-arm64`, etc. | Platform `.node`, resolved automatically via `optionalDependencies` |
+
+Dependency direction: `texture-bridge-renderer` → `texture-bridge-core` → `texture-bridge` → `texture-bridge-<platform>`. Installing `-renderer` pulls in the whole chain — you normally depend on just one package.
+
+## Which API should I use?
+
+```
+Do you just want OSR (useSharedTexture) → Syphon/Spout, and let the library own the window?
+  YES → createTextureBridge()  (@napolab/texture-bridge-renderer)
+        Handles BrowserWindow, paint wiring, DPR/pixelExact, preview, FPS. Start here.
+
+Do you have your own BrowserWindow / paint loop you want to bolt sending onto?
+  YES → TextureSender + sendTextureFromPaintEvent()  (@napolab/texture-bridge-core)
+        You own DPR correctness yourself — see the Retina/DPI warning below (§ "macOS Retina / Windows DPI").
+
+Do you want to push raw RGBA without Electron at all (test / CI / sanity check)?
+  YES → new TextureSender(...).sendRgbaBuffer()  (@napolab/texture-bridge-core)
+        See "Minimal sanity check (no Electron)" below.
+```
+
 ## Architecture
 
 ### Sending (Electron → VJ Software)
@@ -198,6 +231,25 @@ app.whenReady().then(async () => {
 </script>
 ```
 
+### Capturing an external page (`rendererUrl` + `webPreferences`)
+
+`rendererUrl` is not limited to local HTML — pass any `http(s)://` URL to capture a live web page (e.g. a YouTube watch page) and forward it to Syphon/Spout. `webPreferences` is merged into the offscreen `BrowserWindow`, so you can set a `partition` (for an isolated/logged-in session), relax `autoplayPolicy`, or disable the sandbox as needed.
+
+```typescript
+const bridge = await createTextureBridge({
+  name: "WebCapture",
+  width: 1920,
+  height: 1080,
+  rendererUrl: "https://www.youtube.com/watch?v=...",
+  preview: { enabled: true },            // open a preview window for instant eyeballing
+  webPreferences: {
+    partition: "persist:capture",        // isolated session (cookies/login persist here)
+    autoplayPolicy: "no-user-gesture-required",
+    sandbox: false,
+  },
+});
+```
+
 ### Sending with transparency (`includeAlpha`)
 
 Pass `includeAlpha: true` to forward the page's per-pixel alpha into the shared BGRA texture. VJ software (Resolume, VDMX, etc.) will then receive the layer with its transparency mask intact, so it can be composited over other layers.
@@ -287,6 +339,82 @@ win.webContents.on("paint", (event) => {
 
 win.webContents.setFrameRate(60);
 ```
+
+#### Electron version note: the `paint` event shape
+
+This library targets **Electron 40+** (the first version with `useSharedTexture` paint events). On current Electron (42+) the listener receives a single event object and the texture release method is **non-optional**:
+
+```typescript
+win.webContents.on("paint", (details) => {
+  const texture = details.texture;
+  if (texture === undefined) return;
+  try {
+    sendTextureFromPaintEvent(sender, texture.textureInfo);
+  } finally {
+    texture.release();   // Electron 42: non-optional. (Older typings exposed `release?`.)
+  }
+});
+```
+
+Older examples that destructure `(event, dirtyRect, image, texture)` are from a pre-40 API and will not type-check against current Electron. If you build against `electron@>=42` types, drop the optional chaining on `release`.
+
+> ### macOS Retina and Windows DPI scaling
+>
+> ⚠️ **This is the #1 cause of a black or garbled output.** Chromium sizes the offscreen surface in **device-independent pixels (DIP)**, so the framebuffer actually delivered to the shared texture is `width × height × display.scaleFactor`. On a **macOS Retina** display (scaleFactor 2) a sender declared as `new TextureSender("X", 1280, 720)` ends up producing a **2560×1440** texture — the sender's declared size and the real framebuffer disagree, and the receiver shows black/garbled output. Windows display scaling (150% / 175%) causes the same mismatch.
+>
+> - **High-level `createTextureBridge`** absorbs this for you via the **`pixelExact: true`** option (see [`TextureBridgeOptions`](#createtexturebridgeoptions-promisetexturebridge)): it sizes the BrowserWindow in DIP so the framebuffer lands on exactly `width × height`, and registers the sender at the requested pixel size.
+> - **Low-level core** (manual `BrowserWindow` + `paint`) has **no such absorption** — *you* must keep the sender's declared size and the actual framebuffer size in agreement. Either declare the sender at the true framebuffer size (`declared = logical × scaleFactor`), or neutralize DPR with `webContents.setZoomFactor` / a fixed-scale display, or move to `createTextureBridge({ pixelExact: true })`.
+
+### Minimal sanity check (no Electron)
+
+`TextureSender.sendRgbaBuffer()` does **not** require Electron — you can stand up a Syphon/Spout server from plain Node (e.g. via `tsx`) and push raw RGBA. This is the fastest way to isolate a problem: if this shows up in your VJ app, the native binding and Syphon/Spout publishing are healthy and the issue is on the Electron OSR side.
+
+```typescript
+// sanity.ts — run with: npx tsx sanity.ts
+import { TextureSender, getPlatform } from "@napolab/texture-bridge-core";
+
+const W = 512;
+const H = 512;
+const sender = new TextureSender("CHECK", W, H);
+console.log(getPlatform(), sender.platform()); // e.g. "syphon-metal" "syphon-metal"
+
+const buf = Buffer.alloc(W * H * 4);
+let t = 0;
+setInterval(() => {
+  t += 1;
+  for (let i = 0; i < W * H; i++) {
+    buf[i * 4 + 0] = (i + t) & 0xff; // R
+    buf[i * 4 + 1] = (i * 2 + t) & 0xff; // G
+    buf[i * 4 + 2] = t & 0xff; // B
+    buf[i * 4 + 3] = 0xff; // A
+  }
+  sender.sendRgbaBuffer(buf, W, H);
+}, 1000 / 30);
+```
+
+Open your VJ app (or any Syphon/Spout monitor) and look for a sender named **CHECK** animating. `sendRgbaBuffer` involves a CPU→GPU copy, so it is a debugging/fallback path — not the zero-copy production path — but it is invaluable for splitting "is it Electron or is it the bridge?".
+
+## Using with electron-vite (ESM)
+
+If your app is ESM (`"type": "module"` in `package.json`) and built with **electron-vite**, a few integration details matter:
+
+- **External-ize the native packages.** Add `externalizeDepsPlugin()` to both `main` and `preload` configs so the `.node` binary is never bundled:
+
+  ```typescript
+  // electron.vite.config.ts
+  import { defineConfig, externalizeDepsPlugin } from "electron-vite";
+
+  export default defineConfig({
+    main: { plugins: [externalizeDepsPlugin()] },
+    preload: { plugins: [externalizeDepsPlugin()] },
+    renderer: {},
+  });
+  ```
+
+- **Preload is emitted as `.mjs` in ESM mode.** electron-vite outputs the preload as `index.mjs` (not `index.js`), so reference it accordingly from main: `path.join(import.meta.dirname, "../preload/index.mjs")`. A stale `../preload/index.js` reference produces a "preload not found" failure.
+- **`import.meta.dirname` is auto-injected** by electron-vite for ESM main, so you don't need a `__dirname` shim in your own main code.
+- **Prebuilt binaries resolve via `optionalDependencies`.** With pnpm 10 you may need to approve the native package's build in `onlyBuiltDependencies` (`pnpm.onlyBuiltDependencies` / `allowBuilds`) the first time.
+- **Preview works in ESM.** `createTextureBridge({ preview: { enabled: true } })`'s asset resolution is ESM-safe (the renderer package ships `__dirname` shims in its ESM build), so the preview window opens under `"type": "module"`.
 
 ## Receiving textures from Spout/Syphon
 
@@ -440,6 +568,7 @@ interface TextureBridgeOptions {
   preview?: PreviewOptions;
   webPreferences?: Electron.WebPreferences;
   includeAlpha?: boolean;  // Forward per-pixel alpha into the shared texture (default: false)
+  pixelExact?: boolean;    // Pin the framebuffer to exactly width×height regardless of display DPR (default: false)
 }
 
 interface PreviewOptions {
@@ -449,6 +578,8 @@ interface PreviewOptions {
   title?: string;          // Preview window title
 }
 ```
+
+**`pixelExact`** — when `true`, the offscreen framebuffer is pinned to exactly `width × height` pixels regardless of the host display's device pixel ratio. Without it, a Retina (scaleFactor 2) or Windows-scaled (150% / 175%) display produces a framebuffer larger than the declared sender size, which typically shows up as black/garbled output in the receiver (see the [Retina/DPI warning](#macos-retina-and-windows-dpi-scaling)). The sender is always registered at the requested pixel size, so receivers see the dimensions you asked for. Note: non-divisible scale ratios (e.g. `1920 / 1.75`) can leave a 1-pixel discrepancy, and only the primary display's scaleFactor at construction time is honored — call `resize()` to re-apply after a DPI change.
 
 #### `TextureBridge`
 
@@ -718,6 +849,14 @@ function listSenders(): Array<{ name: string; appName?: string; uuid?: string }>
 function getPlatform(): "spout" | "syphon-metal" | "unsupported";
 ```
 
+`getPlatform()` and the instance method `sender.platform()` / `receiver.platform()` return the same string set:
+
+| Value | Meaning |
+|-------|---------|
+| `"syphon-metal"` | macOS — Syphon Metal backend active |
+| `"spout"` | Windows — Spout backend active |
+| `"unsupported"` | Platform without a backend (no-op sends/receives) |
+
 #### Types
 
 ```typescript
@@ -786,6 +925,8 @@ pnpm --filter @napolab/texture-bridge-example run build:mac
 pnpm --filter @napolab/texture-bridge-example run build:win
 ```
 
+> **Packaging your own app.** Native `.node` addons cannot load from inside an ASAR archive, so add `asarUnpack: "node_modules/@napolab/texture-bridge*"` to your electron-builder config, and on macOS bundle + codesign `Syphon.framework` into `Frameworks/`. Copy-pasteable electron-builder / electron-forge snippets are in [docs/INSTALLATION.md → Packaging for Distribution](docs/INSTALLATION.md#packaging-for-distribution).
+
 ## Project Structure
 
 ```
@@ -844,6 +985,8 @@ electron-texture-bridge/
 
 ### Black texture output
 
+- **DPR / Retina size mismatch (most common).** On a Retina display or under Windows display scaling, the real framebuffer is `width × height × scaleFactor`, so a sender declared at the logical size disagrees with it and the receiver goes black/garbled. Use `createTextureBridge({ pixelExact: true })`, or — on the low-level core path — declare the sender at the true framebuffer size or neutralize DPR yourself. See the [Retina/DPI warning](#macos-retina-and-windows-dpi-scaling).
+- **Isolate Electron vs. the bridge** with the [no-Electron sanity check](#minimal-sanity-check-no-electron) — if `sendRgbaBuffer` shows up in your VJ app, the native side is fine and the problem is in the Electron OSR path.
 - `preserveDrawingBuffer` is not needed (Chromium compositor reads directly)
 - Check pixel format mismatch: Chromium outputs BGRA, ensure the receiver expects BGRA
 
