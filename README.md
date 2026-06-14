@@ -15,7 +15,7 @@ A napi-rs native addon for bidirectional GPU texture sharing with Electron. **Se
 npm i @napolab/texture-bridge-renderer
 ```
 
-> **The repository name is not the npm package name.** `electron-texture-bridge` is the GitHub repo; there is **no** npm package by that name (`npm view electron-texture-bridge` → 404). The code ships as several `@napolab/*` packages:
+The code ships as several `@napolab/*` packages:
 
 | Use case | Package | What it gives you |
 |----------|---------|-------------------|

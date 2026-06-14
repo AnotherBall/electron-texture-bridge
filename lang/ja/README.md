@@ -15,7 +15,7 @@ Electron のオフスクリーンレンダリング（`useSharedTexture`）か�
 npm i @napolab/texture-bridge-renderer
 ```
 
-> **リポジトリ名は npm パッケージ名ではありません。** `electron-texture-bridge` は GitHub のリポジトリ名で、その名前の npm パッケージは**存在しません**（`npm view electron-texture-bridge` → 404）。実体は複数の `@napolab/*` パッケージとして公開されています：
+実体は複数の `@napolab/*` パッケージとして公開されています：
 
 | 用途 | パッケージ | 提供するもの |
 |------|-----------|-------------|
