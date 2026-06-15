@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.13.0...native-v0.13.1) (2026-06-15)
+
+
+### Miscellaneous Chores
+
+* **native:** Synchronize electron-texture-bridge versions
+
 ## [0.13.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.12.0...native-v0.13.0) (2026-05-22)
 
 
