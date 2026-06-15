@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.13.1](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.13.0...renderer-v0.13.1) (2026-06-15)
+
+
+### Bug Fixes
+
+* **renderer:** ESM __dirname shim + docs feedback (EN/JA) ([8c06ba6](https://github.com/naporin0624/electron-texture-bridge/commit/8c06ba6095aae756ac165605139ab276bef20197))
+* **renderer:** inject __dirname shim into ESM build for preview assets ([df76799](https://github.com/naporin0624/electron-texture-bridge/commit/df7679996b1a72d06d19f7ca9cb2124145872a22))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @napolab/texture-bridge-core bumped to 0.13.1
+
 ## [0.13.0](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.12.0...renderer-v0.13.0) (2026-05-22)
 
 
