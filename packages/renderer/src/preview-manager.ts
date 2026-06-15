@@ -2,7 +2,11 @@ import { BrowserWindow, ipcMain, sharedTexture } from "electron";
 import path from "path";
 import type { PreviewOptions } from "./types";
 
-/** Resolves asset paths relative to dist/assets/ regardless of CJS/ESM */
+/**
+ * Resolves asset paths relative to dist/assets/. `__dirname` is provided
+ * natively in CJS output and injected via tsdown's `--shims` flag in ESM output
+ * (see package.json build script), so this works in both module formats.
+ */
 function assetPath(filename: string): string {
   return path.join(__dirname, "assets", filename);
 }
