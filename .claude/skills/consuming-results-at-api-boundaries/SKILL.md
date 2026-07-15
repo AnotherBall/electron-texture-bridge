@@ -23,16 +23,19 @@ This closes the gap in [[chaining-neverthrow-results]]: "one `.match` at the con
 ## The recipe (real example from this repo — `packages/core`)
 
 ```ts
-// ✅ The exported entry point is the edge: wrap once, match once, Result never escapes.
+// ✅ Wrap once at module scope (arguments are forwarded — no IIFE-style
+// `fromThrowable(...)()` immediate call), match once at the exported edge.
+const safeDispatchSend = Result.fromThrowable(
+  dispatchSend,                                             // internal throwing dispatch
+  (cause) => new TextureSendError(cause instanceof Error ? cause.message : `${cause}`, { cause }),
+);
+
 export const sendTextureFromPaintEvent = (
   sender: InstanceType<typeof TextureSender>,
   textureInfo: TextureInfo | undefined,
 ): void => {
   if (!textureInfo) return;
-  Result.fromThrowable(
-    () => { dispatchSend(sender, textureInfo); },          // internal throwing dispatch
-    (cause) => new TextureSendError(cause instanceof Error ? cause.message : `${cause}`, { cause }),
-  )().match(
+  safeDispatchSend(sender, textureInfo).match(
     () => undefined,
     (error) => { throw error; },                            // conventional contract: void + typed throw
   );
