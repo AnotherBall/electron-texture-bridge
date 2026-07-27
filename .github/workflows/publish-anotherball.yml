@@ -1,0 +1,221 @@
+name: Publish AnotherBall packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish (for example 0.13.1-persona.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            name: darwin-arm64
+          - os: macos-14
+            target: x86_64-apple-darwin
+            name: darwin-x64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: win32-x64-msvc
+
+    runs-on: ${{ matrix.os }}
+    name: Build (${{ matrix.name }})
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Prepare AnotherBall package names
+        run: node scripts/prepare-anotherball-packages.mjs "${{ inputs.version }}"
+
+      - run: pnpm install --no-frozen-lockfile
+
+      - name: Build Syphon.framework
+        if: runner.os == 'macOS'
+        run: |
+          cd vendor/syphon-src
+          xcodebuild -project Syphon.xcodeproj \
+            -scheme Syphon \
+            -configuration Release \
+            -derivedDataPath build \
+            ONLY_ACTIVE_ARCH=NO \
+            BUILD_LIBRARY_FOR_DISTRIBUTION=YES
+          cp -R build/Build/Products/Release/Syphon.framework ../Syphon.framework
+
+      - name: Fetch Spout2 SDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git clone --depth 1 https://github.com/leadedge/Spout2.git _spout2_tmp
+          New-Item -ItemType Directory -Force vendor/Spout2
+          Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutDirectX vendor/Spout2/SpoutDirectX
+          Copy-Item -Recurse _spout2_tmp/SPOUTSDK/SpoutGL vendor/Spout2/SpoutGL
+          Remove-Item -Recurse -Force _spout2_tmp
+
+      - name: Build native addon
+        working-directory: packages/native
+        run: pnpm run build
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bindings-${{ matrix.name }}
+          path: packages/native/index.*.node
+          if-no-files-found: error
+
+      - name: Upload JS loader
+        if: matrix.name == 'darwin-arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: js-loader
+          path: |
+            packages/native/index.js
+            packages/native/index.d.ts
+          if-no-files-found: error
+
+      - name: Upload Syphon.framework
+        if: matrix.name == 'darwin-arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: syphon-framework
+          path: vendor/Syphon.framework
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    name: Publish
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: '@anotherball'
+
+      - name: Prepare AnotherBall package names
+        run: node scripts/prepare-anotherball-packages.mjs "${{ inputs.version }}"
+
+      - run: pnpm install --no-frozen-lockfile
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages/native/artifacts
+
+      - name: Assemble native packages
+        working-directory: packages/native
+        run: |
+          cp artifacts/js-loader/index.js artifacts/js-loader/index.d.ts .
+          pnpm exec napi create-npm-dir -t .
+          pnpm exec napi artifacts
+
+          for darwin_pkg in npm/darwin-*/; do
+            if [ -d "$darwin_pkg" ]; then
+              cp -R artifacts/syphon-framework "$darwin_pkg/Syphon.framework"
+            fi
+          done
+
+          node - <<'NODE'
+          const fs = require('fs')
+          const root = JSON.parse(fs.readFileSync('package.json', 'utf8'))
+          root.optionalDependencies = {}
+
+          for (const entry of fs.readdirSync('npm', { withFileTypes: true })) {
+            if (!entry.isDirectory()) continue
+            const dir = `npm/${entry.name}`
+            const path = `${dir}/package.json`
+            const manifest = JSON.parse(fs.readFileSync(path, 'utf8'))
+            manifest.version = root.version
+            manifest.repository = {
+              type: 'git',
+              url: 'https://github.com/AnotherBall/electron-texture-bridge'
+            }
+            manifest.publishConfig = { registry: 'https://npm.pkg.github.com' }
+            manifest.files = manifest.files || []
+            if (entry.name.startsWith('darwin-') &&
+                !manifest.files.includes('Syphon.framework')) {
+              manifest.files.push('Syphon.framework')
+            }
+            fs.writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`)
+            root.optionalDependencies[manifest.name] = root.version
+          }
+
+          fs.writeFileSync(
+            'package.json',
+            `${JSON.stringify(root, null, 2)}\n`
+          )
+          NODE
+
+      - name: Verify native packages
+        working-directory: packages/native
+        run: |
+          test -f npm/darwin-arm64/Syphon.framework/Versions/A/Syphon
+          test -f npm/darwin-x64/Syphon.framework/Versions/A/Syphon
+          test -f npm/win32-x64-msvc/index.win32-x64-msvc.node
+
+      - name: Publish platform packages
+        working-directory: packages/native
+        run: |
+          for dir in npm/*/; do
+            if [ -f "$dir/package.json" ]; then
+              npm publish "$dir" --access public
+            fi
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish native package
+        working-directory: packages/native
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish core package
+        run: |
+          pnpm --dir packages/core run build
+          cd packages/core
+          pnpm pack
+          npm publish *.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish renderer package
+        run: |
+          pnpm --dir packages/renderer run build
+          cd packages/renderer
+          pnpm pack
+          npm publish *.tgz --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
