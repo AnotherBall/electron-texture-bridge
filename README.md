@@ -360,10 +360,12 @@ Older examples that destructure `(event, dirtyRect, image, texture)` are from a 
 
 > ### macOS Retina and Windows DPI scaling
 >
-> ⚠️ **This is the #1 cause of a black or garbled output.** Chromium sizes the offscreen surface in **device-independent pixels (DIP)**, so the framebuffer actually delivered to the shared texture is `width × height × display.scaleFactor`. On a **macOS Retina** display (scaleFactor 2) a sender declared as `new TextureSender("X", 1280, 720)` ends up producing a **2560×1440** texture — the sender's declared size and the real framebuffer disagree, and the receiver shows black/garbled output. Windows display scaling (150% / 175%) causes the same mismatch.
+> ⚠️ **This is the #1 cause of a black or garbled output on Electron ≤ 40.** How the offscreen framebuffer relates to your requested `width × height` depends on the Electron version:
 >
-> - **High-level `createTextureBridge`** absorbs this for you via the **`pixelExact: true`** option (see [`TextureBridgeOptions`](#createtexturebridgeoptions-promisetexturebridge)): it sizes the BrowserWindow in DIP so the framebuffer lands on exactly `width × height`, and registers the sender at the requested pixel size.
-> - **Low-level core** (manual `BrowserWindow` + `paint`) has **no such absorption** — *you* must keep the sender's declared size and the actual framebuffer size in agreement. Either declare the sender at the true framebuffer size (`declared = logical × scaleFactor`), or neutralize DPR with `webContents.setZoomFactor` / a fixed-scale display, or move to `createTextureBridge({ pixelExact: true })`.
+> - **Electron ≥ 41:** `createTextureBridge` pins `webPreferences.offscreen.deviceScaleFactor` to `1`, so the framebuffer is always exactly `width × height` pixels — display scaling does not affect the texture. (`Electron 42` changed the OSR default device scale factor to `1.0`; the bridge sets it explicitly from 41, where the option first appeared.) `pixelExact` is trivially satisfied and effectively a no-op. Verified on macOS; Windows display-scaling verification is pending (the investigation report lists it as an open item) — if you hit clamping on Windows, size down or verify with the [probe script](packages/renderer/scripts/osr-scale-probe.cjs).
+> - **Electron 40:** Chromium sizes the offscreen surface in **device-independent pixels (DIP)**, so the framebuffer delivered to the shared texture is `width × height × display.scaleFactor`. On a macOS Retina display (scaleFactor 2) a sender declared as `new TextureSender("X", 1280, 720)` ends up producing a **2560×1440** texture. Use `createTextureBridge({ pixelExact: true })` to absorb this, or handle DPR yourself on the low-level core path.
+>
+> **Low-level core** (manual `BrowserWindow` + `paint`) has no absorption on any version — on Electron ≥ 41 pass `offscreen: { useSharedTexture: true, deviceScaleFactor: 1 }` yourself; on Electron 40 keep the sender's declared size and the actual framebuffer size in agreement manually.
 
 ### Minimal sanity check (no Electron)
 
@@ -579,7 +581,7 @@ interface PreviewOptions {
 }
 ```
 
-**`pixelExact`** — when `true`, the offscreen framebuffer is pinned to exactly `width × height` pixels regardless of the host display's device pixel ratio. Without it, a Retina (scaleFactor 2) or Windows-scaled (150% / 175%) display produces a framebuffer larger than the declared sender size, which typically shows up as black/garbled output in the receiver (see the [Retina/DPI warning](#macos-retina-and-windows-dpi-scaling)). The sender is always registered at the requested pixel size, so receivers see the dimensions you asked for. Note: non-divisible scale ratios (e.g. `1920 / 1.75`) can leave a 1-pixel discrepancy, and only the primary display's scaleFactor at construction time is honored — call `resize()` to re-apply after a DPI change.
+**`pixelExact`** — when `true`, the offscreen framebuffer is pinned to exactly `width × height` pixels regardless of the host display's device pixel ratio. **Electron ≥ 41:** trivially satisfied and effectively a no-op — `createTextureBridge` already pins `offscreen.deviceScaleFactor: 1`, so the framebuffer is always exact whether or not this option is set. **Electron 40:** without it, a Retina (scaleFactor 2) or Windows-scaled (150% / 175%) display produces a framebuffer larger than the declared sender size, which typically shows up as black/garbled output in the receiver (see the [Retina/DPI warning](#macos-retina-and-windows-dpi-scaling)). The sender is always registered at the requested pixel size, so receivers see the dimensions you asked for. Note: non-divisible scale ratios (e.g. `1920 / 1.75`) can leave a 1-pixel discrepancy, and only the primary display's scaleFactor at construction time is honored — call `resize()` to re-apply after a DPI change.
 
 #### `TextureBridge`
 
@@ -1003,7 +1005,7 @@ electron-texture-bridge/
 
 ### Black texture output
 
-- **DPR / Retina size mismatch (most common).** On a Retina display or under Windows display scaling, the real framebuffer is `width × height × scaleFactor`, so a sender declared at the logical size disagrees with it and the receiver goes black/garbled. Use `createTextureBridge({ pixelExact: true })`, or — on the low-level core path — declare the sender at the true framebuffer size or neutralize DPR yourself. See the [Retina/DPI warning](#macos-retina-and-windows-dpi-scaling).
+- **DPR / Retina size mismatch (most common).** **Electron ≤ 40:** on a Retina display or under Windows display scaling, the real framebuffer is `width × height × scaleFactor`, so a sender declared at the logical size disagrees with it and the receiver goes black/garbled. Use `createTextureBridge({ pixelExact: true })`, or — on the low-level core path — declare the sender at the true framebuffer size or neutralize DPR yourself. **Electron ≥ 41:** `createTextureBridge` pins the OSR device scale factor to `1`, so this mismatch no longer occurs — see [Migration: Electron 42 / OSR device scale](#migration-electron-42--osr-device-scale); on the low-level core path, pass `offscreen: { useSharedTexture: true, deviceScaleFactor: 1 }` yourself. See the [Retina/DPI warning](#macos-retina-and-windows-dpi-scaling).
 - **Isolate Electron vs. the bridge** with the [no-Electron sanity check](#minimal-sanity-check-no-electron) — if `sendRgbaBuffer` shows up in your VJ app, the native side is fine and the problem is in the Electron OSR path.
 - `preserveDrawingBuffer` is not needed (Chromium compositor reads directly)
 - Check pixel format mismatch: Chromium outputs BGRA, ensure the receiver expects BGRA
@@ -1048,6 +1050,25 @@ win.webContents.on("paint", (event) => {
   }
 });
 ```
+
+## Migration: Electron 42 / OSR device scale
+
+Electron 42 changed offscreen rendering's default device scale factor to `1.0`
+([breaking change](https://www.electronjs.org/docs/latest/breaking-changes)).
+From the texture-bridge release that includes this change (see CHANGELOG),
+`createTextureBridge` pins `offscreen.deviceScaleFactor: 1` on Electron ≥ 41,
+making `width`/`height` mean exact pixels on every display.
+
+- **If you used `pixelExact: true`** (e.g. on Electron 40): keep it — it is a
+  no-op on Electron ≥ 41 and still required on 40.
+- **If you worked around scaling yourself** (`force-device-scale-factor=1`,
+  manual DIP math, removing `pixelExact` after a quarter-resolution output on
+  Electron 42): those workarounds are no longer needed once you upgrade.
+- **If you intentionally want a scaled framebuffer**, pass your own
+  `webPreferences: { offscreen: { useSharedTexture: true, deviceScaleFactor: <n> } }` —
+  a user-supplied `offscreen` block always wins.
+
+Empirical background: `reports/2026-08-11-pixelexact-osr-scale-investigation.md`.
 
 ## Migration: Explicit Disposal (v0.6+)
 

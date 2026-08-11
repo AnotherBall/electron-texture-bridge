@@ -34,6 +34,51 @@ export function computeDipSize(
   };
 }
 
+/**
+ * How the OSR compositor maps the window's DIP size to the shared-texture
+ * pixel size.
+ *
+ * - `"device-scale"` (Electron ≤ 40): the paint framebuffer is
+ *   `DIP × display.scaleFactor`, and `webPreferences.offscreen.deviceScaleFactor`
+ *   is ignored — `pixelExact` must pre-divide the window size to hit an exact
+ *   pixel count.
+ * - `"unit-scale"` (Electron ≥ 41): `offscreen.deviceScaleFactor` is honored
+ *   (and defaults to 1.0 from Electron 42), so we pin it to 1 and DIP == px
+ *   holds deterministically — no DIP division, `pixelExact` is trivially
+ *   satisfied.
+ *
+ * Empirical basis: reports/2026-08-11-pixelexact-osr-scale-investigation.md
+ * (measured on Electron 40.2.1 / 41.10.4 / 42.4.0, macOS Retina scaleFactor 2).
+ */
+export type OsrScalePolicy = "device-scale" | "unit-scale";
+
+/** Parse the Electron major version; 0 when missing or malformed. */
+export const resolveElectronMajor = (versions: { electron?: string }): number => {
+  const [major] = (versions.electron ?? "").split(".");
+  const parsed = parseInt(major ?? "", 10);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+/** `offscreen.deviceScaleFactor` exists (and is honored) from Electron 41. */
+export const resolveOsrScalePolicy = (electronMajor: number): OsrScalePolicy =>
+  electronMajor >= 41 ? "unit-scale" : "device-scale";
+
+/**
+ * Window DIP size for the requested pixel size under the given policy.
+ * Under unit-scale DIP == px, so the size passes through; under device-scale
+ * only `pixelExact` pre-divides by the display scaleFactor (legacy behavior).
+ */
+export const resolveWindowDipSize = (
+  options: Pick<TextureBridgeOptions, "width" | "height" | "pixelExact">,
+  policy: OsrScalePolicy,
+  scaleFactor: number,
+): { width: number; height: number } => {
+  if (policy === "unit-scale") return { width: options.width, height: options.height };
+  if (options.pixelExact === true)
+    return computeDipSize(options.width, options.height, scaleFactor);
+  return { width: options.width, height: options.height };
+};
+
 interface PaintEvent extends Event {
   texture?: PaintTexture;
 }
@@ -47,18 +92,21 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
   private _disposed = false;
   private lastDropReason: PaintDefect["reason"] | null = null;
   private options: TextureBridgeOptions;
+  private readonly policy: OsrScalePolicy;
 
   constructor(
     renderWindow: BrowserWindow,
     sender: InstanceType<typeof TextureSender>,
     previewManager: PreviewManager | null,
     options: TextureBridgeOptions,
+    policy: OsrScalePolicy = resolveOsrScalePolicy(resolveElectronMajor(process.versions)),
   ) {
     super();
     this._renderWindow = renderWindow;
     this.sender = sender;
     this.previewManager = previewManager;
     this.options = options;
+    this.policy = policy;
   }
 
   get renderWindow(): BrowserWindow {
@@ -146,13 +194,14 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
     const prevOpts = this.options;
     this.options = { ...this.options, width, height };
 
-    // 1. Resize offscreen BrowserWindow. When `pixelExact` is set the caller's
-    //    width/height are pixel-space, so translate to DIP via the primary
-    //    display's scaleFactor before passing to setSize.
-    const dip =
-      this.options.pixelExact === true
-        ? computeDipSize(width, height, screen.getPrimaryDisplay().scaleFactor)
-        : { width, height };
+    // 1. Resize offscreen BrowserWindow. Under `"unit-scale"` DIP == px, so the
+    //    requested size passes through; under `"device-scale"` `pixelExact`
+    //    pre-divides by the primary display's scaleFactor.
+    const dip = resolveWindowDipSize(
+      this.options,
+      this.policy,
+      screen.getPrimaryDisplay().scaleFactor,
+    );
     this._renderWindow.setSize(dip.width, dip.height);
 
     // 2. Recreate native sender with new dimensions.
@@ -164,10 +213,11 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
       this.sender = new TextureSender(this.options.name, width, height);
     } catch (err) {
       this.options = prevOpts;
-      const prevDip =
-        prevOpts.pixelExact === true
-          ? computeDipSize(prevOpts.width, prevOpts.height, screen.getPrimaryDisplay().scaleFactor)
-          : { width: prevOpts.width, height: prevOpts.height };
+      const prevDip = resolveWindowDipSize(
+        prevOpts,
+        this.policy,
+        screen.getPrimaryDisplay().scaleFactor,
+      );
       this._renderWindow.setSize(prevDip.width, prevDip.height);
       this.sender = new TextureSender(prevOpts.name, prevOpts.width, prevOpts.height);
       throw err;
@@ -213,25 +263,38 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
  * is the documented recipe for Chromium to emit per-pixel alpha into the
  * shared texture. The page itself must use a transparent background
  * (`html, body { background: transparent }`) for the alpha to mean anything.
+ *
+ * `policy` selects the `offscreen` prefs and `enableLargerThanScreen` gating:
+ * under `"unit-scale"` `deviceScaleFactor` is pinned to 1 and
+ * `enableLargerThanScreen` is always set (the DIP size equals the requested
+ * pixel size, which may exceed the display's work area); under
+ * `"device-scale"` behavior is unchanged from before this option existed.
  */
 export function buildBrowserWindowOptions(
   options: TextureBridgeOptions,
+  policy: OsrScalePolicy,
 ): Electron.BrowserWindowConstructorOptions {
   const { width, height, webPreferences, includeAlpha, pixelExact } = options;
+
+  const offscreen =
+    policy === "unit-scale"
+      ? { useSharedTexture: true, deviceScaleFactor: 1 }
+      : { useSharedTexture: true };
+  const largerThanScreen = policy === "unit-scale" || pixelExact === true;
 
   return {
     width,
     height,
     show: false,
     // `enableLargerThanScreen` is documented as macOS-only but is harmless on
-    // other platforms. We set it whenever `pixelExact` is requested so the
-    // offscreen window's DIP size — which may be larger than the display when
-    // the system DPI is < 100% — is not clamped to the work area.
-    ...(pixelExact === true ? { enableLargerThanScreen: true } : {}),
+    // other platforms. Under unit-scale the DIP size equals the requested pixel
+    // size — which may exceed the display work area — so it is always set;
+    // under device-scale it is set only when `pixelExact` requests it.
+    ...(largerThanScreen ? { enableLargerThanScreen: true } : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      offscreen: { useSharedTexture: true },
+      offscreen,
       ...webPreferences,
     },
     // Hex `#RRGGBBAA` with alpha=0x00 is the explicit "fully transparent
@@ -253,18 +316,17 @@ export async function createTextureBridge(options: TextureBridgeOptions): Promis
     throw new Error("createTextureBridge() must be called after app.whenReady()");
   }
 
-  const { name, width, height, frameRate = 60, rendererUrl, preview, pixelExact } = options;
+  const { name, width, height, frameRate = 60, rendererUrl, preview } = options;
+
+  const policy = resolveOsrScalePolicy(resolveElectronMajor(process.versions));
 
   // ---- Offscreen BrowserWindow ----
-  // When pixelExact is set, the caller's width/height are pixel-space — translate
-  // to DIP via the primary display's scaleFactor before constructing the window
-  // so the resulting framebuffer lands at the requested pixel count. The sender
-  // below always uses pixel-space dimensions.
-  const windowOptions: TextureBridgeOptions =
-    pixelExact === true
-      ? { ...options, ...computeDipSize(width, height, screen.getPrimaryDisplay().scaleFactor) }
-      : options;
-  const renderWindow = new BrowserWindow(buildBrowserWindowOptions(windowOptions));
+  // Window DIP size per the OSR scale policy: under unit-scale DIP == px so the
+  // requested size passes through; under device-scale (Electron ≤ 40) pixelExact
+  // pre-divides by the primary display's scaleFactor. The sender below always
+  // uses pixel-space dimensions.
+  const dip = resolveWindowDipSize(options, policy, screen.getPrimaryDisplay().scaleFactor);
+  const renderWindow = new BrowserWindow(buildBrowserWindowOptions({ ...options, ...dip }, policy));
 
   // ---- Native sender ----
   const sender = new TextureSender(name, width, height);
@@ -277,7 +339,7 @@ export async function createTextureBridge(options: TextureBridgeOptions): Promis
   }
 
   // ---- Bridge instance ----
-  const bridge = new TextureBridgeImpl(renderWindow, sender, previewManager, options);
+  const bridge = new TextureBridgeImpl(renderWindow, sender, previewManager, options, policy);
 
   // ---- Paint handler (delegates to instance method, no private field access) ----
   renderWindow.webContents.on("paint", (event: PaintEvent) => {

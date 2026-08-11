@@ -1,35 +1,84 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Mock Electron and the native core so we can import bridge.ts in node tests.
 // `buildBrowserWindowOptions` is a pure function, but the module-level
 // `import { app, BrowserWindow } from "electron"` would otherwise pull the
 // real native module.
+const getPrimaryDisplayMock = vi.fn(() => ({ scaleFactor: 1 }));
+
+// Captures every `new BrowserWindow(options)` call made by `createTextureBridge`
+// so tests can assert on the constructed window options without a real
+// native module. Existing tests construct `new BrowserWindow()` with no
+// args, so the `options !== undefined` guard keeps those unaffected.
+const constructedWindowOptions: Electron.BrowserWindowConstructorOptions[] = [];
+
 vi.mock("electron", () => ({
   app: { isReady: () => true },
   BrowserWindow: class MockBrowserWindow {
+    setSize = vi.fn();
+    webContents = { on: vi.fn(), setFrameRate: vi.fn() };
+    loadURL = vi.fn(async () => undefined);
+    loadFile = vi.fn(async () => undefined);
+    constructor(options?: Electron.BrowserWindowConstructorOptions) {
+      if (options !== undefined) constructedWindowOptions.push(options);
+    }
     isDestroyed(): boolean {
       return false;
     }
     close(): void {}
   },
   screen: {
-    getPrimaryDisplay: () => ({ scaleFactor: 1 }),
+    getPrimaryDisplay: () => getPrimaryDisplayMock(),
   },
 }));
 
+// Lets resize-rollback tests force the sender constructor to throw exactly N
+// times without a `let` rebinding — a plain mutable holder object instead.
+// Counting (rather than a boolean) lets the *forward* construction throw
+// while the *rollback* reconstruction succeeds, so the rollback path is
+// genuinely exercised rather than short-circuited by a second throw.
+const senderCtorBehavior = { throwsRemaining: 0 };
+
+// Records every `new TextureSender(name, width, height)` call so tests can
+// assert the sender is always constructed in pixel space, under both OSR
+// scale policies — a regression passing DIP sizes here would otherwise be
+// invisible since MockTextureSender previously ignored its ctor args.
+const senderCtorArgs: Array<readonly [string, number, number]> = [];
+
 vi.mock("@napolab/texture-bridge-core", () => ({
   TextureSender: class MockTextureSender {
+    constructor(name?: string, width?: number, height?: number) {
+      if (senderCtorBehavior.throwsRemaining > 0) {
+        senderCtorBehavior.throwsRemaining -= 1;
+        throw new Error("sender ctor failed");
+      }
+      if (name !== undefined) senderCtorArgs.push([name, width ?? 0, height ?? 0]);
+    }
     stop(): void {}
   },
   sendTextureFromPaintEvent: vi.fn(),
 }));
 
-import { buildBrowserWindowOptions, computeDipSize, TextureBridgeImpl } from "../bridge";
+import {
+  buildBrowserWindowOptions,
+  computeDipSize,
+  createTextureBridge,
+  resolveElectronMajor,
+  resolveOsrScalePolicy,
+  resolveWindowDipSize,
+  TextureBridgeImpl,
+} from "../bridge";
 import { BrowserWindow } from "electron";
 import { TextureSender, sendTextureFromPaintEvent } from "@napolab/texture-bridge-core";
 import type { PaintDefect, PaintTexture } from "@napolab/texture-bridge-core";
 import type { TextureBridgeOptions } from "../types";
 import type { PreviewManager } from "../preview-manager";
+
+afterEach(() => {
+  getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 1 });
+  senderCtorBehavior.throwsRemaining = 0;
+  senderCtorArgs.length = 0;
+});
 
 const baseOpts: TextureBridgeOptions = {
   name: "test",
@@ -40,13 +89,16 @@ const baseOpts: TextureBridgeOptions = {
 
 describe("buildBrowserWindowOptions", () => {
   it("forwards width and height to the BrowserWindow constructor args", () => {
-    const out = buildBrowserWindowOptions({ ...baseOpts, width: 1280, height: 720 });
+    const out = buildBrowserWindowOptions(
+      { ...baseOpts, width: 1280, height: 720 },
+      "device-scale",
+    );
     expect(out.width).toBe(1280);
     expect(out.height).toBe(720);
   });
 
   it("creates a hidden offscreen window with sharedTexture by default", () => {
-    const out = buildBrowserWindowOptions(baseOpts);
+    const out = buildBrowserWindowOptions(baseOpts, "device-scale");
     expect(out.show).toBe(false);
     expect(out.webPreferences?.contextIsolation).toBe(true);
     expect(out.webPreferences?.nodeIntegration).toBe(false);
@@ -56,7 +108,7 @@ describe("buildBrowserWindowOptions", () => {
   });
 
   it("does not enable transparent by default", () => {
-    const out = buildBrowserWindowOptions(baseOpts);
+    const out = buildBrowserWindowOptions(baseOpts, "device-scale");
     expect(out.transparent).toBeUndefined();
     expect(out.backgroundColor).toBeUndefined();
   });
@@ -66,22 +118,25 @@ describe("buildBrowserWindowOptions", () => {
     // when both flags are set on the BrowserWindow. transparent:true alone
     // leaves Chromium painting an opaque backdrop; backgroundColor with the
     // alpha byte zero is what flips the initial fill to fully-transparent.
-    const out = buildBrowserWindowOptions({ ...baseOpts, includeAlpha: true });
+    const out = buildBrowserWindowOptions({ ...baseOpts, includeAlpha: true }, "device-scale");
     expect(out.transparent).toBe(true);
     expect(out.backgroundColor).toBe("#00000000");
   });
 
   it("treats includeAlpha: false the same as omitted", () => {
-    const out = buildBrowserWindowOptions({ ...baseOpts, includeAlpha: false });
+    const out = buildBrowserWindowOptions({ ...baseOpts, includeAlpha: false }, "device-scale");
     expect(out.transparent).toBeUndefined();
     expect(out.backgroundColor).toBeUndefined();
   });
 
   it("preserves caller-supplied webPreferences (merge over the offscreen base)", () => {
-    const out = buildBrowserWindowOptions({
-      ...baseOpts,
-      webPreferences: { backgroundThrottling: false },
-    });
+    const out = buildBrowserWindowOptions(
+      {
+        ...baseOpts,
+        webPreferences: { backgroundThrottling: false },
+      },
+      "device-scale",
+    );
     expect(out.webPreferences?.backgroundThrottling).toBe(false);
     expect(out.webPreferences?.offscreen).toEqual({ useSharedTexture: true });
   });
@@ -89,15 +144,18 @@ describe("buildBrowserWindowOptions", () => {
   it("lets caller-supplied webPreferences override the base defaults", () => {
     // Documents the existing override behavior in createTextureBridge so we
     // do not silently regress when refactoring the helper.
-    const out = buildBrowserWindowOptions({
-      ...baseOpts,
-      webPreferences: { contextIsolation: false },
-    });
+    const out = buildBrowserWindowOptions(
+      {
+        ...baseOpts,
+        webPreferences: { contextIsolation: false },
+      },
+      "device-scale",
+    );
     expect(out.webPreferences?.contextIsolation).toBe(false);
   });
 
   it("does not set enableLargerThanScreen by default", () => {
-    const out = buildBrowserWindowOptions(baseOpts);
+    const out = buildBrowserWindowOptions(baseOpts, "device-scale");
     expect(out.enableLargerThanScreen).toBeUndefined();
   });
 
@@ -108,13 +166,58 @@ describe("buildBrowserWindowOptions", () => {
     // pre-translated a large pixel target into DIP via `computeDipSize`
     // and the resulting DIP is still larger than the display's available
     // area (rare, but possible on small / low-DPR monitors).
-    const out = buildBrowserWindowOptions({ ...baseOpts, pixelExact: true });
+    const out = buildBrowserWindowOptions({ ...baseOpts, pixelExact: true }, "device-scale");
     expect(out.enableLargerThanScreen).toBe(true);
   });
 
   it("treats pixelExact: false the same as omitted", () => {
-    const out = buildBrowserWindowOptions({ ...baseOpts, pixelExact: false });
+    const out = buildBrowserWindowOptions({ ...baseOpts, pixelExact: false }, "device-scale");
     expect(out.enableLargerThanScreen).toBeUndefined();
+  });
+});
+
+describe("buildBrowserWindowOptions — OSR scale policy", () => {
+  it("pins offscreen.deviceScaleFactor to 1 under unit-scale", () => {
+    const out = buildBrowserWindowOptions(baseOpts, "unit-scale");
+    expect(out.webPreferences?.offscreen).toEqual({ useSharedTexture: true, deviceScaleFactor: 1 });
+  });
+
+  it("does not set deviceScaleFactor under device-scale", () => {
+    const out = buildBrowserWindowOptions(baseOpts, "device-scale");
+    expect(out.webPreferences?.offscreen).toEqual({ useSharedTexture: true });
+  });
+
+  it("always enables enableLargerThanScreen under unit-scale", () => {
+    const out = buildBrowserWindowOptions(baseOpts, "unit-scale");
+    expect(out.enableLargerThanScreen).toBe(true);
+  });
+
+  it("keeps enableLargerThanScreen gated on pixelExact under device-scale", () => {
+    expect(
+      buildBrowserWindowOptions(baseOpts, "device-scale").enableLargerThanScreen,
+    ).toBeUndefined();
+    expect(
+      buildBrowserWindowOptions({ ...baseOpts, pixelExact: true }, "device-scale")
+        .enableLargerThanScreen,
+    ).toBe(true);
+  });
+
+  it("lets a user-supplied webPreferences.offscreen win entirely", () => {
+    // `deviceScaleFactor` was added to Electron's `Offscreen` type in 41; the
+    // workspace's installed Electron types are 40.x, so a fresh object
+    // literal directly in the `offscreen` position would fail the excess
+    // property check (TS2353) even though it is a valid runtime value on
+    // Electron >= 41. Binding it to a named const first sidesteps the
+    // literal-only excess property check without weakening the assertion.
+    const userOffscreen = { useSharedTexture: true, deviceScaleFactor: 2 };
+    const out = buildBrowserWindowOptions(
+      {
+        ...baseOpts,
+        webPreferences: { offscreen: userOffscreen },
+      },
+      "unit-scale",
+    );
+    expect(out.webPreferences?.offscreen).toEqual({ useSharedTexture: true, deviceScaleFactor: 2 });
   });
 });
 
@@ -333,5 +436,161 @@ describe("TextureBridgeImpl.handlePaint — frameDropped", () => {
 
     expect(sendFrame).toHaveBeenCalledTimes(1);
     expect(sendFrame).toHaveBeenCalledWith(texture);
+  });
+});
+
+describe("resolveElectronMajor", () => {
+  it("parses the major version from a semver string", () => {
+    expect(resolveElectronMajor({ electron: "42.4.0" })).toBe(42);
+    expect(resolveElectronMajor({ electron: "40.2.1" })).toBe(40);
+  });
+
+  it("returns 0 when the electron version is missing or malformed", () => {
+    expect(resolveElectronMajor({})).toBe(0);
+    expect(resolveElectronMajor({ electron: "garbage" })).toBe(0);
+  });
+});
+
+describe("resolveOsrScalePolicy", () => {
+  it("selects device-scale for Electron 40 and below", () => {
+    expect(resolveOsrScalePolicy(40)).toBe("device-scale");
+    expect(resolveOsrScalePolicy(0)).toBe("device-scale");
+  });
+
+  it("selects unit-scale for Electron 41 and above", () => {
+    expect(resolveOsrScalePolicy(41)).toBe("unit-scale");
+    expect(resolveOsrScalePolicy(42)).toBe("unit-scale");
+  });
+});
+
+describe("resolveWindowDipSize", () => {
+  it("returns width/height untouched under unit-scale, even with pixelExact", () => {
+    const size = resolveWindowDipSize(
+      { width: 1920, height: 1080, pixelExact: true },
+      "unit-scale",
+      2,
+    );
+    expect(size).toEqual({ width: 1920, height: 1080 });
+  });
+
+  it("divides by scaleFactor under device-scale when pixelExact is set", () => {
+    const size = resolveWindowDipSize(
+      { width: 1920, height: 1080, pixelExact: true },
+      "device-scale",
+      2,
+    );
+    expect(size).toEqual({ width: 960, height: 540 });
+  });
+
+  it("returns width/height untouched under device-scale without pixelExact", () => {
+    const size = resolveWindowDipSize({ width: 1920, height: 1080 }, "device-scale", 2);
+    expect(size).toEqual({ width: 1920, height: 1080 });
+  });
+});
+
+describe("TextureBridgeImpl.resize — OSR scale policy", () => {
+  const makeBridgeWithPolicy = (
+    policy: "device-scale" | "unit-scale",
+    opts: TextureBridgeOptions,
+  ) =>
+    new TextureBridgeImpl(new BrowserWindow(), new TextureSender("t", 16, 9), null, opts, policy);
+
+  it("sets the window to the raw pixel size under unit-scale even with pixelExact", () => {
+    getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 2 });
+    const bridge = makeBridgeWithPolicy("unit-scale", { ...baseOpts, pixelExact: true });
+
+    bridge.resize(1280, 720);
+
+    expect(bridge.renderWindow.setSize).toHaveBeenCalledWith(1280, 720);
+    expect(senderCtorArgs.at(-1)).toEqual(["test", 1280, 720]);
+  });
+
+  it("divides the window size by scaleFactor under device-scale with pixelExact", () => {
+    getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 2 });
+    const bridge = makeBridgeWithPolicy("device-scale", { ...baseOpts, pixelExact: true });
+
+    bridge.resize(1280, 720);
+
+    expect(bridge.renderWindow.setSize).toHaveBeenCalledWith(640, 360);
+    expect(senderCtorArgs.at(-1)).toEqual(["test", 1280, 720]);
+  });
+
+  it("rolls the window size back when the new sender cannot be constructed", () => {
+    getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 2 });
+    const win = new BrowserWindow();
+    const bridge = new TextureBridgeImpl(
+      win,
+      new TextureSender("t", 16, 9),
+      null,
+      { ...baseOpts, pixelExact: true },
+      "device-scale",
+    );
+
+    // Exactly one throw: the *forward* `new TextureSender(...)` fails, the
+    // *rollback* reconstruction inside the catch block must succeed — so the
+    // final `throw err` genuinely rethrows the original forward error rather
+    // than short-circuiting on a second throw from the rollback itself.
+    senderCtorBehavior.throwsRemaining = 1;
+    expect(() => bridge.resize(1280, 720)).toThrow("sender ctor failed");
+    expect(senderCtorBehavior.throwsRemaining).toBe(0);
+
+    expect(vi.mocked(win.setSize).mock.calls).toEqual([
+      [640, 360], // forward: 1280x720 / scaleFactor 2
+      [960, 540], // rollback: baseOpts 1920x1080 / scaleFactor 2
+    ]);
+
+    // The rolled-back sender is functional: a subsequent resize succeeds.
+    expect(() => bridge.resize(1024, 512)).not.toThrow();
+  });
+});
+
+describe("createTextureBridge — OSR scale policy wiring", () => {
+  const withElectronMajor = async (version: string, run: () => Promise<void>): Promise<void> => {
+    const original = Object.getOwnPropertyDescriptor(process.versions, "electron");
+    Object.defineProperty(process.versions, "electron", { value: version, configurable: true });
+    try {
+      await run();
+    } finally {
+      if (original) Object.defineProperty(process.versions, "electron", original);
+      else Reflect.deleteProperty(process.versions, "electron");
+    }
+  };
+
+  it("builds the window at raw pixel size with deviceScaleFactor pinned on Electron >= 41", async () => {
+    await withElectronMajor("42.0.0", async () => {
+      getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 2 });
+      constructedWindowOptions.length = 0;
+
+      const bridge = await createTextureBridge({ ...baseOpts, pixelExact: true });
+
+      const [windowOptions] = constructedWindowOptions;
+      expect(windowOptions?.width).toBe(1920);
+      expect(windowOptions?.height).toBe(1080);
+      expect(windowOptions?.enableLargerThanScreen).toBe(true);
+      expect(windowOptions?.webPreferences?.offscreen).toEqual({
+        useSharedTexture: true,
+        deviceScaleFactor: 1,
+      });
+      expect(senderCtorArgs).toContainEqual(["test", 1920, 1080]);
+
+      // policy handoff to the impl: resize under unit-scale ignores pixelExact
+      bridge.resize(1280, 720);
+      expect(bridge.renderWindow.setSize).toHaveBeenCalledWith(1280, 720);
+    });
+  });
+
+  it("keeps legacy DIP division on Electron 40", async () => {
+    await withElectronMajor("40.2.1", async () => {
+      getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 2 });
+      constructedWindowOptions.length = 0;
+
+      await createTextureBridge({ ...baseOpts, pixelExact: true });
+
+      const [windowOptions] = constructedWindowOptions;
+      expect(windowOptions?.width).toBe(960);
+      expect(windowOptions?.height).toBe(540);
+      expect(windowOptions?.webPreferences?.offscreen).toEqual({ useSharedTexture: true });
+      expect(senderCtorArgs).toContainEqual(["test", 1920, 1080]);
+    });
   });
 });

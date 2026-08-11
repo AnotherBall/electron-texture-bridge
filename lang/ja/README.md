@@ -261,10 +261,12 @@ win.webContents.on("paint", (details) => {
 
 > ### macOS Retina と Windows DPI スケーリング
 >
-> ⚠️ **黒画面・崩れた出力の最大の原因です。** Chromium はオフスクリーン面を **DIP（デバイス非依存ピクセル）** でサイズ指定するため、共有テクスチャに実際に渡されるフレームバッファは `width × height × display.scaleFactor` になります。**macOS Retina**（scaleFactor 2）では `new TextureSender("X", 1280, 720)` と宣言したつもりが **2560×1440** のテクスチャを生成してしまい、センダーの宣言サイズと実フレームバッファが食い違って、レシーバー側が黒や崩れた表示になります。Windows のディスプレイスケーリング（150% / 175%）でも同じ不一致が起きます。
+> ⚠️ **Electron 40 以下では黒画面・崩れた出力の最大の原因です。** オフスクリーンフレームバッファが要求した `width × height` とどう対応するかは Electron のバージョンによって変わります:
 >
-> - **高レベル `createTextureBridge`** は **`pixelExact: true`** オプション（[`TextureBridgeOptions`](#createtexturebridgeoptions-promisetexturebridge) 参照）でこれを吸収します。BrowserWindow を DIP でサイズ指定してフレームバッファをちょうど `width × height` に着地させ、センダーを要求ピクセルサイズで登録します。
-> - **低レベル core**（手動 `BrowserWindow` + `paint`）には**吸収機構がありません** — センダーの宣言サイズと実フレームバッファサイズの整合は*自分で*取る必要があります。センダーを実フレームバッファサイズ（`宣言 = 論理 × scaleFactor`）で宣言するか、`webContents.setZoomFactor` / 固定スケールのディスプレイで DPR を打ち消すか、`createTextureBridge({ pixelExact: true })` に移行してください。
+> - **Electron ≥ 41:** `createTextureBridge` が `webPreferences.offscreen.deviceScaleFactor` を `1` に固定するため、フレームバッファは常に厳密に `width × height` ピクセルになります — ディスプレイのスケーリングはテクスチャに影響しません。（`Electron 42` は OSR のデフォルトデバイススケールファクターを `1.0` に変更しました。このオプションが初めて存在する 41 から、ブリッジが明示的に設定しています。）`pixelExact` は自明に満たされ、実質的に no-op になります。macOS では検証済みですが、Windows のディスプレイスケーリングでの検証は未実施です（調査レポートに未解決項目として記載）— Windows でクランプが発生した場合はサイズを小さくするか、[プローブスクリプト](../../packages/renderer/scripts/osr-scale-probe.cjs)で検証してください。
+> - **Electron 40:** Chromium はオフスクリーン面を **DIP（デバイス非依存ピクセル）** でサイズ指定するため、共有テクスチャに渡されるフレームバッファは `width × height × display.scaleFactor` になります。macOS Retina ディスプレイ（scaleFactor 2）では `new TextureSender("X", 1280, 720)` と宣言したつもりが **2560×1440** のテクスチャを生成してしまいます。これを吸収するには `createTextureBridge({ pixelExact: true })` を使うか、低レベル core 経路で自分で DPR を処理してください。
+>
+> **低レベル core**（手動 `BrowserWindow` + `paint`）はどのバージョンでも吸収機構がありません — Electron ≥ 41 では自分で `offscreen: { useSharedTexture: true, deviceScaleFactor: 1 }` を渡し、Electron 40 ではセンダーの宣言サイズと実フレームバッファサイズの整合を自分で取ってください。
 
 ### Electron 無しの最小サニティチェック
 
@@ -345,7 +347,7 @@ interface PreviewOptions {
 }
 ```
 
-**`pixelExact`** — `true` のとき、ホストディスプレイの DPR に関係なくオフスクリーンフレームバッファを正確に `width × height` ピクセルに固定します。指定しないと Retina（scaleFactor 2）や Windows スケーリング（150% / 175%）のディスプレイでは宣言したセンダーサイズより大きいフレームバッファが生成され、多くの場合レシーバーで黒画面/崩れになります（[Retina/DPI 警告](#macos-retina-と-windows-dpi-スケーリング)参照）。センダーは常に要求ピクセルサイズで登録されるため、レシーバーは指定どおりの寸法を受け取ります。注意: 割り切れないスケール比（例: `1920 / 1.75`）では 1 ピクセルの誤差が残ることがあり、構築時のプライマリディスプレイの scaleFactor のみが反映されます — DPI 変更後は `resize()` で再適用してください。
+**`pixelExact`** — `true` のとき、ホストディスプレイの DPR に関係なくオフスクリーンフレームバッファを正確に `width × height` ピクセルに固定します。**Electron ≥ 41:** 自明に満たされ実質的に no-op です — `createTextureBridge` がすでに `offscreen.deviceScaleFactor: 1` を固定しているため、このオプションの有無に関わらずフレームバッファは常に正確です。**Electron 40:** 指定しないと Retina（scaleFactor 2）や Windows スケーリング（150% / 175%）のディスプレイでは宣言したセンダーサイズより大きいフレームバッファが生成され、多くの場合レシーバーで黒画面/崩れになります（[Retina/DPI 警告](#macos-retina-と-windows-dpi-スケーリング)参照）。センダーは常に要求ピクセルサイズで登録されるため、レシーバーは指定どおりの寸法を受け取ります。注意: 割り切れないスケール比（例: `1920 / 1.75`）では 1 ピクセルの誤差が残ることがあり、構築時のプライマリディスプレイの scaleFactor のみが反映されます — DPI 変更後は `resize()` で再適用してください。
 
 #### `TextureBridge`
 
@@ -570,7 +572,7 @@ electron-texture-bridge/
 
 ### テクスチャが真っ黒
 
-- **DPR / Retina のサイズ不一致（最も多い）。** Retina ディスプレイや Windows のディスプレイスケーリング下では実フレームバッファが `width × height × scaleFactor` になり、論理サイズで宣言したセンダーと食い違ってレシーバーが黒/崩れになります。`createTextureBridge({ pixelExact: true })` を使うか、低レベル core 経路ではセンダーを実フレームバッファサイズで宣言するか自分で DPR を打ち消してください（[Retina/DPI 警告](#macos-retina-と-windows-dpi-スケーリング)参照）。
+- **DPR / Retina のサイズ不一致（最も多い）。** **Electron ≤ 40:** Retina ディスプレイや Windows のディスプレイスケーリング下では実フレームバッファが `width × height × scaleFactor` になり、論理サイズで宣言したセンダーと食い違ってレシーバーが黒/崩れになります。`createTextureBridge({ pixelExact: true })` を使うか、低レベル core 経路ではセンダーを実フレームバッファサイズで宣言するか自分で DPR を打ち消してください。**Electron ≥ 41:** `createTextureBridge` が OSR のデバイススケールファクターを `1` に固定するため、この不一致は発生しません — [移行ガイド: Electron 42 / OSR デバイススケール](#移行ガイド-electron-42--osr-デバイススケール)を参照してください。低レベル core 経路では自分で `offscreen: { useSharedTexture: true, deviceScaleFactor: 1 }` を渡してください。（[Retina/DPI 警告](#macos-retina-と-windows-dpi-スケーリング)参照）。
 - **Electron とブリッジの切り分け**には[Electron 無しの最小サニティチェック](#electron-無しの最小サニティチェック)を使ってください — `sendRgbaBuffer` が VJ アプリに映ればネイティブ側は健全で、問題は Electron OSR 経路にあります。
 - `preserveDrawingBuffer` は不要（Chromium のコンポジターが直接読み取る）
 - ピクセルフォーマットの不一致を確認：Chromium は BGRA を出力するので、レシーバー側も BGRA を期待しているか確認
@@ -608,6 +610,16 @@ win.webContents.on("paint", (event) => {
   }
 });
 ```
+
+## 移行ガイド: Electron 42 / OSR デバイススケール
+
+Electron 42 でオフスクリーンレンダリングのデフォルトデバイススケールファクターが `1.0` に変更されました（[breaking change](https://www.electronjs.org/docs/latest/breaking-changes)）。この変更を含む texture-bridge のリリース以降（CHANGELOG 参照）、`createTextureBridge` は Electron ≥ 41 で `offscreen.deviceScaleFactor: 1` を固定するため、`width`/`height` はどのディスプレイでも正確なピクセル数を意味するようになります。
+
+- **`pixelExact: true` を使っていた場合**（Electron 40 など）: そのままで問題ありません — Electron ≥ 41 では no-op であり、40 では引き続き必要です。
+- **自分でスケーリングを回避していた場合**（`force-device-scale-factor=1`、手動の DIP 計算、Electron 42 で 1/4 解像度になった後に `pixelExact` を外す、など）: アップグレード後はこれらの回避策は不要になります。
+- **意図的にスケーリングされたフレームバッファが欲しい場合**は、自分で `webPreferences: { offscreen: { useSharedTexture: true, deviceScaleFactor: <n> } }` を渡してください — ユーザー指定の `offscreen` ブロックは常に優先されます。
+
+実測データの背景: `reports/2026-08-11-pixelexact-osr-scale-investigation.md`。
 
 ## CI/CD
 
