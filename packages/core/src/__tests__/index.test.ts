@@ -86,14 +86,106 @@ describe("sendTextureFromPaintEvent", () => {
     }
   });
 
-  it("does nothing when textureInfo is undefined", async () => {
+  it("returns a no-texture defect when textureInfo is undefined", async () => {
     const { sendTextureFromPaintEvent, TextureSender } = await import("../index");
     const sender = new TextureSender("Test", 1920, 1080);
 
-    // Should not throw
-    sendTextureFromPaintEvent(sender, undefined);
+    const defect = sendTextureFromPaintEvent(sender, undefined);
+    expect(defect).toEqual({ reason: "no-texture" });
     expect(mockSend).not.toHaveBeenCalled();
     expect(mockSendSurface).not.toHaveBeenCalled();
+  });
+
+  it("returns undefined on successful darwin send", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+
+    try {
+      const { sendTextureFromPaintEvent, TextureSender } = await import("../index");
+      const sender = new TextureSender("Test", 1920, 1080);
+
+      const textureInfo = {
+        pixelFormat: "bgra" as const,
+        codedSize: { width: 1920, height: 1080 },
+        visibleRect: { x: 0, y: 0, width: 1920, height: 1080 },
+        handle: { ioSurface: Buffer.alloc(8) },
+      };
+
+      expect(sendTextureFromPaintEvent(sender, textureInfo)).toBeUndefined();
+      expect(mockSendSurface).toHaveBeenCalledTimes(1);
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    }
+  });
+
+  it("returns a no-io-surface defect on darwin when the handle lacks ioSurface", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+
+    try {
+      const { sendTextureFromPaintEvent, TextureSender } = await import("../index");
+      const sender = new TextureSender("Test", 1920, 1080);
+
+      const textureInfo = {
+        pixelFormat: "bgra" as const,
+        codedSize: { width: 1920, height: 1080 },
+        visibleRect: { x: 0, y: 0, width: 1920, height: 1080 },
+        handle: {},
+      };
+
+      expect(sendTextureFromPaintEvent(sender, textureInfo)).toEqual({ reason: "no-io-surface" });
+      expect(mockSendSurface).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    }
+  });
+
+  it("returns a no-nt-handle defect on win32 when the handle lacks ntHandle", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32" });
+
+    try {
+      const { sendTextureFromPaintEvent, TextureSender } = await import("../index");
+      const sender = new TextureSender("Test", 1920, 1080);
+
+      const textureInfo = {
+        pixelFormat: "bgra" as const,
+        codedSize: { width: 1920, height: 1080 },
+        visibleRect: { x: 0, y: 0, width: 1920, height: 1080 },
+        handle: {},
+      };
+
+      expect(sendTextureFromPaintEvent(sender, textureInfo)).toEqual({ reason: "no-nt-handle" });
+      expect(mockSend).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    }
+  });
+
+  it("returns an unsupported-platform defect on linux", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "linux" });
+
+    try {
+      const { sendTextureFromPaintEvent, TextureSender } = await import("../index");
+      const sender = new TextureSender("Test", 1920, 1080);
+
+      const textureInfo = {
+        pixelFormat: "bgra" as const,
+        codedSize: { width: 1920, height: 1080 },
+        visibleRect: { x: 0, y: 0, width: 1920, height: 1080 },
+        handle: { ioSurface: Buffer.alloc(8) },
+      };
+
+      expect(sendTextureFromPaintEvent(sender, textureInfo)).toEqual({
+        reason: "unsupported-platform",
+        platform: "linux",
+      });
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockSendSurface).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    }
   });
 
   it("surfaces stopped-sender error instead of swallowing it", async () => {
