@@ -17,7 +17,10 @@ vi.mock("@napolab/texture-bridge-core", () => ({
   sendTextureFromPaintEvent: vi.fn(),
 }));
 
-import { buildBrowserWindowOptions, computeDipSize } from "../bridge";
+import { buildBrowserWindowOptions, computeDipSize, TextureBridgeImpl } from "../bridge";
+import { BrowserWindow } from "electron";
+import { TextureSender, sendTextureFromPaintEvent } from "@napolab/texture-bridge-core";
+import type { PaintDefect } from "@napolab/texture-bridge-core";
 import type { TextureBridgeOptions } from "../types";
 
 const baseOpts: TextureBridgeOptions = {
@@ -143,5 +146,111 @@ describe("computeDipSize", () => {
     // Infinity and crash the BrowserWindow constructor.
     expect(computeDipSize(1920, 1080, 0)).toEqual({ width: 1920, height: 1080 });
     expect(computeDipSize(1920, 1080, -1)).toEqual({ width: 1920, height: 1080 });
+  });
+});
+
+describe("TextureBridgeImpl.handlePaint — frameDropped", () => {
+  const sendMock = vi.mocked(sendTextureFromPaintEvent);
+
+  const makeBridge = () =>
+    new TextureBridgeImpl(new BrowserWindow(), new TextureSender("t", 16, 9), null, baseOpts);
+
+  const makeTexture = () => ({
+    textureInfo: {
+      pixelFormat: "bgra" as const,
+      codedSize: { width: 16, height: 9 },
+      visibleRect: { x: 0, y: 0, width: 16, height: 9 },
+      handle: {},
+    },
+    release: vi.fn(),
+  });
+
+  const collectDropped = (bridge: TextureBridgeImpl) => {
+    const dropped: PaintDefect[] = [];
+    bridge.on("frameDropped", (defect) => {
+      dropped.push(defect);
+    });
+    return dropped;
+  };
+
+  it("emits a no-texture defect when the paint event has no texture", () => {
+    sendMock.mockReset();
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+
+    bridge.handlePaint({ texture: undefined });
+
+    expect(dropped).toEqual([{ reason: "no-texture" }]);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("emits the defect returned by sendTextureFromPaintEvent and still releases the texture", () => {
+    sendMock.mockReset();
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+    const texture = makeTexture();
+
+    bridge.handlePaint({ texture });
+
+    expect(dropped).toEqual([{ reason: "no-nt-handle" }]);
+    expect(texture.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("dedupes consecutive defects with the same reason", () => {
+    sendMock.mockReset();
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+
+    bridge.handlePaint({ texture: makeTexture() });
+    bridge.handlePaint({ texture: makeTexture() });
+    bridge.handlePaint({ texture: makeTexture() });
+
+    expect(dropped).toEqual([{ reason: "no-nt-handle" }]);
+  });
+
+  it("re-emits after a successful send resets the dedupe state", () => {
+    sendMock.mockReset();
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    bridge.handlePaint({ texture: makeTexture() });
+
+    sendMock.mockReturnValue(undefined);
+    bridge.handlePaint({ texture: makeTexture() });
+
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    bridge.handlePaint({ texture: makeTexture() });
+
+    expect(dropped).toEqual([{ reason: "no-nt-handle" }, { reason: "no-nt-handle" }]);
+  });
+
+  it("emits immediately when the defect reason changes", () => {
+    sendMock.mockReset();
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    bridge.handlePaint({ texture: makeTexture() });
+
+    sendMock.mockReturnValue({ reason: "no-io-surface" });
+    bridge.handlePaint({ texture: makeTexture() });
+
+    expect(dropped).toEqual([{ reason: "no-nt-handle" }, { reason: "no-io-surface" }]);
+  });
+
+  it("does not emit frameDropped on a successful send", () => {
+    sendMock.mockReset();
+    sendMock.mockReturnValue(undefined);
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+    const texture = makeTexture();
+
+    bridge.handlePaint({ texture });
+
+    expect(dropped).toEqual([]);
+    expect(texture.release).toHaveBeenCalledTimes(1);
   });
 });

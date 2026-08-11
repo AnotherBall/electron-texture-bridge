@@ -4,6 +4,7 @@ import {
   TextureSender,
   sendTextureFromPaintEvent,
   type PaintTexture,
+  type PaintDefect,
 } from "@napolab/texture-bridge-core";
 import { PreviewManager } from "./preview-manager";
 import { FpsCounter } from "./fps-counter";
@@ -37,12 +38,14 @@ interface PaintEvent extends Event {
   texture?: PaintTexture;
 }
 
-class TextureBridgeImpl extends EventEmitter implements TextureBridge {
+/** Exported for unit tests — not part of the package's public entry point. */
+export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
   private _renderWindow: BrowserWindow;
   private sender: InstanceType<typeof TextureSender>;
   private previewManager: PreviewManager | null;
   private fpsCounter = new FpsCounter();
   private _disposed = false;
+  private lastDropReason: PaintDefect["reason"] | null = null;
   private options: TextureBridgeOptions;
 
   constructor(
@@ -70,10 +73,21 @@ class TextureBridgeImpl extends EventEmitter implements TextureBridge {
     return this._disposed;
   }
 
+  /** Emit `frameDropped`, deduping consecutive drops with the same reason. */
+  private emitFrameDropped(defect: PaintDefect): void {
+    if (defect.reason === this.lastDropReason) return;
+    this.lastDropReason = defect.reason;
+    this.emit("frameDropped", defect);
+  }
+
   /** Handle a paint event from the offscreen BrowserWindow. */
-  handlePaint(event: PaintEvent): void {
+  handlePaint(event: { texture?: PaintTexture }): void {
     const texture = event.texture;
-    if (!texture?.textureInfo) return;
+    if (!texture?.textureInfo) {
+      texture?.release?.();
+      this.emitFrameDropped({ reason: "no-texture" });
+      return;
+    }
 
     // If we've been disposed between the paint event and this callback, the
     // underlying sender has been stopped and calling into it would throw
@@ -85,7 +99,12 @@ class TextureBridgeImpl extends EventEmitter implements TextureBridge {
     }
 
     try {
-      sendTextureFromPaintEvent(this.sender, texture.textureInfo);
+      const defect = sendTextureFromPaintEvent(this.sender, texture.textureInfo);
+      if (defect === undefined) {
+        this.lastDropReason = null;
+      } else {
+        this.emitFrameDropped(defect);
+      }
       this.previewManager?.sendFrame(texture);
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
