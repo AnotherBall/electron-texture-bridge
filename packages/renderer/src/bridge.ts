@@ -83,6 +83,17 @@ interface PaintEvent extends Event {
   texture?: PaintTexture;
 }
 
+/**
+ * Injectable constructors for {@link createTextureBridgeWith}. Lets tests and
+ * embedders swap the BrowserWindow / native sender without faking Electron
+ * globals (the pattern consumers previously built themselves as
+ * `createDeckWith(createBridge)`).
+ */
+export interface TextureBridgeDeps {
+  createWindow: (options: Electron.BrowserWindowConstructorOptions) => BrowserWindow;
+  createSender: (name: string, width: number, height: number) => InstanceType<typeof TextureSender>;
+}
+
 /** Exported for unit tests — not part of the package's public entry point. */
 export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
   private _renderWindow: BrowserWindow;
@@ -93,6 +104,7 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
   private lastDropReason: PaintDefect["reason"] | null = null;
   private options: TextureBridgeOptions;
   private readonly policy: OsrScalePolicy;
+  private readonly createSender: TextureBridgeDeps["createSender"];
 
   constructor(
     renderWindow: BrowserWindow,
@@ -100,6 +112,8 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
     previewManager: PreviewManager | null,
     options: TextureBridgeOptions,
     policy: OsrScalePolicy = resolveOsrScalePolicy(resolveElectronMajor(process.versions)),
+    createSender: TextureBridgeDeps["createSender"] = (name, width, height) =>
+      new TextureSender(name, width, height),
   ) {
     super();
     this._renderWindow = renderWindow;
@@ -107,6 +121,7 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
     this.previewManager = previewManager;
     this.options = options;
     this.policy = policy;
+    this.createSender = createSender;
   }
 
   get renderWindow(): BrowserWindow {
@@ -210,7 +225,7 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
     //    If the new sender fails, restore one with the original dimensions.
     this.sender.stop();
     try {
-      this.sender = new TextureSender(this.options.name, width, height);
+      this.sender = this.createSender(this.options.name, width, height);
     } catch (err) {
       this.options = prevOpts;
       const prevDip = resolveWindowDipSize(
@@ -219,7 +234,7 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
         screen.getPrimaryDisplay().scaleFactor,
       );
       this._renderWindow.setSize(prevDip.width, prevDip.height);
-      this.sender = new TextureSender(prevOpts.name, prevOpts.width, prevOpts.height);
+      this.sender = this.createSender(prevOpts.name, prevOpts.width, prevOpts.height);
       throw err;
     }
 
@@ -315,53 +330,70 @@ export function buildBrowserWindowOptions(
  *
  * Must be called after `app.whenReady()`.
  */
-export async function createTextureBridge(options: TextureBridgeOptions): Promise<TextureBridge> {
-  if (!app.isReady()) {
-    throw new Error("createTextureBridge() must be called after app.whenReady()");
-  }
+export const createTextureBridgeWith =
+  (deps: TextureBridgeDeps) =>
+  async (options: TextureBridgeOptions): Promise<TextureBridge> => {
+    if (!app.isReady()) {
+      throw new Error("createTextureBridge() must be called after app.whenReady()");
+    }
 
-  const { name, width, height, frameRate = 60, rendererUrl, preview } = options;
+    const { name, width, height, frameRate = 60, rendererUrl, preview } = options;
 
-  const policy = resolveOsrScalePolicy(resolveElectronMajor(process.versions));
+    const policy = resolveOsrScalePolicy(resolveElectronMajor(process.versions));
 
-  // ---- Offscreen BrowserWindow ----
-  // Window DIP size per the OSR scale policy: under unit-scale DIP == px so the
-  // requested size passes through; under device-scale (Electron ≤ 40) pixelExact
-  // pre-divides by the primary display's scaleFactor. The sender below always
-  // uses pixel-space dimensions.
-  const dip = resolveWindowDipSize(options, policy, screen.getPrimaryDisplay().scaleFactor);
-  const renderWindow = new BrowserWindow(buildBrowserWindowOptions({ ...options, ...dip }, policy));
+    // ---- Offscreen BrowserWindow ----
+    // Window DIP size per the OSR scale policy: under unit-scale DIP == px so the
+    // requested size passes through; under device-scale (Electron ≤ 40) pixelExact
+    // pre-divides by the primary display's scaleFactor. The sender below always
+    // uses pixel-space dimensions.
+    const dip = resolveWindowDipSize(options, policy, screen.getPrimaryDisplay().scaleFactor);
+    const renderWindow = deps.createWindow(
+      buildBrowserWindowOptions({ ...options, ...dip }, policy),
+    );
 
-  // ---- Native sender ----
-  const sender = new TextureSender(name, width, height);
+    // ---- Native sender ----
+    const sender = deps.createSender(name, width, height);
 
-  // ---- Preview ----
-  let previewManager: PreviewManager | null = null;
-  if (preview?.enabled !== false && preview) {
-    previewManager = new PreviewManager(width, height, preview);
-    previewManager.open();
-  }
+    // ---- Preview ----
+    let previewManager: PreviewManager | null = null;
+    if (preview?.enabled !== false && preview) {
+      previewManager = new PreviewManager(width, height, preview);
+      previewManager.open();
+    }
 
-  // ---- Bridge instance ----
-  const bridge = new TextureBridgeImpl(renderWindow, sender, previewManager, options, policy);
+    // ---- Bridge instance ----
+    const bridge = new TextureBridgeImpl(
+      renderWindow,
+      sender,
+      previewManager,
+      options,
+      policy,
+      deps.createSender,
+    );
 
-  // ---- Paint handler (delegates to instance method, no private field access) ----
-  renderWindow.webContents.on("paint", (event: PaintEvent) => {
-    bridge.handlePaint(event);
-  });
+    // ---- Paint handler (delegates to instance method, no private field access) ----
+    renderWindow.webContents.on("paint", (event: PaintEvent) => {
+      bridge.handlePaint(event);
+    });
 
-  renderWindow.webContents.setFrameRate(frameRate);
+    renderWindow.webContents.setFrameRate(frameRate);
 
-  // ---- Load renderer URL ----
-  if (rendererUrl.startsWith("http://") || rendererUrl.startsWith("https://")) {
-    await renderWindow.loadURL(rendererUrl);
-  } else if (rendererUrl.startsWith("file://")) {
-    await renderWindow.loadURL(rendererUrl);
-  } else {
-    await renderWindow.loadFile(rendererUrl);
-  }
+    // ---- Load renderer URL ----
+    if (rendererUrl.startsWith("http://") || rendererUrl.startsWith("https://")) {
+      await renderWindow.loadURL(rendererUrl);
+    } else if (rendererUrl.startsWith("file://")) {
+      await renderWindow.loadURL(rendererUrl);
+    } else {
+      await renderWindow.loadFile(rendererUrl);
+    }
 
-  bridge.emit("ready");
+    bridge.emit("ready");
 
-  return bridge;
-}
+    return bridge;
+  };
+
+/** {@link createTextureBridgeWith} bound to the real BrowserWindow / TextureSender. */
+export const createTextureBridge = createTextureBridgeWith({
+  createWindow: (options) => new BrowserWindow(options),
+  createSender: (name, width, height) => new TextureSender(name, width, height),
+});

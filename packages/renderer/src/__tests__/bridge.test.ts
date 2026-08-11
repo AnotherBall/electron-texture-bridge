@@ -64,6 +64,7 @@ import {
   buildBrowserWindowOptions,
   computeDipSize,
   createTextureBridge,
+  createTextureBridgeWith,
   resolveElectronMajor,
   resolveOsrScalePolicy,
   resolveWindowDipSize,
@@ -593,6 +594,26 @@ describe("createTextureBridge — OSR scale policy wiring", () => {
       expect(windowOptions?.webPreferences?.offscreen).toEqual({ useSharedTexture: true });
       expect(senderCtorArgs).toContainEqual(["test", 1920, 1080]);
     });
+  });
+});
+
+describe("createTextureBridgeWith — dependency injection seam", () => {
+  it("routes window and sender construction through the injected deps", async () => {
+    const createWindow = vi.fn(
+      (options: Electron.BrowserWindowConstructorOptions) => new BrowserWindow(options),
+    );
+    const createSender = vi.fn(
+      (name: string, width: number, height: number) => new TextureSender(name, width, height),
+    );
+
+    const bridge = await createTextureBridgeWith({ createWindow, createSender })(baseOpts);
+
+    expect(createWindow).toHaveBeenCalledTimes(1);
+    expect(createWindow.mock.calls[0]?.[0]?.webPreferences?.offscreen).toBeDefined();
+    expect(createSender).toHaveBeenCalledWith("test", 1920, 1080);
+
+    bridge.resize(1280, 720);
+    expect(createSender).toHaveBeenCalledWith("test", 1280, 720);
   });
 });
 
