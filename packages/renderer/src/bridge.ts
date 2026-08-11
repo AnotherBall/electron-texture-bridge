@@ -258,25 +258,38 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
  * is the documented recipe for Chromium to emit per-pixel alpha into the
  * shared texture. The page itself must use a transparent background
  * (`html, body { background: transparent }`) for the alpha to mean anything.
+ *
+ * `policy` selects the `offscreen` prefs and `enableLargerThanScreen` gating:
+ * under `"unit-scale"` `deviceScaleFactor` is pinned to 1 and
+ * `enableLargerThanScreen` is always set (the DIP size equals the requested
+ * pixel size, which may exceed the display's work area); under
+ * `"device-scale"` behavior is unchanged from before this option existed.
  */
 export function buildBrowserWindowOptions(
   options: TextureBridgeOptions,
+  policy: OsrScalePolicy,
 ): Electron.BrowserWindowConstructorOptions {
   const { width, height, webPreferences, includeAlpha, pixelExact } = options;
+
+  const offscreen =
+    policy === "unit-scale"
+      ? { useSharedTexture: true, deviceScaleFactor: 1 }
+      : { useSharedTexture: true };
+  const largerThanScreen = policy === "unit-scale" || pixelExact === true;
 
   return {
     width,
     height,
     show: false,
     // `enableLargerThanScreen` is documented as macOS-only but is harmless on
-    // other platforms. We set it whenever `pixelExact` is requested so the
-    // offscreen window's DIP size — which may be larger than the display when
-    // the system DPI is < 100% — is not clamped to the work area.
-    ...(pixelExact === true ? { enableLargerThanScreen: true } : {}),
+    // other platforms. Under unit-scale the DIP size equals the requested pixel
+    // size — which may exceed the display work area — so it is always set;
+    // under device-scale it is set only when `pixelExact` requests it.
+    ...(largerThanScreen ? { enableLargerThanScreen: true } : {}),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      offscreen: { useSharedTexture: true },
+      offscreen,
       ...webPreferences,
     },
     // Hex `#RRGGBBAA` with alpha=0x00 is the explicit "fully transparent
@@ -309,7 +322,9 @@ export async function createTextureBridge(options: TextureBridgeOptions): Promis
     pixelExact === true
       ? { ...options, ...computeDipSize(width, height, screen.getPrimaryDisplay().scaleFactor) }
       : options;
-  const renderWindow = new BrowserWindow(buildBrowserWindowOptions(windowOptions));
+  // TODO(Task 3): resolve via resolveOsrScalePolicy(resolveElectronMajor(process.versions))
+  // once TextureBridgeImpl / resize() are wired to consume the policy too.
+  const renderWindow = new BrowserWindow(buildBrowserWindowOptions(windowOptions, "device-scale"));
 
   // ---- Native sender ----
   const sender = new TextureSender(name, width, height);

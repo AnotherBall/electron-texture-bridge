@@ -47,13 +47,16 @@ const baseOpts: TextureBridgeOptions = {
 
 describe("buildBrowserWindowOptions", () => {
   it("forwards width and height to the BrowserWindow constructor args", () => {
-    const out = buildBrowserWindowOptions({ ...baseOpts, width: 1280, height: 720 });
+    const out = buildBrowserWindowOptions(
+      { ...baseOpts, width: 1280, height: 720 },
+      "device-scale",
+    );
     expect(out.width).toBe(1280);
     expect(out.height).toBe(720);
   });
 
   it("creates a hidden offscreen window with sharedTexture by default", () => {
-    const out = buildBrowserWindowOptions(baseOpts);
+    const out = buildBrowserWindowOptions(baseOpts, "device-scale");
     expect(out.show).toBe(false);
     expect(out.webPreferences?.contextIsolation).toBe(true);
     expect(out.webPreferences?.nodeIntegration).toBe(false);
@@ -63,7 +66,7 @@ describe("buildBrowserWindowOptions", () => {
   });
 
   it("does not enable transparent by default", () => {
-    const out = buildBrowserWindowOptions(baseOpts);
+    const out = buildBrowserWindowOptions(baseOpts, "device-scale");
     expect(out.transparent).toBeUndefined();
     expect(out.backgroundColor).toBeUndefined();
   });
@@ -73,22 +76,25 @@ describe("buildBrowserWindowOptions", () => {
     // when both flags are set on the BrowserWindow. transparent:true alone
     // leaves Chromium painting an opaque backdrop; backgroundColor with the
     // alpha byte zero is what flips the initial fill to fully-transparent.
-    const out = buildBrowserWindowOptions({ ...baseOpts, includeAlpha: true });
+    const out = buildBrowserWindowOptions({ ...baseOpts, includeAlpha: true }, "device-scale");
     expect(out.transparent).toBe(true);
     expect(out.backgroundColor).toBe("#00000000");
   });
 
   it("treats includeAlpha: false the same as omitted", () => {
-    const out = buildBrowserWindowOptions({ ...baseOpts, includeAlpha: false });
+    const out = buildBrowserWindowOptions({ ...baseOpts, includeAlpha: false }, "device-scale");
     expect(out.transparent).toBeUndefined();
     expect(out.backgroundColor).toBeUndefined();
   });
 
   it("preserves caller-supplied webPreferences (merge over the offscreen base)", () => {
-    const out = buildBrowserWindowOptions({
-      ...baseOpts,
-      webPreferences: { backgroundThrottling: false },
-    });
+    const out = buildBrowserWindowOptions(
+      {
+        ...baseOpts,
+        webPreferences: { backgroundThrottling: false },
+      },
+      "device-scale",
+    );
     expect(out.webPreferences?.backgroundThrottling).toBe(false);
     expect(out.webPreferences?.offscreen).toEqual({ useSharedTexture: true });
   });
@@ -96,15 +102,18 @@ describe("buildBrowserWindowOptions", () => {
   it("lets caller-supplied webPreferences override the base defaults", () => {
     // Documents the existing override behavior in createTextureBridge so we
     // do not silently regress when refactoring the helper.
-    const out = buildBrowserWindowOptions({
-      ...baseOpts,
-      webPreferences: { contextIsolation: false },
-    });
+    const out = buildBrowserWindowOptions(
+      {
+        ...baseOpts,
+        webPreferences: { contextIsolation: false },
+      },
+      "device-scale",
+    );
     expect(out.webPreferences?.contextIsolation).toBe(false);
   });
 
   it("does not set enableLargerThanScreen by default", () => {
-    const out = buildBrowserWindowOptions(baseOpts);
+    const out = buildBrowserWindowOptions(baseOpts, "device-scale");
     expect(out.enableLargerThanScreen).toBeUndefined();
   });
 
@@ -115,13 +124,58 @@ describe("buildBrowserWindowOptions", () => {
     // pre-translated a large pixel target into DIP via `computeDipSize`
     // and the resulting DIP is still larger than the display's available
     // area (rare, but possible on small / low-DPR monitors).
-    const out = buildBrowserWindowOptions({ ...baseOpts, pixelExact: true });
+    const out = buildBrowserWindowOptions({ ...baseOpts, pixelExact: true }, "device-scale");
     expect(out.enableLargerThanScreen).toBe(true);
   });
 
   it("treats pixelExact: false the same as omitted", () => {
-    const out = buildBrowserWindowOptions({ ...baseOpts, pixelExact: false });
+    const out = buildBrowserWindowOptions({ ...baseOpts, pixelExact: false }, "device-scale");
     expect(out.enableLargerThanScreen).toBeUndefined();
+  });
+});
+
+describe("buildBrowserWindowOptions — OSR scale policy", () => {
+  it("pins offscreen.deviceScaleFactor to 1 under unit-scale", () => {
+    const out = buildBrowserWindowOptions(baseOpts, "unit-scale");
+    expect(out.webPreferences?.offscreen).toEqual({ useSharedTexture: true, deviceScaleFactor: 1 });
+  });
+
+  it("does not set deviceScaleFactor under device-scale", () => {
+    const out = buildBrowserWindowOptions(baseOpts, "device-scale");
+    expect(out.webPreferences?.offscreen).toEqual({ useSharedTexture: true });
+  });
+
+  it("always enables enableLargerThanScreen under unit-scale", () => {
+    const out = buildBrowserWindowOptions(baseOpts, "unit-scale");
+    expect(out.enableLargerThanScreen).toBe(true);
+  });
+
+  it("keeps enableLargerThanScreen gated on pixelExact under device-scale", () => {
+    expect(
+      buildBrowserWindowOptions(baseOpts, "device-scale").enableLargerThanScreen,
+    ).toBeUndefined();
+    expect(
+      buildBrowserWindowOptions({ ...baseOpts, pixelExact: true }, "device-scale")
+        .enableLargerThanScreen,
+    ).toBe(true);
+  });
+
+  it("lets a user-supplied webPreferences.offscreen win entirely", () => {
+    // `deviceScaleFactor` was added to Electron's `Offscreen` type in 41; the
+    // workspace's installed Electron types are 40.x, so a fresh object
+    // literal directly in the `offscreen` position would fail the excess
+    // property check (TS2353) even though it is a valid runtime value on
+    // Electron >= 41. Binding it to a named const first sidesteps the
+    // literal-only excess property check without weakening the assertion.
+    const userOffscreen = { useSharedTexture: true, deviceScaleFactor: 2 };
+    const out = buildBrowserWindowOptions(
+      {
+        ...baseOpts,
+        webPreferences: { offscreen: userOffscreen },
+      },
+      "unit-scale",
+    );
+    expect(out.webPreferences?.offscreen).toEqual({ useSharedTexture: true, deviceScaleFactor: 2 });
   });
 });
 
