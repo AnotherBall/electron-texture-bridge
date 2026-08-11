@@ -55,7 +55,7 @@ vi.mock("@napolab/texture-bridge-core", () => ({
       }
       if (name !== undefined) senderCtorArgs.push([name, width ?? 0, height ?? 0]);
     }
-    stop(): void {}
+    stop = vi.fn();
   },
   sendTextureFromPaintEvent: vi.fn(),
 }));
@@ -615,6 +615,24 @@ describe("createTextureBridgeWith — dependency injection seam", () => {
     bridge.resize(1280, 720);
     expect(createSender).toHaveBeenCalledWith("test", 1280, 720);
   });
+
+  it("routes the resize rollback reconstruction through the injected createSender", async () => {
+    const createWindow = vi.fn(
+      (options: Electron.BrowserWindowConstructorOptions) => new BrowserWindow(options),
+    );
+    const createSender = vi.fn(
+      (name: string, width: number, height: number) => new TextureSender(name, width, height),
+    );
+    const bridge = await createTextureBridgeWith({ createWindow, createSender })(baseOpts);
+    createSender.mockClear();
+
+    senderCtorBehavior.throwsRemaining = 1;
+    expect(() => bridge.resize(1280, 720)).toThrow("sender ctor failed");
+
+    expect(createSender).toHaveBeenCalledTimes(2);
+    expect(createSender).toHaveBeenNthCalledWith(1, "test", 1280, 720);
+    expect(createSender).toHaveBeenNthCalledWith(2, "test", 1920, 1080);
+  });
 });
 
 describe("TextureBridgeImpl.dispose — synchronous teardown", () => {
@@ -637,5 +655,29 @@ describe("TextureBridgeImpl.dispose — synchronous teardown", () => {
     bridge.dispose();
 
     expect(win.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the teardown order: destroy window → stop sender → dispose preview → emit disposed", () => {
+    const win = new BrowserWindow();
+    const sender = new TextureSender("t", 16, 9);
+    const previewDispose = vi.fn();
+    const previewStub: unknown = { dispose: previewDispose };
+    const bridge = new TextureBridgeImpl(win, sender, previewStub as PreviewManager, baseOpts);
+    const disposedListener = vi.fn();
+    bridge.on("disposed", disposedListener);
+
+    bridge.dispose();
+
+    expect(win.destroy).toHaveBeenCalledTimes(1);
+    expect(sender.stop).toHaveBeenCalledTimes(1);
+    expect(previewDispose).toHaveBeenCalledTimes(1);
+    expect(disposedListener).toHaveBeenCalledTimes(1);
+    const order = [
+      vi.mocked(win.destroy).mock.invocationCallOrder[0],
+      vi.mocked(sender.stop).mock.invocationCallOrder[0],
+      previewDispose.mock.invocationCallOrder[0],
+      disposedListener.mock.invocationCallOrder[0],
+    ];
+    expect([...order].sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual(order);
   });
 });
