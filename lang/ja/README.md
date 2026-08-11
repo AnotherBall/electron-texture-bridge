@@ -434,10 +434,18 @@ interface TextureBridge {
   `closed` イベントは引き続き発火します。
 
 プレビューウィンドウは影響を受けません: 実在する可視ウィンドウであり、
-引き続き `close()` により通常のクローズセマンティクスで閉じます。以前
-ワークアラウンドとして自前で `renderWindow.destroy()` を呼んでいた場合、
-今は不要になっていますが（呼び出しは二重破棄に対してガードされ冪等なため）
-残しておいても害はありません。
+引き続き `close()` により通常のクローズセマンティクスで閉じます。以前、
+旧来の非同期な `close()` を避けるため `bridge.dispose()` の後に自前で
+`bridge.renderWindow.destroy()` を呼ぶワークアラウンドをしていた場合は、
+**その外部からの `destroy()` 呼び出しを削除してください** — `dispose()` が
+今はそれを内部で行うため、`dispose()` の後に呼ぶとすでに破棄済みのウィンドウ
+に対して呼び出すことになり、Electron は二重の `destroy()` が安全であることを
+保証していません（"Object has been destroyed" で例外になり得ます）。ライブラリ
+側のガードは `dispose()` 内部の呼び出しのみを保護するものであり、`dispose()`
+呼び出し後に外部から呼ばれる `destroy()` までは保護しません。すぐに削除できない
+場合は、自分でガードする
+（`if (!bridge.renderWindow.isDestroyed()) bridge.renderWindow.destroy();`）か、
+`dispose()` より前に呼び出すようにしてください。
 
 #### `createWorkerRenderer(options)`（`renderer/client` から）
 

@@ -667,10 +667,17 @@ Electron's `before-quit` and pop a crash dialog. Two things follow from that:
   `closed` event still fires.
 
 The preview window is unaffected: it's a real, visible window and still
-closes via `close()` with normal close semantics. If you previously called
-`renderWindow.destroy()` yourself as a workaround, it's now redundant — the
-call is idempotent (guarded against double-destroy), so leaving it in place
-is harmless too.
+closes via `close()` with normal close semantics. If you previously worked
+around the old async `close()` by calling `bridge.dispose()` followed by your
+own `bridge.renderWindow.destroy()`, **remove that external `destroy()` call**
+— `dispose()` now does it for you, and Electron does not guarantee a second
+`destroy()` on an already-destroyed window is safe (it can throw "Object has
+been destroyed"). The library's own guard only covers its *internal*
+`destroy()` call inside `dispose()`; it does not protect an external call made
+*after* `dispose()` returns. If you must keep the workaround temporarily,
+either guard it yourself
+(`if (!bridge.renderWindow.isDestroyed()) bridge.renderWindow.destroy();`) or
+call it **before** `dispose()`, not after.
 
 #### `createWorkerRenderer(options)` (from `renderer/client`)
 
@@ -1175,8 +1182,12 @@ bridge.dispose(); // now deterministic
 instead of `close()`-ing it — see the `dispose()` notes under
 [`TextureBridge`](#texturebridge) above for the two consumer-visible changes
 this brings (disposed-time window access, missing close/beforeunload events).
-If you previously called `renderWindow.destroy()` yourself as a workaround,
-it's now redundant but harmless to leave in place.
+If you previously worked around the old async `close()` by calling
+`bridge.dispose()` and then your own `bridge.renderWindow.destroy()`,
+**remove that external `destroy()` call** — calling it after `dispose()` now
+targets an already-destroyed window, and Electron does not guarantee a second
+`destroy()` is safe. Guard it or move it before `dispose()` if you can't
+remove it right away (see above).
 
 **`using` declarations** (Node.js 22+, `"lib": ["ESNext.Disposable"]`):
 
