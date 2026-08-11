@@ -362,7 +362,7 @@ Older examples that destructure `(event, dirtyRect, image, texture)` are from a 
 >
 > ⚠️ **This is the #1 cause of a black or garbled output on Electron ≤ 40.** How the offscreen framebuffer relates to your requested `width × height` depends on the Electron version:
 >
-> - **Electron ≥ 41:** `createTextureBridge` pins `webPreferences.offscreen.deviceScaleFactor` to `1`, so the framebuffer is always exactly `width × height` pixels — display scaling does not affect the texture. (`Electron 42` changed the OSR default device scale factor to `1.0`; the bridge sets it explicitly from 41, where the option first appeared.) `pixelExact` is trivially satisfied and effectively a no-op.
+> - **Electron ≥ 41:** `createTextureBridge` pins `webPreferences.offscreen.deviceScaleFactor` to `1`, so the framebuffer is always exactly `width × height` pixels — display scaling does not affect the texture. (`Electron 42` changed the OSR default device scale factor to `1.0`; the bridge sets it explicitly from 41, where the option first appeared.) `pixelExact` is trivially satisfied and effectively a no-op. Verified on macOS; Windows display-scaling verification is pending (the investigation report lists it as an open item) — if you hit clamping on Windows, size down or verify with the [probe script](packages/renderer/scripts/osr-scale-probe.cjs).
 > - **Electron 40:** Chromium sizes the offscreen surface in **device-independent pixels (DIP)**, so the framebuffer delivered to the shared texture is `width × height × display.scaleFactor`. On a macOS Retina display (scaleFactor 2) a sender declared as `new TextureSender("X", 1280, 720)` ends up producing a **2560×1440** texture. Use `createTextureBridge({ pixelExact: true })` to absorb this, or handle DPR yourself on the low-level core path.
 >
 > **Low-level core** (manual `BrowserWindow` + `paint`) has no absorption on any version — on Electron ≥ 41 pass `offscreen: { useSharedTexture: true, deviceScaleFactor: 1 }` yourself; on Electron 40 keep the sender's declared size and the actual framebuffer size in agreement manually.
@@ -1005,7 +1005,7 @@ electron-texture-bridge/
 
 ### Black texture output
 
-- **DPR / Retina size mismatch (most common).** On a Retina display or under Windows display scaling, the real framebuffer is `width × height × scaleFactor`, so a sender declared at the logical size disagrees with it and the receiver goes black/garbled. Use `createTextureBridge({ pixelExact: true })`, or — on the low-level core path — declare the sender at the true framebuffer size or neutralize DPR yourself. See the [Retina/DPI warning](#macos-retina-and-windows-dpi-scaling).
+- **DPR / Retina size mismatch (most common).** **Electron ≤ 40:** on a Retina display or under Windows display scaling, the real framebuffer is `width × height × scaleFactor`, so a sender declared at the logical size disagrees with it and the receiver goes black/garbled. Use `createTextureBridge({ pixelExact: true })`, or — on the low-level core path — declare the sender at the true framebuffer size or neutralize DPR yourself. **Electron ≥ 41:** `createTextureBridge` pins the OSR device scale factor to `1`, so this mismatch no longer occurs — see [Migration: Electron 42 / OSR device scale](#migration-electron-42--osr-device-scale); on the low-level core path, pass `offscreen: { useSharedTexture: true, deviceScaleFactor: 1 }` yourself. See the [Retina/DPI warning](#macos-retina-and-windows-dpi-scaling).
 - **Isolate Electron vs. the bridge** with the [no-Electron sanity check](#minimal-sanity-check-no-electron) — if `sendRgbaBuffer` shows up in your VJ app, the native side is fine and the problem is in the Electron OSR path.
 - `preserveDrawingBuffer` is not needed (Chromium compositor reads directly)
 - Check pixel format mismatch: Chromium outputs BGRA, ensure the receiver expects BGRA
@@ -1055,9 +1055,9 @@ win.webContents.on("paint", (event) => {
 
 Electron 42 changed offscreen rendering's default device scale factor to `1.0`
 ([breaking change](https://www.electronjs.org/docs/latest/breaking-changes)).
-From the release containing this change, `createTextureBridge` pins
-`offscreen.deviceScaleFactor: 1` on Electron ≥ 41, making `width`/`height`
-mean exact pixels on every display.
+From the texture-bridge release that includes this change (see CHANGELOG),
+`createTextureBridge` pins `offscreen.deviceScaleFactor: 1` on Electron ≥ 41,
+making `width`/`height` mean exact pixels on every display.
 
 - **If you used `pixelExact: true`** (e.g. on Electron 40): keep it — it is a
   no-op on Electron ≥ 41 and still required on 40.

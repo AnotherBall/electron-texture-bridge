@@ -3,7 +3,7 @@
  * actually deliver, as a function of window DIP size, display scaleFactor,
  * and force-device-scale-factor?
  *
- * Usage: electron osr-scale-probe.cjs <plain|dip> [--force-scale-1]
+ * Usage: electron osr-scale-probe.cjs <plain|dip> [--dsf-1] [--force-scale-1]
  *   plain = BrowserWindow sized 1920x1080 DIP
  *   dip   = BrowserWindow sized computeDipSize(1920,1080,scaleFactor) (pixelExact math)
  *
