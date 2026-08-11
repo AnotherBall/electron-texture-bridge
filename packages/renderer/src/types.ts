@@ -42,6 +42,13 @@ export interface TextureBridgeOptions {
    * Pin the offscreen framebuffer to exactly `width × height` pixels regardless
    * of the host display's device pixel ratio (default: false).
    *
+   * Electron ≥ 41: this option is trivially satisfied and effectively a no-op —
+   * the bridge pins `webPreferences.offscreen.deviceScaleFactor` to 1, so the
+   * framebuffer always lands at exactly `width × height` pixels regardless of
+   * display scaling (Electron 42 changed the OSR default device scale factor
+   * to 1.0; the bridge makes it explicit from 41 where the option first
+   * exists). The DIP-division described below applies only to Electron 40.
+   *
    * Chromium's offscreen render surface is normally sized as `width × height`
    * in DIP (device-independent pixels), so the framebuffer actually delivered
    * to the GPU shared-texture path is `DIP × display.scaleFactor`. On a
