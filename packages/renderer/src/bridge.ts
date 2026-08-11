@@ -233,9 +233,13 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
     if (this._disposed) return;
     this._disposed = true;
 
-    // Remove paint listener by destroying the window
+    // Destroy the offscreen window synchronously. `close()` is async and
+    // cancellable — it loses the race against `before-quit`, letting Chromium
+    // SIGKILL the OSR renderer and pop a crash dialog. Both known consumers
+    // independently worked around this by forcing `destroy()`; a hidden
+    // offscreen window has no user-facing close semantics to honor.
     if (!this._renderWindow.isDestroyed()) {
-      this._renderWindow.close();
+      this._renderWindow.destroy();
     }
 
     this.sender.stop();

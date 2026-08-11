@@ -25,7 +25,8 @@ vi.mock("electron", () => ({
     isDestroyed(): boolean {
       return false;
     }
-    close(): void {}
+    close = vi.fn();
+    destroy = vi.fn();
   },
   screen: {
     getPrimaryDisplay: () => getPrimaryDisplayMock(),
@@ -592,5 +593,28 @@ describe("createTextureBridge — OSR scale policy wiring", () => {
       expect(windowOptions?.webPreferences?.offscreen).toEqual({ useSharedTexture: true });
       expect(senderCtorArgs).toContainEqual(["test", 1920, 1080]);
     });
+  });
+});
+
+describe("TextureBridgeImpl.dispose — synchronous teardown", () => {
+  it("destroys the render window synchronously instead of close()", () => {
+    const win = new BrowserWindow();
+    const bridge = new TextureBridgeImpl(win, new TextureSender("t", 16, 9), null, baseOpts);
+
+    bridge.dispose();
+
+    expect(win.destroy).toHaveBeenCalledTimes(1);
+    expect(win.close).not.toHaveBeenCalled();
+    expect(bridge.isDisposed).toBe(true);
+  });
+
+  it("is idempotent", () => {
+    const win = new BrowserWindow();
+    const bridge = new TextureBridgeImpl(win, new TextureSender("t", 16, 9), null, baseOpts);
+
+    bridge.dispose();
+    bridge.dispose();
+
+    expect(win.destroy).toHaveBeenCalledTimes(1);
   });
 });
