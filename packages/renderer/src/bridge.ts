@@ -34,6 +34,51 @@ export function computeDipSize(
   };
 }
 
+/**
+ * How the OSR compositor maps the window's DIP size to the shared-texture
+ * pixel size.
+ *
+ * - `"device-scale"` (Electron ≤ 40): the paint framebuffer is
+ *   `DIP × display.scaleFactor`, and `webPreferences.offscreen.deviceScaleFactor`
+ *   is ignored — `pixelExact` must pre-divide the window size to hit an exact
+ *   pixel count.
+ * - `"unit-scale"` (Electron ≥ 41): `offscreen.deviceScaleFactor` is honored
+ *   (and defaults to 1.0 from Electron 42), so we pin it to 1 and DIP == px
+ *   holds deterministically — no DIP division, `pixelExact` is trivially
+ *   satisfied.
+ *
+ * Empirical basis: reports/2026-08-11-pixelexact-osr-scale-investigation.md
+ * (measured on Electron 40.2.1 / 41.10.4 / 42.4.0, macOS Retina scaleFactor 2).
+ */
+export type OsrScalePolicy = "device-scale" | "unit-scale";
+
+/** Parse the Electron major version; 0 when missing or malformed. */
+export const resolveElectronMajor = (versions: { electron?: string }): number => {
+  const [major] = (versions.electron ?? "").split(".");
+  const parsed = parseInt(major ?? "", 10);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+/** `offscreen.deviceScaleFactor` exists (and is honored) from Electron 41. */
+export const resolveOsrScalePolicy = (electronMajor: number): OsrScalePolicy =>
+  electronMajor >= 41 ? "unit-scale" : "device-scale";
+
+/**
+ * Window DIP size for the requested pixel size under the given policy.
+ * Under unit-scale DIP == px, so the size passes through; under device-scale
+ * only `pixelExact` pre-divides by the display scaleFactor (legacy behavior).
+ */
+export const resolveWindowDipSize = (
+  options: Pick<TextureBridgeOptions, "width" | "height" | "pixelExact">,
+  policy: OsrScalePolicy,
+  scaleFactor: number,
+): { width: number; height: number } => {
+  if (policy === "unit-scale") return { width: options.width, height: options.height };
+  if (options.pixelExact === true)
+    return computeDipSize(options.width, options.height, scaleFactor);
+  return { width: options.width, height: options.height };
+};
+
 interface PaintEvent extends Event {
   texture?: PaintTexture;
 }

@@ -24,7 +24,14 @@ vi.mock("@napolab/texture-bridge-core", () => ({
   sendTextureFromPaintEvent: vi.fn(),
 }));
 
-import { buildBrowserWindowOptions, computeDipSize, TextureBridgeImpl } from "../bridge";
+import {
+  buildBrowserWindowOptions,
+  computeDipSize,
+  resolveElectronMajor,
+  resolveOsrScalePolicy,
+  resolveWindowDipSize,
+  TextureBridgeImpl,
+} from "../bridge";
 import { BrowserWindow } from "electron";
 import { TextureSender, sendTextureFromPaintEvent } from "@napolab/texture-bridge-core";
 import type { PaintDefect, PaintTexture } from "@napolab/texture-bridge-core";
@@ -333,5 +340,54 @@ describe("TextureBridgeImpl.handlePaint — frameDropped", () => {
 
     expect(sendFrame).toHaveBeenCalledTimes(1);
     expect(sendFrame).toHaveBeenCalledWith(texture);
+  });
+});
+
+describe("resolveElectronMajor", () => {
+  it("parses the major version from a semver string", () => {
+    expect(resolveElectronMajor({ electron: "42.4.0" })).toBe(42);
+    expect(resolveElectronMajor({ electron: "40.2.1" })).toBe(40);
+  });
+
+  it("returns 0 when the electron version is missing or malformed", () => {
+    expect(resolveElectronMajor({})).toBe(0);
+    expect(resolveElectronMajor({ electron: "garbage" })).toBe(0);
+  });
+});
+
+describe("resolveOsrScalePolicy", () => {
+  it("selects device-scale for Electron 40 and below", () => {
+    expect(resolveOsrScalePolicy(40)).toBe("device-scale");
+    expect(resolveOsrScalePolicy(0)).toBe("device-scale");
+  });
+
+  it("selects unit-scale for Electron 41 and above", () => {
+    expect(resolveOsrScalePolicy(41)).toBe("unit-scale");
+    expect(resolveOsrScalePolicy(42)).toBe("unit-scale");
+  });
+});
+
+describe("resolveWindowDipSize", () => {
+  it("returns width/height untouched under unit-scale, even with pixelExact", () => {
+    const size = resolveWindowDipSize(
+      { width: 1920, height: 1080, pixelExact: true },
+      "unit-scale",
+      2,
+    );
+    expect(size).toEqual({ width: 1920, height: 1080 });
+  });
+
+  it("divides by scaleFactor under device-scale when pixelExact is set", () => {
+    const size = resolveWindowDipSize(
+      { width: 1920, height: 1080, pixelExact: true },
+      "device-scale",
+      2,
+    );
+    expect(size).toEqual({ width: 960, height: 540 });
+  });
+
+  it("returns width/height untouched under device-scale without pixelExact", () => {
+    const size = resolveWindowDipSize({ width: 1920, height: 1080 }, "device-scale", 2);
+    expect(size).toEqual({ width: 1920, height: 1080 });
   });
 });
