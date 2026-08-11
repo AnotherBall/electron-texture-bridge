@@ -32,14 +32,20 @@ vi.mock("electron", () => ({
   },
 }));
 
-// Lets resize-rollback tests force the sender constructor to throw without
-// a `let` rebinding — a plain mutable holder object instead.
-const senderCtorBehavior = { shouldThrow: false };
+// Lets resize-rollback tests force the sender constructor to throw exactly N
+// times without a `let` rebinding — a plain mutable holder object instead.
+// Counting (rather than a boolean) lets the *forward* construction throw
+// while the *rollback* reconstruction succeeds, so the rollback path is
+// genuinely exercised rather than short-circuited by a second throw.
+const senderCtorBehavior = { throwsRemaining: 0 };
 
 vi.mock("@napolab/texture-bridge-core", () => ({
   TextureSender: class MockTextureSender {
     constructor() {
-      if (senderCtorBehavior.shouldThrow) throw new Error("sender ctor failed");
+      if (senderCtorBehavior.throwsRemaining > 0) {
+        senderCtorBehavior.throwsRemaining -= 1;
+        throw new Error("sender ctor failed");
+      }
     }
     stop(): void {}
   },
@@ -63,7 +69,7 @@ import type { PreviewManager } from "../preview-manager";
 
 afterEach(() => {
   getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 1 });
-  senderCtorBehavior.shouldThrow = false;
+  senderCtorBehavior.throwsRemaining = 0;
 });
 
 const baseOpts: TextureBridgeOptions = {
@@ -510,13 +516,21 @@ describe("TextureBridgeImpl.resize — OSR scale policy", () => {
       "device-scale",
     );
 
-    senderCtorBehavior.shouldThrow = true;
+    // Exactly one throw: the *forward* `new TextureSender(...)` fails, the
+    // *rollback* reconstruction inside the catch block must succeed — so the
+    // final `throw err` genuinely rethrows the original forward error rather
+    // than short-circuiting on a second throw from the rollback itself.
+    senderCtorBehavior.throwsRemaining = 1;
     expect(() => bridge.resize(1280, 720)).toThrow("sender ctor failed");
+    expect(senderCtorBehavior.throwsRemaining).toBe(0);
 
     expect(vi.mocked(win.setSize).mock.calls).toEqual([
       [640, 360], // forward: 1280x720 / scaleFactor 2
       [960, 540], // rollback: baseOpts 1920x1080 / scaleFactor 2
     ]);
+
+    // The rolled-back sender is functional: a subsequent resize succeeds.
+    expect(() => bridge.resize(1024, 512)).not.toThrow();
   });
 });
 
