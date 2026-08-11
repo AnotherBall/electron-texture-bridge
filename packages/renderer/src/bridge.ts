@@ -85,9 +85,12 @@ interface PaintEvent extends Event {
 
 /**
  * Injectable constructors for {@link createTextureBridgeWith}. Lets tests and
- * embedders swap the BrowserWindow / native sender without faking Electron
- * globals (the pattern consumers previously built themselves as
- * `createDeckWith(createBridge)`).
+ * embedders substitute the two heavyweight resources — the offscreen
+ * BrowserWindow and the native TextureSender — with doubles (the pattern
+ * consumers previously built themselves as `createDeckWith(createBridge)`).
+ * Note: the factory still consults Electron's `app` / `screen` globals and
+ * constructs the preview window directly, so a fully Electron-free test
+ * environment additionally needs those mocked.
  */
 export interface TextureBridgeDeps {
   createWindow: (options: Electron.BrowserWindowConstructorOptions) => BrowserWindow;
