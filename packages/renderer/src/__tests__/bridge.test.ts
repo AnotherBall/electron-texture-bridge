@@ -39,13 +39,20 @@ vi.mock("electron", () => ({
 // genuinely exercised rather than short-circuited by a second throw.
 const senderCtorBehavior = { throwsRemaining: 0 };
 
+// Records every `new TextureSender(name, width, height)` call so tests can
+// assert the sender is always constructed in pixel space, under both OSR
+// scale policies — a regression passing DIP sizes here would otherwise be
+// invisible since MockTextureSender previously ignored its ctor args.
+const senderCtorArgs: Array<readonly [string, number, number]> = [];
+
 vi.mock("@napolab/texture-bridge-core", () => ({
   TextureSender: class MockTextureSender {
-    constructor() {
+    constructor(name?: string, width?: number, height?: number) {
       if (senderCtorBehavior.throwsRemaining > 0) {
         senderCtorBehavior.throwsRemaining -= 1;
         throw new Error("sender ctor failed");
       }
+      if (name !== undefined) senderCtorArgs.push([name, width ?? 0, height ?? 0]);
     }
     stop(): void {}
   },
@@ -70,6 +77,7 @@ import type { PreviewManager } from "../preview-manager";
 afterEach(() => {
   getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 1 });
   senderCtorBehavior.throwsRemaining = 0;
+  senderCtorArgs.length = 0;
 });
 
 const baseOpts: TextureBridgeOptions = {
@@ -494,6 +502,7 @@ describe("TextureBridgeImpl.resize — OSR scale policy", () => {
     bridge.resize(1280, 720);
 
     expect(bridge.renderWindow.setSize).toHaveBeenCalledWith(1280, 720);
+    expect(senderCtorArgs.at(-1)).toEqual(["test", 1280, 720]);
   });
 
   it("divides the window size by scaleFactor under device-scale with pixelExact", () => {
@@ -503,6 +512,7 @@ describe("TextureBridgeImpl.resize — OSR scale policy", () => {
     bridge.resize(1280, 720);
 
     expect(bridge.renderWindow.setSize).toHaveBeenCalledWith(640, 360);
+    expect(senderCtorArgs.at(-1)).toEqual(["test", 1280, 720]);
   });
 
   it("rolls the window size back when the new sender cannot be constructed", () => {
@@ -561,6 +571,7 @@ describe("createTextureBridge — OSR scale policy wiring", () => {
         useSharedTexture: true,
         deviceScaleFactor: 1,
       });
+      expect(senderCtorArgs).toContainEqual(["test", 1920, 1080]);
 
       // policy handoff to the impl: resize under unit-scale ignores pixelExact
       bridge.resize(1280, 720);
@@ -579,6 +590,7 @@ describe("createTextureBridge — OSR scale policy wiring", () => {
       expect(windowOptions?.width).toBe(960);
       expect(windowOptions?.height).toBe(540);
       expect(windowOptions?.webPreferences?.offscreen).toEqual({ useSharedTexture: true });
+      expect(senderCtorArgs).toContainEqual(["test", 1920, 1080]);
     });
   });
 });
