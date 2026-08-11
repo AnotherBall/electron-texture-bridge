@@ -773,7 +773,8 @@ Low-level convenience function that handles platform-specific texture handle ext
 - **Windows**: Reads `handle.ntHandle` buffer as BigInt64LE → calls `sender.send()`
 
 Returns `undefined` when the frame was handed to the sender, or a `PaintDefect`
-(`{ reason: "no-texture" | "no-nt-handle" | "no-io-surface" | "unsupported-platform" }`)
+(`{ reason: "no-texture" | "no-nt-handle" | "no-io-surface" | "unsupported-platform" }`;
+the `unsupported-platform` variant also carries the offending `platform`)
 when the frame was dropped. Drops are normal no-ops, not errors — surface them
 in your own paint loop the same way `createTextureBridge` does with its
 `frameDropped` event. Native send failures still throw.
