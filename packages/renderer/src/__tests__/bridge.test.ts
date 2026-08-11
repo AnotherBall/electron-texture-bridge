@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Mock Electron and the native core so we can import bridge.ts in node tests.
 // `buildBrowserWindowOptions` is a pure function, but the module-level
@@ -6,10 +6,22 @@ import { describe, expect, it, vi } from "vitest";
 // real native module.
 const getPrimaryDisplayMock = vi.fn(() => ({ scaleFactor: 1 }));
 
+// Captures every `new BrowserWindow(options)` call made by `createTextureBridge`
+// so tests can assert on the constructed window options without a real
+// native module. Existing tests construct `new BrowserWindow()` with no
+// args, so the `options !== undefined` guard keeps those unaffected.
+const constructedWindowOptions: Electron.BrowserWindowConstructorOptions[] = [];
+
 vi.mock("electron", () => ({
   app: { isReady: () => true },
   BrowserWindow: class MockBrowserWindow {
     setSize = vi.fn();
+    webContents = { on: vi.fn(), setFrameRate: vi.fn() };
+    loadURL = vi.fn(async () => undefined);
+    loadFile = vi.fn(async () => undefined);
+    constructor(options?: Electron.BrowserWindowConstructorOptions) {
+      if (options !== undefined) constructedWindowOptions.push(options);
+    }
     isDestroyed(): boolean {
       return false;
     }
@@ -20,8 +32,15 @@ vi.mock("electron", () => ({
   },
 }));
 
+// Lets resize-rollback tests force the sender constructor to throw without
+// a `let` rebinding — a plain mutable holder object instead.
+const senderCtorBehavior = { shouldThrow: false };
+
 vi.mock("@napolab/texture-bridge-core", () => ({
   TextureSender: class MockTextureSender {
+    constructor() {
+      if (senderCtorBehavior.shouldThrow) throw new Error("sender ctor failed");
+    }
     stop(): void {}
   },
   sendTextureFromPaintEvent: vi.fn(),
@@ -30,6 +49,7 @@ vi.mock("@napolab/texture-bridge-core", () => ({
 import {
   buildBrowserWindowOptions,
   computeDipSize,
+  createTextureBridge,
   resolveElectronMajor,
   resolveOsrScalePolicy,
   resolveWindowDipSize,
@@ -40,6 +60,11 @@ import { TextureSender, sendTextureFromPaintEvent } from "@napolab/texture-bridg
 import type { PaintDefect, PaintTexture } from "@napolab/texture-bridge-core";
 import type { TextureBridgeOptions } from "../types";
 import type { PreviewManager } from "../preview-manager";
+
+afterEach(() => {
+  getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 1 });
+  senderCtorBehavior.shouldThrow = false;
+});
 
 const baseOpts: TextureBridgeOptions = {
   name: "test",
@@ -472,5 +497,74 @@ describe("TextureBridgeImpl.resize — OSR scale policy", () => {
     bridge.resize(1280, 720);
 
     expect(bridge.renderWindow.setSize).toHaveBeenCalledWith(640, 360);
+  });
+
+  it("rolls the window size back when the new sender cannot be constructed", () => {
+    getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 2 });
+    const win = new BrowserWindow();
+    const bridge = new TextureBridgeImpl(
+      win,
+      new TextureSender("t", 16, 9),
+      null,
+      { ...baseOpts, pixelExact: true },
+      "device-scale",
+    );
+
+    senderCtorBehavior.shouldThrow = true;
+    expect(() => bridge.resize(1280, 720)).toThrow("sender ctor failed");
+
+    expect(vi.mocked(win.setSize).mock.calls).toEqual([
+      [640, 360], // forward: 1280x720 / scaleFactor 2
+      [960, 540], // rollback: baseOpts 1920x1080 / scaleFactor 2
+    ]);
+  });
+});
+
+describe("createTextureBridge — OSR scale policy wiring", () => {
+  const withElectronMajor = async (version: string, run: () => Promise<void>): Promise<void> => {
+    const original = Object.getOwnPropertyDescriptor(process.versions, "electron");
+    Object.defineProperty(process.versions, "electron", { value: version, configurable: true });
+    try {
+      await run();
+    } finally {
+      if (original) Object.defineProperty(process.versions, "electron", original);
+      else Reflect.deleteProperty(process.versions, "electron");
+    }
+  };
+
+  it("builds the window at raw pixel size with deviceScaleFactor pinned on Electron >= 41", async () => {
+    await withElectronMajor("42.0.0", async () => {
+      getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 2 });
+      constructedWindowOptions.length = 0;
+
+      const bridge = await createTextureBridge({ ...baseOpts, pixelExact: true });
+
+      const [windowOptions] = constructedWindowOptions;
+      expect(windowOptions?.width).toBe(1920);
+      expect(windowOptions?.height).toBe(1080);
+      expect(windowOptions?.enableLargerThanScreen).toBe(true);
+      expect(windowOptions?.webPreferences?.offscreen).toEqual({
+        useSharedTexture: true,
+        deviceScaleFactor: 1,
+      });
+
+      // policy handoff to the impl: resize under unit-scale ignores pixelExact
+      bridge.resize(1280, 720);
+      expect(bridge.renderWindow.setSize).toHaveBeenCalledWith(1280, 720);
+    });
+  });
+
+  it("keeps legacy DIP division on Electron 40", async () => {
+    await withElectronMajor("40.2.1", async () => {
+      getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 2 });
+      constructedWindowOptions.length = 0;
+
+      await createTextureBridge({ ...baseOpts, pixelExact: true });
+
+      const [windowOptions] = constructedWindowOptions;
+      expect(windowOptions?.width).toBe(960);
+      expect(windowOptions?.height).toBe(540);
+      expect(windowOptions?.webPreferences?.offscreen).toEqual({ useSharedTexture: true });
+    });
   });
 });
