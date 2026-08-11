@@ -92,18 +92,21 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
   private _disposed = false;
   private lastDropReason: PaintDefect["reason"] | null = null;
   private options: TextureBridgeOptions;
+  private readonly policy: OsrScalePolicy;
 
   constructor(
     renderWindow: BrowserWindow,
     sender: InstanceType<typeof TextureSender>,
     previewManager: PreviewManager | null,
     options: TextureBridgeOptions,
+    policy: OsrScalePolicy = resolveOsrScalePolicy(resolveElectronMajor(process.versions)),
   ) {
     super();
     this._renderWindow = renderWindow;
     this.sender = sender;
     this.previewManager = previewManager;
     this.options = options;
+    this.policy = policy;
   }
 
   get renderWindow(): BrowserWindow {
@@ -191,13 +194,14 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
     const prevOpts = this.options;
     this.options = { ...this.options, width, height };
 
-    // 1. Resize offscreen BrowserWindow. When `pixelExact` is set the caller's
-    //    width/height are pixel-space, so translate to DIP via the primary
-    //    display's scaleFactor before passing to setSize.
-    const dip =
-      this.options.pixelExact === true
-        ? computeDipSize(width, height, screen.getPrimaryDisplay().scaleFactor)
-        : { width, height };
+    // 1. Resize offscreen BrowserWindow. Under `"unit-scale"` DIP == px, so the
+    //    requested size passes through; under `"device-scale"` `pixelExact`
+    //    pre-divides by the primary display's scaleFactor.
+    const dip = resolveWindowDipSize(
+      this.options,
+      this.policy,
+      screen.getPrimaryDisplay().scaleFactor,
+    );
     this._renderWindow.setSize(dip.width, dip.height);
 
     // 2. Recreate native sender with new dimensions.
@@ -209,10 +213,11 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
       this.sender = new TextureSender(this.options.name, width, height);
     } catch (err) {
       this.options = prevOpts;
-      const prevDip =
-        prevOpts.pixelExact === true
-          ? computeDipSize(prevOpts.width, prevOpts.height, screen.getPrimaryDisplay().scaleFactor)
-          : { width: prevOpts.width, height: prevOpts.height };
+      const prevDip = resolveWindowDipSize(
+        prevOpts,
+        this.policy,
+        screen.getPrimaryDisplay().scaleFactor,
+      );
       this._renderWindow.setSize(prevDip.width, prevDip.height);
       this.sender = new TextureSender(prevOpts.name, prevOpts.width, prevOpts.height);
       throw err;
@@ -311,20 +316,17 @@ export async function createTextureBridge(options: TextureBridgeOptions): Promis
     throw new Error("createTextureBridge() must be called after app.whenReady()");
   }
 
-  const { name, width, height, frameRate = 60, rendererUrl, preview, pixelExact } = options;
+  const { name, width, height, frameRate = 60, rendererUrl, preview } = options;
+
+  const policy = resolveOsrScalePolicy(resolveElectronMajor(process.versions));
 
   // ---- Offscreen BrowserWindow ----
-  // When pixelExact is set, the caller's width/height are pixel-space — translate
-  // to DIP via the primary display's scaleFactor before constructing the window
-  // so the resulting framebuffer lands at the requested pixel count. The sender
-  // below always uses pixel-space dimensions.
-  const windowOptions: TextureBridgeOptions =
-    pixelExact === true
-      ? { ...options, ...computeDipSize(width, height, screen.getPrimaryDisplay().scaleFactor) }
-      : options;
-  // TODO(Task 3): resolve via resolveOsrScalePolicy(resolveElectronMajor(process.versions))
-  // once TextureBridgeImpl / resize() are wired to consume the policy too.
-  const renderWindow = new BrowserWindow(buildBrowserWindowOptions(windowOptions, "device-scale"));
+  // Window DIP size per the OSR scale policy: under unit-scale DIP == px so the
+  // requested size passes through; under device-scale (Electron ≤ 40) pixelExact
+  // pre-divides by the primary display's scaleFactor. The sender below always
+  // uses pixel-space dimensions.
+  const dip = resolveWindowDipSize(options, policy, screen.getPrimaryDisplay().scaleFactor);
+  const renderWindow = new BrowserWindow(buildBrowserWindowOptions({ ...options, ...dip }, policy));
 
   // ---- Native sender ----
   const sender = new TextureSender(name, width, height);
@@ -337,7 +339,7 @@ export async function createTextureBridge(options: TextureBridgeOptions): Promis
   }
 
   // ---- Bridge instance ----
-  const bridge = new TextureBridgeImpl(renderWindow, sender, previewManager, options);
+  const bridge = new TextureBridgeImpl(renderWindow, sender, previewManager, options, policy);
 
   // ---- Paint handler (delegates to instance method, no private field access) ----
   renderWindow.webContents.on("paint", (event: PaintEvent) => {

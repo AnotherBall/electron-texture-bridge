@@ -4,16 +4,19 @@ import { describe, expect, it, vi } from "vitest";
 // `buildBrowserWindowOptions` is a pure function, but the module-level
 // `import { app, BrowserWindow } from "electron"` would otherwise pull the
 // real native module.
+const getPrimaryDisplayMock = vi.fn(() => ({ scaleFactor: 1 }));
+
 vi.mock("electron", () => ({
   app: { isReady: () => true },
   BrowserWindow: class MockBrowserWindow {
+    setSize = vi.fn();
     isDestroyed(): boolean {
       return false;
     }
     close(): void {}
   },
   screen: {
-    getPrimaryDisplay: () => ({ scaleFactor: 1 }),
+    getPrimaryDisplay: () => getPrimaryDisplayMock(),
   },
 }));
 
@@ -443,5 +446,31 @@ describe("resolveWindowDipSize", () => {
   it("returns width/height untouched under device-scale without pixelExact", () => {
     const size = resolveWindowDipSize({ width: 1920, height: 1080 }, "device-scale", 2);
     expect(size).toEqual({ width: 1920, height: 1080 });
+  });
+});
+
+describe("TextureBridgeImpl.resize — OSR scale policy", () => {
+  const makeBridgeWithPolicy = (
+    policy: "device-scale" | "unit-scale",
+    opts: TextureBridgeOptions,
+  ) =>
+    new TextureBridgeImpl(new BrowserWindow(), new TextureSender("t", 16, 9), null, opts, policy);
+
+  it("sets the window to the raw pixel size under unit-scale even with pixelExact", () => {
+    getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 2 });
+    const bridge = makeBridgeWithPolicy("unit-scale", { ...baseOpts, pixelExact: true });
+
+    bridge.resize(1280, 720);
+
+    expect(bridge.renderWindow.setSize).toHaveBeenCalledWith(1280, 720);
+  });
+
+  it("divides the window size by scaleFactor under device-scale with pixelExact", () => {
+    getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 2 });
+    const bridge = makeBridgeWithPolicy("device-scale", { ...baseOpts, pixelExact: true });
+
+    bridge.resize(1280, 720);
+
+    expect(bridge.renderWindow.setSize).toHaveBeenCalledWith(640, 360);
   });
 });
