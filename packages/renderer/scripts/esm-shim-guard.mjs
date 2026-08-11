@@ -25,6 +25,12 @@ if (invokedAsScript) {
   const distDir = new URL("../dist/", import.meta.url);
   const entries = await readdir(distDir, { recursive: true });
   const mjsPaths = entries.filter((entry) => entry.endsWith(".mjs"));
+  if (mjsPaths.length === 0) {
+    console.error(
+      "[esm-shim-guard] no .mjs files found under dist/ — the guard has nothing to check, failing loudly.",
+    );
+    process.exit(1);
+  }
   const sources = await Promise.all(
     mjsPaths.map(async (entryPath) => ({
       path: entryPath,

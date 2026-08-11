@@ -84,7 +84,9 @@ export interface BridgeEvents {
    * this fires persistently the output is black on the receiving side.
    * Consecutive drops with the same reason are deduped: the event fires on
    * the first occurrence and again only after a successful send or a reason
-   * change.
+   * change. A thrown native send failure (surfaced via the "error" event)
+   * neither emits frameDropped nor resets the dedupe state — droppedReason
+   * keeps the last drop reason until a successful send or a reason change.
    */
   frameDropped: [defect: PaintDefect];
   disposed: [];

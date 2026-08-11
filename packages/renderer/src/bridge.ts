@@ -87,18 +87,18 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
   /** Handle a paint event from the offscreen BrowserWindow. */
   handlePaint(event: { texture?: PaintTexture }): void {
     const texture = event.texture;
-    if (!texture?.textureInfo) {
-      texture?.release?.();
-      this.emitFrameDropped({ reason: "no-texture" });
-      return;
-    }
-
     // If we've been disposed between the paint event and this callback, the
     // underlying sender has been stopped and calling into it would throw
     // "TextureSender has been stopped" for every in-flight paint. Drop the
     // texture cleanly instead of emitting a stream of teardown errors.
     if (this._disposed) {
-      texture.release?.();
+      texture?.release?.();
+      return;
+    }
+
+    if (!texture?.textureInfo) {
+      texture?.release?.();
+      this.emitFrameDropped({ reason: "no-texture" });
       return;
     }
 

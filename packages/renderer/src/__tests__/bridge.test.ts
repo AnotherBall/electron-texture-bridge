@@ -6,14 +6,21 @@ import { describe, expect, it, vi } from "vitest";
 // real native module.
 vi.mock("electron", () => ({
   app: { isReady: () => true },
-  BrowserWindow: class MockBrowserWindow {},
+  BrowserWindow: class MockBrowserWindow {
+    isDestroyed(): boolean {
+      return false;
+    }
+    close(): void {}
+  },
   screen: {
     getPrimaryDisplay: () => ({ scaleFactor: 1 }),
   },
 }));
 
 vi.mock("@napolab/texture-bridge-core", () => ({
-  TextureSender: class MockTextureSender {},
+  TextureSender: class MockTextureSender {
+    stop(): void {}
+  },
   sendTextureFromPaintEvent: vi.fn(),
 }));
 
@@ -282,6 +289,28 @@ describe("TextureBridgeImpl.handlePaint — frameDropped", () => {
 
     expect(release).toHaveBeenCalledTimes(1);
     expect(dropped).toEqual([{ reason: "no-texture" }]);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("drops a post-dispose paint without emitting frameDropped or mutating droppedReason", () => {
+    // Once disposed, the underlying sender has been stopped — calling into it
+    // would throw for every in-flight paint. The guard must run before the
+    // no-texture branch too, since a post-dispose paint can still arrive
+    // without a texture and would otherwise latch a spurious drop reason.
+    sendMock.mockReset();
+    const bridge = makeBridge();
+    bridge.dispose();
+    // Attach the listener after dispose() — dispose() calls
+    // removeAllListeners(), so a listener added beforehand would not observe
+    // any (incorrect) emission and the assertion would be a false negative.
+    const dropped = collectDropped(bridge);
+    const texture = makeTexture();
+
+    bridge.handlePaint({ texture });
+
+    expect(dropped).toEqual([]);
+    expect(bridge.droppedReason).toBeNull();
+    expect(texture.release).toHaveBeenCalledTimes(1);
     expect(sendMock).not.toHaveBeenCalled();
   });
 
