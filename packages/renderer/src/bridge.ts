@@ -91,6 +91,8 @@ interface PaintEvent extends Event {
  * Note: the factory still consults Electron's `app` / `screen` globals and
  * constructs the preview window directly, so a fully Electron-free test
  * environment additionally needs those mocked.
+ * Future dependencies will be added as optional fields, so object literals
+ * passing only these two members keep compiling.
  */
 export interface TextureBridgeDeps {
   createWindow: (options: Electron.BrowserWindowConstructorOptions) => BrowserWindow;
@@ -277,8 +279,9 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
  * Build the BrowserWindow constructor options for the offscreen renderer.
  *
  * Extracted as a pure function so it can be unit tested without touching
- * Electron's native module — the actual `new BrowserWindow(...)` call lives
- * in `createTextureBridge`.
+ * Electron's native module — the actual construction happens through
+ * `TextureBridgeDeps.createWindow` — `createTextureBridge` binds it to
+ * `new BrowserWindow(...)`.
  *
  * `options.includeAlpha` flips the OSR pipeline into alpha-preserving mode:
  * `transparent: true` plus `backgroundColor: "#00000000"` on the BrowserWindow
@@ -337,7 +340,9 @@ export const createTextureBridgeWith =
   (deps: TextureBridgeDeps) =>
   async (options: TextureBridgeOptions): Promise<TextureBridge> => {
     if (!app.isReady()) {
-      throw new Error("createTextureBridge() must be called after app.whenReady()");
+      throw new Error(
+        "createTextureBridge()/createTextureBridgeWith() must be called after app.whenReady()",
+      );
     }
 
     const { name, width, height, frameRate = 60, rendererUrl, preview } = options;
@@ -395,7 +400,10 @@ export const createTextureBridgeWith =
     return bridge;
   };
 
-/** {@link createTextureBridgeWith} bound to the real BrowserWindow / TextureSender. */
+/**
+ * {@link createTextureBridgeWith} bound to the real BrowserWindow / TextureSender.
+ * Must be called after `app.whenReady()`.
+ */
 export const createTextureBridge = createTextureBridgeWith({
   createWindow: (options) => new BrowserWindow(options),
   createSender: (name, width, height) => new TextureSender(name, width, height),

@@ -1132,6 +1132,23 @@ making `width`/`height` mean exact pixels on every display.
 
 Empirical background: `reports/2026-08-11-pixelexact-osr-scale-investigation.md`.
 
+## Migration: Synchronous dispose (v0.14+)
+
+Starting from v0.14, `dispose()` also `destroy()`s the offscreen
+`renderWindow` synchronously instead of `close()`-ing it — see the
+`dispose()` notes under [`TextureBridge`](#texturebridge) above for the two
+consumer-visible changes this brings (disposed-time window access, missing
+close/beforeunload events).
+
+If you previously worked around the old async `close()` by calling
+`bridge.dispose()` and then your own `bridge.renderWindow.destroy()`,
+**remove that external `destroy()` call** — calling it after `dispose()` now
+targets an already-destroyed window, and Electron does not guarantee a second
+`destroy()` is safe. Guard it or move it before `dispose()` if you can't
+remove it right away
+(`if (!bridge.renderWindow.isDestroyed()) bridge.renderWindow.destroy();`, or
+call it **before** `dispose()`, not after).
+
 ## Migration: Explicit Disposal (v0.6+)
 
 Starting from v0.6, `stop()` and `dispose()` are **terminal operations** that immediately release native GPU/IPC resources. Previously, resource cleanup depended on JavaScript garbage collection timing.
@@ -1177,17 +1194,6 @@ const bridge = await createTextureBridge({ ... });
 // ... use bridge ...
 bridge.dispose(); // now deterministic
 ```
-
-`dispose()` also `destroy()`s the offscreen `renderWindow` synchronously
-instead of `close()`-ing it — see the `dispose()` notes under
-[`TextureBridge`](#texturebridge) above for the two consumer-visible changes
-this brings (disposed-time window access, missing close/beforeunload events).
-If you previously worked around the old async `close()` by calling
-`bridge.dispose()` and then your own `bridge.renderWindow.destroy()`,
-**remove that external `destroy()` call** — calling it after `dispose()` now
-targets an already-destroyed window, and Electron does not guarantee a second
-`destroy()` is safe. Guard it or move it before `dispose()` if you can't
-remove it right away (see above).
 
 **`using` declarations** (Node.js 22+, `"lib": ["ESNext.Disposable"]`):
 
