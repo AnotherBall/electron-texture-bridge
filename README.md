@@ -590,6 +590,7 @@ interface TextureBridge {
   on(event: "fps", listener: (fps: number) => void): this;
   on(event: "ready", listener: () => void): this;
   on(event: "error", listener: (error: Error) => void): this;
+  on(event: "frameDropped", listener: (defect: PaintDefect) => void): this;
   on(event: "resize", listener: (width: number, height: number) => void): this;
   on(event: "disposed", listener: () => void): this;
 
@@ -601,8 +602,18 @@ interface TextureBridge {
   readonly renderWindow: BrowserWindow;
   readonly previewWindow: BrowserWindow | null;
   readonly isDisposed: boolean;
+  readonly droppedReason: PaintDefect["reason"] | null;
 }
 ```
+
+`frameDropped` fires when a paint frame is dropped before reaching the sender
+(`reason`: `"no-texture" | "no-nt-handle" | "no-io-surface" | "unsupported-platform"`).
+It is not an error — but if it fires persistently, receivers see black output.
+Consecutive drops with the same reason are deduped: the event fires once, and
+again only after a successful send or a reason change. If a drop latches
+before your listener is attached (e.g. while the renderer page is still
+loading), read `bridge.droppedReason` — it holds the latest drop reason, or
+`null` after a successful send.
 
 #### `createWorkerRenderer(options)` (from `renderer/client`)
 
@@ -760,6 +771,13 @@ Low-level convenience function that handles platform-specific texture handle ext
 
 - **macOS**: Reads `handle.ioSurface` buffer → calls `sender.sendSurface()`
 - **Windows**: Reads `handle.ntHandle` buffer as BigInt64LE → calls `sender.send()`
+
+Returns `undefined` when the frame was handed to the sender, or a `PaintDefect`
+(`{ reason: "no-texture" | "no-nt-handle" | "no-io-surface" | "unsupported-platform" }`;
+the `unsupported-platform` variant also carries the offending `platform`)
+when the frame was dropped. Drops are normal no-ops, not errors — surface them
+in your own paint loop the same way `createTextureBridge` does with its
+`frameDropped` event. Native send failures still throw.
 
 #### `TextureSender`
 
@@ -989,6 +1007,10 @@ electron-texture-bridge/
 - **Isolate Electron vs. the bridge** with the [no-Electron sanity check](#minimal-sanity-check-no-electron) — if `sendRgbaBuffer` shows up in your VJ app, the native side is fine and the problem is in the Electron OSR path.
 - `preserveDrawingBuffer` is not needed (Chromium compositor reads directly)
 - Check pixel format mismatch: Chromium outputs BGRA, ensure the receiver expects BGRA
+- Subscribe to `bridge.on("frameDropped", ...)` (or check the return value of
+  `sendTextureFromPaintEvent`) — a persistent `no-nt-handle` / `no-io-surface`
+  reason means Chromium is not delivering a shareable GPU handle, which
+  otherwise manifests only as black output.
 
 ### Syphon receiver not showing output (macOS)
 

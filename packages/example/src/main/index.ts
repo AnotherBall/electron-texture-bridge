@@ -52,6 +52,10 @@ app.whenReady().then(async () => {
     console.error("[example] bridge error:", err.message);
   });
 
+  bridge.on("frameDropped", (defect) => {
+    console.warn(`[bridge] frame dropped: ${defect.reason}`);
+  });
+
   bridge.renderWindow.webContents.on("did-fail-load", (_event, errorCode, errorDesc) => {
     console.error("[example] did-fail-load:", errorCode, errorDesc);
   });

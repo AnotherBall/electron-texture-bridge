@@ -1,4 +1,5 @@
 import type { BrowserWindow } from "electron";
+import type { PaintDefect } from "@napolab/texture-bridge-core";
 
 /** Options for the preview window */
 export interface PreviewOptions {
@@ -77,6 +78,17 @@ export interface BridgeEvents {
   fps: [fps: number];
   ready: [];
   error: [error: Error];
+  /**
+   * A paint frame was dropped before reaching the sender (missing texture /
+   * missing platform handle / unsupported platform). Not an error — but if
+   * this fires persistently the output is black on the receiving side.
+   * Consecutive drops with the same reason are deduped: the event fires on
+   * the first occurrence and again only after a successful send or a reason
+   * change. A thrown native send failure (surfaced via the "error" event)
+   * neither emits frameDropped nor resets the dedupe state — droppedReason
+   * keeps the last drop reason until a successful send or a reason change.
+   */
+  frameDropped: [defect: PaintDefect];
   disposed: [];
   resize: [width: number, height: number];
 }
@@ -102,6 +114,14 @@ export interface TextureBridge {
 
   /** Whether the bridge has been disposed */
   readonly isDisposed: boolean;
+
+  /**
+   * Reason of the most recently dropped frame, or `null` after a successful
+   * send (or before the first paint). Lets callers observe a drop that
+   * latched before their `frameDropped` listener was attached (e.g. while
+   * the renderer page was still loading).
+   */
+  readonly droppedReason: PaintDefect["reason"] | null;
 
   /** Tear down all resources. Terminal operation — the bridge cannot be reused afterward. */
   dispose(): void;

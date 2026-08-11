@@ -34,3 +34,20 @@ export interface ReceivedFrame {
   width: number;
   height: number;
 }
+
+/**
+ * Reason a paint event could not be forwarded to the sender.
+ *
+ * This is a modeled no-op, not an error: the paint pipeline continues, but the
+ * frame was dropped. Callers may surface it (e.g. the high-level bridge emits
+ * it as a `frameDropped` event) instead of the drop being silent.
+ *
+ * This union may gain new variants in a minor release — consumers switching
+ * exhaustively on reason should tolerate unknown reasons if they need
+ * forward compatibility across upgrades.
+ */
+export type PaintDefect =
+  | { readonly reason: "no-texture" }
+  | { readonly reason: "no-nt-handle" }
+  | { readonly reason: "no-io-surface" }
+  | { readonly reason: "unsupported-platform"; readonly platform: NodeJS.Platform };

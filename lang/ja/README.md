@@ -356,6 +356,7 @@ interface TextureBridge {
   on(event: "fps", listener: (fps: number) => void): this;
   on(event: "ready", listener: () => void): this;
   on(event: "error", listener: (error: Error) => void): this;
+  on(event: "frameDropped", listener: (defect: PaintDefect) => void): this;
   on(event: "resize", listener: (width: number, height: number) => void): this;
   on(event: "disposed", listener: () => void): this;
 
@@ -367,8 +368,18 @@ interface TextureBridge {
   readonly renderWindow: BrowserWindow;
   readonly previewWindow: BrowserWindow | null;
   readonly isDisposed: boolean;
+  readonly droppedReason: PaintDefect["reason"] | null;
 }
 ```
+
+`frameDropped` は、paint フレームがセンダーに届く前にドロップされたときに発火します
+（`reason`: `"no-texture" | "no-nt-handle" | "no-io-surface" | "unsupported-platform"`）。
+エラーではありませんが、継続的に発火する場合はレシーバー側で黒画面になります。
+同じ理由が連続する場合はデデュープされます：イベントは最初の発生時に一度発火し、
+成功した送信または理由の変化があった後に再び発火します。リスナーをアタッチする前に
+ドロップが確定していた場合（例: レンダラーページがまだロード中の場合）は、
+`bridge.droppedReason` を読んでください — 最新のドロップ理由、または成功した送信の後は
+`null` を保持します。
 
 #### `createWorkerRenderer(options)`（`renderer/client` から）
 
@@ -407,6 +418,13 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
 
 - **macOS**: `handle.ioSurface` バッファを読み取り → `sender.sendSurface()` を呼び出し
 - **Windows**: `handle.ntHandle` バッファを BigInt64LE として読み取り → `sender.send()` を呼び出し
+
+フレームがセンダーに渡された場合は `undefined` を返し、フレームがドロップされた場合は
+`PaintDefect`（`{ reason: "no-texture" | "no-nt-handle" | "no-io-surface" | "unsupported-platform" }`；
+`unsupported-platform` バリアントには該当する `platform` も含まれます）を返します。
+ドロップは通常のノーオペレーションであり、エラーではありません — `createTextureBridge` が
+`frameDropped` イベントで行っているのと同様に、自前の paint ループでも表面化させてください。
+ネイティブの送信失敗は引き続き throw されます。
 
 #### `TextureSender`
 
@@ -556,6 +574,10 @@ electron-texture-bridge/
 - **Electron とブリッジの切り分け**には[Electron 無しの最小サニティチェック](#electron-無しの最小サニティチェック)を使ってください — `sendRgbaBuffer` が VJ アプリに映ればネイティブ側は健全で、問題は Electron OSR 経路にあります。
 - `preserveDrawingBuffer` は不要（Chromium のコンポジターが直接読み取る）
 - ピクセルフォーマットの不一致を確認：Chromium は BGRA を出力するので、レシーバー側も BGRA を期待しているか確認
+- `bridge.on("frameDropped", ...)` を購読する（または `sendTextureFromPaintEvent` の
+  戻り値を確認する）— `no-nt-handle` / `no-io-surface` の理由が継続する場合、
+  Chromium が共有可能な GPU ハンドルを配信していないことを意味し、
+  それ以外では黒画面としてのみ現れます。
 
 ### Syphon レシーバーに表示されない（macOS）
 

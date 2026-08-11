@@ -6,19 +6,30 @@ import { describe, expect, it, vi } from "vitest";
 // real native module.
 vi.mock("electron", () => ({
   app: { isReady: () => true },
-  BrowserWindow: class MockBrowserWindow {},
+  BrowserWindow: class MockBrowserWindow {
+    isDestroyed(): boolean {
+      return false;
+    }
+    close(): void {}
+  },
   screen: {
     getPrimaryDisplay: () => ({ scaleFactor: 1 }),
   },
 }));
 
 vi.mock("@napolab/texture-bridge-core", () => ({
-  TextureSender: class MockTextureSender {},
+  TextureSender: class MockTextureSender {
+    stop(): void {}
+  },
   sendTextureFromPaintEvent: vi.fn(),
 }));
 
-import { buildBrowserWindowOptions, computeDipSize } from "../bridge";
+import { buildBrowserWindowOptions, computeDipSize, TextureBridgeImpl } from "../bridge";
+import { BrowserWindow } from "electron";
+import { TextureSender, sendTextureFromPaintEvent } from "@napolab/texture-bridge-core";
+import type { PaintDefect, PaintTexture } from "@napolab/texture-bridge-core";
 import type { TextureBridgeOptions } from "../types";
+import type { PreviewManager } from "../preview-manager";
 
 const baseOpts: TextureBridgeOptions = {
   name: "test",
@@ -143,5 +154,184 @@ describe("computeDipSize", () => {
     // Infinity and crash the BrowserWindow constructor.
     expect(computeDipSize(1920, 1080, 0)).toEqual({ width: 1920, height: 1080 });
     expect(computeDipSize(1920, 1080, -1)).toEqual({ width: 1920, height: 1080 });
+  });
+});
+
+describe("TextureBridgeImpl.handlePaint — frameDropped", () => {
+  const sendMock = vi.mocked(sendTextureFromPaintEvent);
+
+  const makeBridge = () =>
+    new TextureBridgeImpl(new BrowserWindow(), new TextureSender("t", 16, 9), null, baseOpts);
+
+  const makeTexture = () => ({
+    textureInfo: {
+      pixelFormat: "bgra" as const,
+      codedSize: { width: 16, height: 9 },
+      visibleRect: { x: 0, y: 0, width: 16, height: 9 },
+      handle: {},
+    },
+    release: vi.fn(),
+  });
+
+  const collectDropped = (bridge: TextureBridgeImpl) => {
+    const dropped: PaintDefect[] = [];
+    bridge.on("frameDropped", (defect) => {
+      dropped.push(defect);
+    });
+    return dropped;
+  };
+
+  it("emits a no-texture defect when the paint event has no texture", () => {
+    sendMock.mockReset();
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+
+    bridge.handlePaint({ texture: undefined });
+
+    expect(dropped).toEqual([{ reason: "no-texture" }]);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("emits the defect returned by sendTextureFromPaintEvent and still releases the texture", () => {
+    sendMock.mockReset();
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+    const texture = makeTexture();
+
+    bridge.handlePaint({ texture });
+
+    expect(dropped).toEqual([{ reason: "no-nt-handle" }]);
+    expect(texture.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("dedupes consecutive defects with the same reason", () => {
+    sendMock.mockReset();
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+
+    bridge.handlePaint({ texture: makeTexture() });
+    bridge.handlePaint({ texture: makeTexture() });
+    bridge.handlePaint({ texture: makeTexture() });
+
+    expect(dropped).toEqual([{ reason: "no-nt-handle" }]);
+  });
+
+  it("re-emits after a successful send resets the dedupe state", () => {
+    sendMock.mockReset();
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    bridge.handlePaint({ texture: makeTexture() });
+
+    sendMock.mockReturnValue(undefined);
+    bridge.handlePaint({ texture: makeTexture() });
+
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    bridge.handlePaint({ texture: makeTexture() });
+
+    expect(dropped).toEqual([{ reason: "no-nt-handle" }, { reason: "no-nt-handle" }]);
+  });
+
+  it("emits immediately when the defect reason changes", () => {
+    sendMock.mockReset();
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    bridge.handlePaint({ texture: makeTexture() });
+
+    sendMock.mockReturnValue({ reason: "no-io-surface" });
+    bridge.handlePaint({ texture: makeTexture() });
+
+    expect(dropped).toEqual([{ reason: "no-nt-handle" }, { reason: "no-io-surface" }]);
+  });
+
+  it("does not emit frameDropped on a successful send", () => {
+    sendMock.mockReset();
+    sendMock.mockReturnValue(undefined);
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+    const texture = makeTexture();
+
+    bridge.handlePaint({ texture });
+
+    expect(dropped).toEqual([]);
+    expect(texture.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("exposes the latched drop reason via droppedReason", () => {
+    sendMock.mockReset();
+    const bridge = makeBridge();
+    expect(bridge.droppedReason).toBeNull();
+
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    bridge.handlePaint({ texture: makeTexture() });
+    expect(bridge.droppedReason).toBe("no-nt-handle");
+
+    sendMock.mockReturnValue(undefined);
+    bridge.handlePaint({ texture: makeTexture() });
+    expect(bridge.droppedReason).toBeNull();
+  });
+
+  it("releases a texture that arrives without textureInfo", () => {
+    sendMock.mockReset();
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+    const release = vi.fn();
+    // The runtime guard exists precisely because Electron can deliver a
+    // texture without textureInfo — a state PaintTexture's type cannot
+    // express, hence the two-step cast.
+    const defective: unknown = { release };
+    bridge.handlePaint({ texture: defective as PaintTexture });
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(dropped).toEqual([{ reason: "no-texture" }]);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("drops a post-dispose paint without emitting frameDropped or mutating droppedReason", () => {
+    // Once disposed, the underlying sender has been stopped — calling into it
+    // would throw for every in-flight paint. The guard must run before the
+    // no-texture branch too, since a post-dispose paint can still arrive
+    // without a texture and would otherwise latch a spurious drop reason.
+    sendMock.mockReset();
+    const bridge = makeBridge();
+    bridge.dispose();
+    // Attach the listener after dispose() — dispose() calls
+    // removeAllListeners(), so a listener added beforehand would not observe
+    // any (incorrect) emission and the assertion would be a false negative.
+    const dropped = collectDropped(bridge);
+    const texture = makeTexture();
+
+    bridge.handlePaint({ texture });
+
+    expect(dropped).toEqual([]);
+    expect(bridge.droppedReason).toBeNull();
+    expect(texture.release).toHaveBeenCalledTimes(1);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("still forwards the frame to the preview manager on a defect", () => {
+    sendMock.mockReset();
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    const sendFrame = vi.fn();
+    // PreviewManager has private fields, so a structural stub cannot satisfy
+    // its class type — the two-step cast injects the test double.
+    const previewStub: unknown = { sendFrame };
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      previewStub as PreviewManager,
+      baseOpts,
+    );
+    const texture = makeTexture();
+
+    bridge.handlePaint({ texture });
+
+    expect(sendFrame).toHaveBeenCalledTimes(1);
+    expect(sendFrame).toHaveBeenCalledWith(texture);
   });
 });

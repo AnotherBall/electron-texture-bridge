@@ -12,6 +12,7 @@ import type {
   PixelFormat,
   SenderInfo,
   ReceivedFrame,
+  PaintDefect,
 } from "./types";
 
 // Attach Symbol.dispose to native classes so `using` declarations work.
@@ -36,32 +37,49 @@ declare module "@napolab/texture-bridge" {
 }
 
 export { TextureSender, TextureReceiver, closeNativeHandle, getPlatform, listSenders };
-export type { TextureInfo, PaintTexture, Platform, PixelFormat, SenderInfo, ReceivedFrame };
+export type {
+  TextureInfo,
+  PaintTexture,
+  Platform,
+  PixelFormat,
+  SenderInfo,
+  ReceivedFrame,
+  PaintDefect,
+};
 export type { SharedTextureFrame } from "@napolab/texture-bridge";
 
 /**
  * Send a texture from an Electron paint event to Syphon/Spout.
  *
  * Handles platform detection and buffer extraction automatically.
+ *
+ * @returns `undefined` when the texture was handed to the sender, or a
+ * {@link PaintDefect} describing why the frame was dropped. Drops are normal
+ * no-ops (e.g. Chromium delivered a paint without a shareable handle), not
+ * errors — but callers should surface them instead of letting output go
+ * silently black. Native send failures still throw as before.
  */
 export function sendTextureFromPaintEvent(
   sender: InstanceType<typeof TextureSender>,
   textureInfo: TextureInfo | undefined,
-): void {
-  if (!textureInfo) return;
+): PaintDefect | undefined {
+  if (!textureInfo) return { reason: "no-texture" };
   const { handle, codedSize } = textureInfo;
 
   if (process.platform === "win32") {
     const ntHandle = handle.ntHandle;
-    if (!ntHandle || !Buffer.isBuffer(ntHandle)) return;
+    if (!ntHandle || !Buffer.isBuffer(ntHandle)) return { reason: "no-nt-handle" };
     const handleValue = Number(ntHandle.readBigInt64LE(0));
     sender.send(handleValue, codedSize.width, codedSize.height);
-    return;
+    return undefined;
   }
 
   if (process.platform === "darwin") {
     const ioSurface = handle.ioSurface;
-    if (!ioSurface) return;
+    if (!ioSurface) return { reason: "no-io-surface" };
     sender.sendSurface(ioSurface, codedSize.width, codedSize.height);
+    return undefined;
   }
+
+  return { reason: "unsupported-platform", platform: process.platform };
 }
