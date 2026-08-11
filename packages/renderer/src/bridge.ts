@@ -73,6 +73,10 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
     return this._disposed;
   }
 
+  get droppedReason(): PaintDefect["reason"] | null {
+    return this.lastDropReason;
+  }
+
   /** Emit `frameDropped`, deduping consecutive drops with the same reason. */
   private emitFrameDropped(defect: PaintDefect): void {
     if (defect.reason === this.lastDropReason) return;

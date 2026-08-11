@@ -113,6 +113,14 @@ export interface TextureBridge {
   /** Whether the bridge has been disposed */
   readonly isDisposed: boolean;
 
+  /**
+   * Reason of the most recently dropped frame, or `null` after a successful
+   * send (or before the first paint). Lets callers observe a drop that
+   * latched before their `frameDropped` listener was attached (e.g. while
+   * the renderer page was still loading).
+   */
+  readonly droppedReason: PaintDefect["reason"] | null;
+
   /** Tear down all resources. Terminal operation — the bridge cannot be reused afterward. */
   dispose(): void;
 

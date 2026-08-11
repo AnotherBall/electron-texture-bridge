@@ -20,8 +20,9 @@ vi.mock("@napolab/texture-bridge-core", () => ({
 import { buildBrowserWindowOptions, computeDipSize, TextureBridgeImpl } from "../bridge";
 import { BrowserWindow } from "electron";
 import { TextureSender, sendTextureFromPaintEvent } from "@napolab/texture-bridge-core";
-import type { PaintDefect } from "@napolab/texture-bridge-core";
+import type { PaintDefect, PaintTexture } from "@napolab/texture-bridge-core";
 import type { TextureBridgeOptions } from "../types";
+import type { PreviewManager } from "../preview-manager";
 
 const baseOpts: TextureBridgeOptions = {
   name: "test",
@@ -252,5 +253,56 @@ describe("TextureBridgeImpl.handlePaint — frameDropped", () => {
 
     expect(dropped).toEqual([]);
     expect(texture.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("exposes the latched drop reason via droppedReason", () => {
+    sendMock.mockReset();
+    const bridge = makeBridge();
+    expect(bridge.droppedReason).toBeNull();
+
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    bridge.handlePaint({ texture: makeTexture() });
+    expect(bridge.droppedReason).toBe("no-nt-handle");
+
+    sendMock.mockReturnValue(undefined);
+    bridge.handlePaint({ texture: makeTexture() });
+    expect(bridge.droppedReason).toBeNull();
+  });
+
+  it("releases a texture that arrives without textureInfo", () => {
+    sendMock.mockReset();
+    const bridge = makeBridge();
+    const dropped = collectDropped(bridge);
+    const release = vi.fn();
+    // The runtime guard exists precisely because Electron can deliver a
+    // texture without textureInfo — a state PaintTexture's type cannot
+    // express, hence the two-step cast.
+    const defective: unknown = { release };
+    bridge.handlePaint({ texture: defective as PaintTexture });
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(dropped).toEqual([{ reason: "no-texture" }]);
+    expect(sendMock).not.toHaveBeenCalled();
+  });
+
+  it("still forwards the frame to the preview manager on a defect", () => {
+    sendMock.mockReset();
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    const sendFrame = vi.fn();
+    // PreviewManager has private fields, so a structural stub cannot satisfy
+    // its class type — the two-step cast injects the test double.
+    const previewStub: unknown = { sendFrame };
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      previewStub as PreviewManager,
+      baseOpts,
+    );
+    const texture = makeTexture();
+
+    bridge.handlePaint({ texture });
+
+    expect(sendFrame).toHaveBeenCalledTimes(1);
+    expect(sendFrame).toHaveBeenCalledWith(texture);
   });
 });
