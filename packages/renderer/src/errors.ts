@@ -39,9 +39,3 @@ export class ReceiverStoppedError extends Error {
     super(`shared texture receiver stopped after ${limit} consecutive errors`);
   }
 }
-
-/** Union of every failure the shared-texture send pipeline can produce. */
-export type SendPipelineError =
-  | UnsupportedPixelFormatError
-  | TextureImportError
-  | TextureDeliveryError;

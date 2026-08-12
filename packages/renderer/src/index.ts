@@ -24,4 +24,3 @@ export {
   UnsupportedPixelFormatError,
   ReceiverStoppedError,
 } from "./errors";
-export type { SendPipelineError } from "./errors";

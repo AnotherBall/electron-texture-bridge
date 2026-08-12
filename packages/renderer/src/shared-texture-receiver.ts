@@ -21,7 +21,6 @@ import {
   TextureImportError,
   UnsupportedPixelFormatError,
 } from "./errors";
-import type { SendPipelineError } from "./errors";
 import { FpsCounter } from "./fps-counter";
 import { toError } from "./to-error";
 
@@ -333,7 +332,7 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
    */
   private _prepare(
     frame: SharedTextureFrame,
-  ): Result<Electron.SharedTextureImported, SendPipelineError> {
+  ): Result<Electron.SharedTextureImported, UnsupportedPixelFormatError | TextureImportError> {
     return this._validate(frame)
       .andThen((textureInfo) => safeImportSharedTexture(textureInfo))
       .orElse((error) => {
