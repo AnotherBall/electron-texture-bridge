@@ -239,7 +239,7 @@ describe("createSharedTextureReceiver", () => {
     bridge.dispose();
   });
 
-  it("emits 'error' when importSharedTexture throws and does not call sendSharedTexture", () => {
+  it("emits the prepare error on the same tick's microtask queue when importSharedTexture throws, and does not call sendSharedTexture", async () => {
     const handler = vi.fn();
     mockReceiver.receiveSharedTexture.mockReturnValue(makeFrame());
     mockImportSharedTexture.mockImplementation(() => {
@@ -254,6 +254,7 @@ describe("createSharedTextureReceiver", () => {
     bridge.on("error", handler);
     bridge.start();
     vi.advanceTimersByTime(15);
+    await flushPromises();
 
     expect(handler).toHaveBeenCalled();
     expect(handler.mock.calls[0][0]).toBeInstanceOf(TextureImportError);

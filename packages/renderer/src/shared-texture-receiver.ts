@@ -304,24 +304,19 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
       return "skipped";
     }
 
-    // Both `.match` calls sit at the same consumption edge (the "error"
-    // event). Prepare failures collapse on the sync Result so validation /
-    // import errors emit in the same tick they occur — the pre-neverthrow
-    // behavior the test suite pins — while only delivery is genuinely async.
-    return this._prepare(frame).match(
-      (imported) =>
-        this._deliver(imported).match(
-          (result) => result,
-          (error) => {
-            this.emit("error", error);
-            return "failed" as const;
-          },
-        ),
-      (error) => {
-        this.emit("error", error);
-        return Promise.resolve<SendResult>("failed");
-      },
-    );
+    // Single pipeline, single consumption edge: prepare (sync) chains into
+    // delivery (async), and every pipeline error collapses to one emit at the
+    // same `.match`. Prepare-stage errors therefore emit one microtask later
+    // than the pre-neverthrow code — unobservable to event listeners.
+    return this._prepare(frame)
+      .asyncAndThen((imported) => this._deliver(imported))
+      .match(
+        (result) => result,
+        (error) => {
+          this.emit("error", error);
+          return "failed" as const;
+        },
+      );
   }
 
   /**
