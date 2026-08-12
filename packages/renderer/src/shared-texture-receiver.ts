@@ -42,7 +42,7 @@ type SharedTexturePixelFormat = "bgra" | "rgba" | "rgbaf16";
 const VALID_PIXEL_FORMATS: readonly SharedTexturePixelFormat[] = ["bgra", "rgba", "rgbaf16"];
 
 const isValidPixelFormat = (value: string): value is SharedTexturePixelFormat => {
-  return (VALID_PIXEL_FORMATS as readonly string[]).includes(value);
+  return VALID_PIXEL_FORMATS.some((format) => format === value);
 };
 
 /**
@@ -222,43 +222,59 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
   private async _tick(): Promise<void> {
     if (this._disposed || this._inFlight) return;
 
-    let frame: SharedTextureFrame | null;
-    try {
-      frame = this.receiver.receiveSharedTexture();
-    } catch (err) {
-      this._recordTickError(toError(err));
-      return;
-    }
+    const frame = this._receiveFrame();
     if (!frame) return;
 
-    this._inFlight = true;
-    let result: SendResult;
-    try {
-      result = await this._send(frame);
-    } finally {
-      this._inFlight = false;
-    }
+    const result = await this._sendTracked(frame);
 
     if (this._disposed) return;
 
-    if (result === "failed") {
-      // The error itself was already emitted inside `_send()`. Still count it
-      // toward the circuit breaker so a stuck pipeline eventually stops.
-      this._countTickError();
-      return;
+    switch (result) {
+      case "failed":
+        // The error itself was already emitted inside `_send()`. Still count it
+        // toward the circuit breaker so a stuck pipeline eventually stops.
+        this._countTickError();
+        return;
+      case "skipped":
+        // Not a failure (e.g. destroyed target during teardown). Don't touch the
+        // error counter and don't tick FPS.
+        return;
+      case "delivered": {
+        // Successful frame delivery — reset the consecutive-error counter.
+        this._consecutiveErrors = 0;
+        const fps = this.fpsCounter.tick();
+        if (fps !== null) this.emit("fps", fps);
+        return;
+      }
+      default: {
+        const _exhaustive: never = result;
+        throw new Error(`unhandled send result: ${JSON.stringify(_exhaustive)}`);
+      }
     }
+  }
 
-    if (result === "skipped") {
-      // Not a failure (e.g. destroyed target during teardown). Don't touch the
-      // error counter and don't tick FPS.
-      return;
+  /**
+   * Poll the native receiver once. Errors are recorded against the circuit
+   * breaker and reported via the `"error"` event; both the no-frame and the
+   * error case return `null` (the tick has nothing further to do either way).
+   */
+  private _receiveFrame(): SharedTextureFrame | null {
+    try {
+      return this.receiver.receiveSharedTexture();
+    } catch (err) {
+      this._recordTickError(toError(err));
+      return null;
     }
+  }
 
-    // Successful frame delivery — reset the consecutive-error counter.
-    this._consecutiveErrors = 0;
-
-    const fps = this.fpsCounter.tick();
-    if (fps !== null) this.emit("fps", fps);
+  /** Run `_send()` with the `_inFlight` drop-latest flag held for its duration. */
+  private async _sendTracked(frame: SharedTextureFrame): Promise<SendResult> {
+    this._inFlight = true;
+    try {
+      return await this._send(frame);
+    } finally {
+      this._inFlight = false;
+    }
   }
 
   private async _send(frame: SharedTextureFrame): Promise<SendResult> {
@@ -292,16 +308,8 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
       pixelFormat: frame.pixelFormat,
     };
 
-    let imported: Electron.SharedTextureImported;
-    try {
-      imported = sharedTexture.importSharedTexture({ textureInfo });
-    } catch (err) {
-      this.emit("error", toError(err));
-      // importSharedTexture threw before taking ownership — release the handle
-      // ourselves so we don't leak a per-frame NT HANDLE / IOSurface.
-      releaseUnconsumedHandle(frame.handle);
-      return "failed";
-    }
+    const imported = this._importFrame(textureInfo, frame.handle);
+    if (!imported) return "failed";
 
     const targetFrame = this.target.mainFrame;
     if (!targetFrame) {
@@ -321,6 +329,25 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
       return "failed";
     } finally {
       imported.release();
+    }
+  }
+
+  /**
+   * Import one frame into Electron. On throw, emits the error, releases the
+   * unconsumed native handle (importSharedTexture threw before taking
+   * ownership — without this we leak a per-frame NT HANDLE / IOSurface), and
+   * returns `null`.
+   */
+  private _importFrame(
+    textureInfo: Electron.SharedTextureImportTextureInfo,
+    rawHandle: Buffer,
+  ): Electron.SharedTextureImported | null {
+    try {
+      return sharedTexture.importSharedTexture({ textureInfo });
+    } catch (err) {
+      this.emit("error", toError(err));
+      releaseUnconsumedHandle(rawHandle);
+      return null;
     }
   }
 }
