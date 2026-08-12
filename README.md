@@ -889,13 +889,18 @@ type ForwardDefect =
 
 Because it's an `async` function, it can never throw synchronously — a defect always surfaces through the returned promise, never as a thrown exception at the call site. When the import succeeds, the imported texture is released in a `finally` regardless of whether the subsequent send succeeds or fails (release-in-finally).
 
-Low-level callers driving their own paint loop can call it directly, alongside `sendTextureFromPaintEvent`:
+Low-level callers driving their own paint loop can call it directly, alongside `sendTextureFromPaintEvent`. Release the texture in a `finally` — otherwise a thrown `TextureSendError` from `sendTextureFromPaintEvent` (native send failures throw) skips `texture.release()` and leaks the frame. `forwardSharedTexture` never throws synchronously (see above), so it's safe to fire-and-forget before `sendTextureFromPaintEvent` runs — no `await` needed to guarantee the dispatch already started:
 
 ```typescript
-win.webContents.on("paint", async (e) => {
-  sendTextureFromPaintEvent(sender, e.texture?.textureInfo);          // → Syphon/Spout
-  if (e.texture) await forwardSharedTexture(e.texture.textureInfo, monitorWC, [slot]); // → renderer
-  e.texture?.release();
+win.webContents.on("paint", (e) => {
+  const texture = e.texture;
+  if (!texture) return;
+  try {
+    void forwardSharedTexture(texture.textureInfo, monitorWC, [slot]); // → renderer (dispatch is synchronous)
+    sendTextureFromPaintEvent(sender, texture.textureInfo);           // → Syphon/Spout (throws on failure)
+  } finally {
+    texture.release();
+  }
 });
 ```
 

@@ -33,12 +33,17 @@ export const forwardSharedTexture = async (
 
 - **subpath に置く理由**: core メインエントリの「Electron 無しで動く」保護契約（`sendRgbaBuffer` の素 Node 切り分け）を守るため。`electron` の static import はこの subpath に隔離（package.json `exports["./electron"]` + tsdown entry 追加）
 - **`sendTextureFromPaintEvent` と対称の契約**: L3 は吸収しない — 結果（`ForwardDefect | undefined`）を返して呼び出し側に委ねる。async 関数なので同期 throw は構造的に不可能。import に成功したら send の成否に関わらず release する（release-in-finally）
-- 低レベルユーザーは自前 paint ループから直接呼ぶ:
+- 低レベルユーザーは自前 paint ループから直接呼ぶ。release は `finally` で行う（`sendTextureFromPaintEvent` の throw で release がスキップされるリークを避けるため）。`forwardSharedTexture` は同期 dispatch を保証するため await 不要で fire-and-forget できる:
   ```ts
-  win.webContents.on("paint", async (e) => {
-    sendTextureFromPaintEvent(sender, e.texture?.textureInfo);          // → Syphon/Spout
-    if (e.texture) await forwardSharedTexture(e.texture.textureInfo, monitorWC, [slot]); // → renderer
-    e.texture?.release();
+  win.webContents.on("paint", (e) => {
+    const texture = e.texture;
+    if (!texture) return;
+    try {
+      void forwardSharedTexture(texture.textureInfo, monitorWC, [slot]); // → renderer(dispatch は同期)
+      sendTextureFromPaintEvent(sender, texture.textureInfo);           // → Syphon/Spout(失敗は throw)
+    } finally {
+      texture.release();
+    }
   });
   ```
 - 実装は producer/driver 規約準拠（内部 Result、公開面は plain union）

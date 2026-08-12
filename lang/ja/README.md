@@ -537,13 +537,18 @@ type ForwardDefect =
 
 `async` 関数であるため、同期的に throw することは構造的にありません — 失敗は常に返り値の Promise を通じて表面化し、呼び出し箇所で例外として飛ぶことはありません。import に成功した場合は、後続の send が成功しても失敗しても `finally` で必ず import 済みテクスチャを release します（release-in-finally）。
 
-自前の paint ループを持つ低レベル利用者は、`sendTextureFromPaintEvent` と並べて直接呼び出せます:
+自前の paint ループを持つ低レベル利用者は、`sendTextureFromPaintEvent` と並べて直接呼び出せます。texture の release は `finally` で行ってください — `sendTextureFromPaintEvent` はネイティブ送信の失敗時に throw するため、`finally` を使わないと `texture.release()` がスキップされてフレームがリークします。`forwardSharedTexture` は同期的に throw しない（前述）ため、`await` せず fire-and-forget しても安全です — ディスパッチ自体は同期的に開始されるため:
 
 ```typescript
-win.webContents.on("paint", async (e) => {
-  sendTextureFromPaintEvent(sender, e.texture?.textureInfo);          // → Syphon/Spout
-  if (e.texture) await forwardSharedTexture(e.texture.textureInfo, monitorWC, [slot]); // → renderer
-  e.texture?.release();
+win.webContents.on("paint", (e) => {
+  const texture = e.texture;
+  if (!texture) return;
+  try {
+    void forwardSharedTexture(texture.textureInfo, monitorWC, [slot]); // → renderer（ディスパッチは同期）
+    sendTextureFromPaintEvent(sender, texture.textureInfo);           // → Syphon/Spout（失敗時は throw）
+  } finally {
+    texture.release();
+  }
 });
 ```
 
