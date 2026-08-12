@@ -52,6 +52,8 @@ interface SlotStats {
   arrivalFps: number;
   drawFps: number;
   connState: string;
+  /** Latest `multi-slot-status` push (e.g. syphon fps ticks) — kept separate from `connState` so a push doesn't clobber the "connected: ..." text. */
+  pushText: string;
 }
 
 const createSlotStats = (): SlotStats => ({
@@ -60,6 +62,7 @@ const createSlotStats = (): SlotStats => ({
   arrivalFps: 0,
   drawFps: 0,
   connState: "idle",
+  pushText: "",
 });
 
 const slotStats: readonly SlotStats[] = [
@@ -79,13 +82,22 @@ const latestFrames: (SharedTextureConsumerFrame | undefined)[] = Array.from({
   length: SLOT_COUNT,
 });
 
+// `forwardFrames`/receiver `dispose()` don't cancel deliveries already
+// in-flight when `multi-disconnect` runs, so a stray tagged frame can still
+// arrive for a slot just disconnected. Track connection state here so
+// `onFrame` can drop those late frames instead of resurrecting the slot.
+const connectedSlots: boolean[] = [false, false, false, false];
+
 const getElement = <T extends HTMLElement>(id: string, ctor: new () => T): T | null => {
   const element = document.getElementById(id);
   return element instanceof ctor ? element : null;
 };
 
-const formatStatus = (slot: number, stats: SlotStats): string =>
-  `P${slot} | arrival ${stats.arrivalFps.toFixed(1)} fps | draw ${stats.drawFps.toFixed(1)} fps | ${stats.connState}`;
+const formatStatus = (slot: number, stats: SlotStats): string => {
+  const base = `P${slot} | arrival ${stats.arrivalFps.toFixed(1)} fps | draw ${stats.drawFps.toFixed(1)} fps | ${stats.connState}`;
+  if (!stats.pushText) return base;
+  return `${base} | ${stats.pushText}`;
+};
 
 const updateStatusText = (slot: number): void => {
   const deckStatus = ui?.decks[slot]?.status;
@@ -143,7 +155,12 @@ const parseSourceValue = (value: string): SlotSourceDescriptor | null => {
   return null;
 };
 
-const disconnectSlot = async (deck: DeckUI, slot: number): Promise<void> => {
+const disconnectSlot = async (
+  deck: DeckUI,
+  compositeCtx: CanvasRenderingContext2D,
+  slot: number,
+): Promise<void> => {
+  connectedSlots[slot] = false;
   await ipcRenderer.invoke("multi-disconnect", slot);
   deck.connectBtn.disabled = !deck.source.value;
   deck.disconnectBtn.disabled = true;
@@ -151,6 +168,10 @@ const disconnectSlot = async (deck: DeckUI, slot: number): Promise<void> => {
   latestFrames[slot]?.videoFrame.close();
   latestFrames[slot] = undefined;
   deck.ctx.clearRect(0, 0, DECK_WIDTH, DECK_HEIGHT);
+
+  const quadX = (slot % 2) * DECK_WIDTH;
+  const quadY = Math.floor(slot / 2) * DECK_HEIGHT;
+  compositeCtx.clearRect(quadX, quadY, DECK_WIDTH, DECK_HEIGHT);
 };
 
 const wireDeck = (multiviewer: MultiviewerUI, slot: number): void => {
@@ -166,6 +187,7 @@ const wireDeck = (multiviewer: MultiviewerUI, slot: number): void => {
     if (!descriptor) return;
     try {
       await ipcRenderer.invoke("multi-connect", slot, descriptor, multiviewer.flipY.checked);
+      connectedSlots[slot] = true;
       deck.connectBtn.disabled = true;
       deck.disconnectBtn.disabled = false;
       deck.source.disabled = true;
@@ -177,7 +199,7 @@ const wireDeck = (multiviewer: MultiviewerUI, slot: number): void => {
   });
 
   deck.disconnectBtn.addEventListener("click", async () => {
-    await disconnectSlot(deck, slot);
+    await disconnectSlot(deck, multiviewer.compositeCtx, slot);
   });
 };
 
@@ -234,6 +256,11 @@ consumeSharedTexture({
   onFrame: (frame, ...args) => {
     const slot = args[0];
     if (typeof slot !== "number" || slot < 0 || slot > 3) return;
+    // Drop frames for slots that aren't (or are no longer) connected —
+    // `dispose()` on the main side doesn't cancel deliveries already
+    // in-flight, so a stray tagged frame can arrive just after disconnect.
+    // Leave the original un-cloned; the consumer pool closes it below.
+    if (!connectedSlots[slot]) return;
 
     // The consumer pool closes `frame.videoFrame` itself once this handler
     // returns, so we must clone to hold the frame past that point for the
@@ -255,7 +282,7 @@ setInterval(tickFpsWindow, 1000);
 ipcRenderer.on("multi-slot-status", (_event, slot: number, text: string) => {
   const stats = slotStats[slot];
   if (!stats) return;
-  stats.connState = text;
+  stats.pushText = text;
   updateStatusText(slot);
 });
 
