@@ -9,6 +9,7 @@ import {
 import { PreviewManager } from "./preview-manager";
 import { FpsCounter } from "./fps-counter";
 import type { TextureBridgeOptions, TextureBridge } from "./types";
+import { toError } from "./to-error";
 
 /**
  * Convert a pixel-space size to a device-independent (DIP) size for a given
@@ -20,11 +21,11 @@ import type { TextureBridgeOptions, TextureBridge } from "./types";
  * 1097.14 → 1097 → 1097 × 1.75 = 1919.75, which Chromium typically rounds
  * back to 1920).
  */
-export function computeDipSize(
+export const computeDipSize = (
   pixelWidth: number,
   pixelHeight: number,
   scaleFactor: number,
-): { width: number; height: number } {
+): { width: number; height: number } => {
   if (scaleFactor <= 0) {
     return { width: Math.max(1, pixelWidth), height: Math.max(1, pixelHeight) };
   }
@@ -32,7 +33,7 @@ export function computeDipSize(
     width: Math.max(1, Math.round(pixelWidth / scaleFactor)),
     height: Math.max(1, Math.round(pixelHeight / scaleFactor)),
   };
-}
+};
 
 /**
  * How the OSR compositor maps the window's DIP size to the shared-texture
@@ -179,8 +180,7 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
       }
       this.previewManager?.sendFrame(texture);
     } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      this.emit("error", error);
+      this.emit("error", toError(err));
     } finally {
       texture.release?.();
     }
@@ -295,10 +295,10 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
  * pixel size, which may exceed the display's work area); under
  * `"device-scale"` behavior is unchanged from before this option existed.
  */
-export function buildBrowserWindowOptions(
+export const buildBrowserWindowOptions = (
   options: TextureBridgeOptions,
   policy: OsrScalePolicy,
-): Electron.BrowserWindowConstructorOptions {
+): Electron.BrowserWindowConstructorOptions => {
   const { width, height, webPreferences, includeAlpha, pixelExact } = options;
 
   const offscreen =
@@ -328,7 +328,7 @@ export function buildBrowserWindowOptions(
     // so both keys must be applied together.
     ...(includeAlpha ? { transparent: true, backgroundColor: "#00000000" } : {}),
   };
-}
+};
 
 /**
  * Create a fully-wired texture bridge: offscreen window, native sender,
@@ -363,11 +363,9 @@ export const createTextureBridgeWith =
     const sender = deps.createSender(name, width, height);
 
     // ---- Preview ----
-    let previewManager: PreviewManager | null = null;
-    if (preview?.enabled !== false && preview) {
-      previewManager = new PreviewManager(width, height, preview);
-      previewManager.open();
-    }
+    const previewManager =
+      preview && preview.enabled !== false ? new PreviewManager(width, height, preview) : null;
+    previewManager?.open();
 
     // ---- Bridge instance ----
     const bridge = new TextureBridgeImpl(
@@ -387,9 +385,11 @@ export const createTextureBridgeWith =
     renderWindow.webContents.setFrameRate(frameRate);
 
     // ---- Load renderer URL ----
-    if (rendererUrl.startsWith("http://") || rendererUrl.startsWith("https://")) {
-      await renderWindow.loadURL(rendererUrl);
-    } else if (rendererUrl.startsWith("file://")) {
+    const isUrlScheme =
+      rendererUrl.startsWith("http://") ||
+      rendererUrl.startsWith("https://") ||
+      rendererUrl.startsWith("file://");
+    if (isUrlScheme) {
       await renderWindow.loadURL(rendererUrl);
     } else {
       await renderWindow.loadFile(rendererUrl);
