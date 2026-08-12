@@ -100,6 +100,9 @@ importers:
       electron:
         specifier: '>=40.0.0'
         version: 40.2.1
+      neverthrow:
+        specifier: ^8.2.0
+        version: 8.2.0
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
