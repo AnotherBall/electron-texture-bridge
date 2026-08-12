@@ -17,11 +17,14 @@ import type {
 
 // Attach Symbol.dispose to native classes so `using` declarations work.
 // napi-rs cannot expose symbol-named methods, so we patch the prototypes here.
+// `function` expressions (not arrows) are required for the `this` binding.
 if (typeof Symbol.dispose === "symbol") {
-  (TextureSender.prototype as any)[Symbol.dispose] = function () {
+  TextureSender.prototype[Symbol.dispose] = function (this: InstanceType<typeof TextureSender>) {
     this.stop();
   };
-  (TextureReceiver.prototype as any)[Symbol.dispose] = function () {
+  TextureReceiver.prototype[Symbol.dispose] = function (
+    this: InstanceType<typeof TextureReceiver>,
+  ) {
     this.stop();
   };
 }
@@ -59,27 +62,28 @@ export type { SharedTextureFrame } from "@napolab/texture-bridge";
  * errors — but callers should surface them instead of letting output go
  * silently black. Native send failures still throw as before.
  */
-export function sendTextureFromPaintEvent(
+export const sendTextureFromPaintEvent = (
   sender: InstanceType<typeof TextureSender>,
   textureInfo: TextureInfo | undefined,
-): PaintDefect | undefined {
+): PaintDefect | undefined => {
   if (!textureInfo) return { reason: "no-texture" };
   const { handle, codedSize } = textureInfo;
 
-  if (process.platform === "win32") {
-    const ntHandle = handle.ntHandle;
-    if (!ntHandle || !Buffer.isBuffer(ntHandle)) return { reason: "no-nt-handle" };
-    const handleValue = Number(ntHandle.readBigInt64LE(0));
-    sender.send(handleValue, codedSize.width, codedSize.height);
-    return undefined;
+  switch (process.platform) {
+    case "win32": {
+      const ntHandle = handle.ntHandle;
+      if (!ntHandle || !Buffer.isBuffer(ntHandle)) return { reason: "no-nt-handle" };
+      const handleValue = Number(ntHandle.readBigInt64LE(0));
+      sender.send(handleValue, codedSize.width, codedSize.height);
+      return undefined;
+    }
+    case "darwin": {
+      const ioSurface = handle.ioSurface;
+      if (!ioSurface) return { reason: "no-io-surface" };
+      sender.sendSurface(ioSurface, codedSize.width, codedSize.height);
+      return undefined;
+    }
+    default:
+      return { reason: "unsupported-platform", platform: process.platform };
   }
-
-  if (process.platform === "darwin") {
-    const ioSurface = handle.ioSurface;
-    if (!ioSurface) return { reason: "no-io-surface" };
-    sender.sendSurface(ioSurface, codedSize.width, codedSize.height);
-    return undefined;
-  }
-
-  return { reason: "unsupported-platform", platform: process.platform };
-}
+};
