@@ -142,6 +142,9 @@ export interface TextureBridge {
    * room to optimize to "import once per frame → send to every target →
    * release only after all sends settle" — deferred as YAGNI until a
    * multi-target workload actually needs it.
+   *
+   * Calling this after the bridge has been disposed returns an inert
+   * {@link FrameForward} whose `dispose()` is a no-op — it does not register.
    */
   forwardFrames(target: WebContents, options?: FrameForwardOptions): FrameForward;
 

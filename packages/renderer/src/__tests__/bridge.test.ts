@@ -1,3 +1,4 @@
+import { EventEmitter } from "events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Mock Electron and the native core so we can import bridge.ts in node tests.
@@ -709,6 +710,15 @@ describe("TextureBridgeImpl.forwardFrames", () => {
     release: vi.fn(),
   });
 
+  // WebContents はクラス型かつ EventEmitter を継承するため、構造スタブは
+  // two-step cast で注入(確立パターン)。forwardFrames が "destroyed" を
+  // once() で購読するようになったため(F14 pruning)、プレーンオブジェクトの
+  // 構造スタブでは足りず実 EventEmitter を土台にする。
+  const makeWebContentsStub = (id: string): Electron.WebContents => {
+    const stub: unknown = Object.assign(new EventEmitter(), { id });
+    return stub as Electron.WebContents;
+  };
+
   it("forwards each paint frame to every registered target with its extraArgs", () => {
     sendMock.mockReturnValue(undefined);
     const bridge = new TextureBridgeImpl(
@@ -717,11 +727,10 @@ describe("TextureBridgeImpl.forwardFrames", () => {
       null,
       baseOpts,
     );
-    // WebContents はクラス型のため構造スタブは two-step cast で注入(確立パターン)
-    const wcA: unknown = { id: "a" };
-    const wcB: unknown = { id: "b" };
-    bridge.forwardFrames(wcA as Electron.WebContents, { extraArgs: [0] });
-    bridge.forwardFrames(wcB as Electron.WebContents, { extraArgs: [1] });
+    const wcA = makeWebContentsStub("a");
+    const wcB = makeWebContentsStub("b");
+    bridge.forwardFrames(wcA, { extraArgs: [0] });
+    bridge.forwardFrames(wcB, { extraArgs: [1] });
 
     const texture = makeTexture();
     bridge.handlePaint({ texture });
@@ -739,8 +748,8 @@ describe("TextureBridgeImpl.forwardFrames", () => {
       null,
       baseOpts,
     );
-    const wc: unknown = { id: "a" };
-    const forward = bridge.forwardFrames(wc as Electron.WebContents);
+    const wc = makeWebContentsStub("a");
+    const forward = bridge.forwardFrames(wc);
     forward.dispose();
     forward.dispose();
 
@@ -760,8 +769,8 @@ describe("TextureBridgeImpl.forwardFrames", () => {
       null,
       baseOpts,
     );
-    const wc: unknown = { id: "a" };
-    bridge.forwardFrames(wc as Electron.WebContents);
+    const wc = makeWebContentsStub("a");
+    bridge.forwardFrames(wc);
     const errors: Error[] = [];
     bridge.on("error", (e) => {
       errors.push(e);
@@ -780,8 +789,8 @@ describe("TextureBridgeImpl.forwardFrames", () => {
     sendMock.mockReturnValue(undefined);
     const win = new BrowserWindow();
     const bridge = new TextureBridgeImpl(win, new TextureSender("t", 16, 9), null, baseOpts);
-    const wc: unknown = { id: "a" };
-    bridge.forwardFrames(wc as Electron.WebContents);
+    const wc = makeWebContentsStub("a");
+    bridge.forwardFrames(wc);
     bridge.dispose();
 
     bridge.handlePaint({ texture: makeTexture() });
@@ -796,8 +805,8 @@ describe("TextureBridgeImpl.forwardFrames", () => {
       null,
       baseOpts,
     );
-    const wc: unknown = { id: "a" };
-    bridge.forwardFrames(wc as Electron.WebContents);
+    const wc = makeWebContentsStub("a");
+    bridge.forwardFrames(wc);
 
     bridge.handlePaint({ texture: makeTexture() });
 
@@ -814,8 +823,8 @@ describe("TextureBridgeImpl.forwardFrames", () => {
       null,
       baseOpts,
     );
-    const wc: unknown = { id: "a" };
-    bridge.forwardFrames(wc as Electron.WebContents);
+    const wc = makeWebContentsStub("a");
+    bridge.forwardFrames(wc);
     const errors: Error[] = [];
     bridge.on("error", (e) => {
       errors.push(e);
@@ -825,5 +834,86 @@ describe("TextureBridgeImpl.forwardFrames", () => {
 
     expect(forwardSharedTextureMock).toHaveBeenCalledTimes(1);
     expect(errors).toHaveLength(1);
+  });
+
+  it("returns an inert handle and does not register when the bridge is already disposed (F5)", () => {
+    sendMock.mockReturnValue(undefined);
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      null,
+      baseOpts,
+    );
+    bridge.dispose();
+    const wc = makeWebContentsStub("a");
+
+    const forward = bridge.forwardFrames(wc);
+
+    // Retention is unobservable from behavior alone (handlePaint also
+    // disposed-guards, so an inert registration and a genuinely-skipped one
+    // look identical from outside) — white-box assert directly on the
+    // internal Set (established two-step-cast pattern for private-field
+    // inspection in this file). Checked BEFORE calling forward.dispose() —
+    // disposing the returned handle would remove any wrongly-added entry
+    // itself and mask a missing guard.
+    const forwardEntries = (bridge as unknown as { forwardEntries: Set<unknown> }).forwardEntries;
+    expect(forwardEntries.size).toBe(0);
+
+    bridge.handlePaint({ texture: makeTexture() });
+    expect(forwardSharedTextureMock).not.toHaveBeenCalled();
+
+    expect(() => forward.dispose()).not.toThrow();
+  });
+
+  it("clears forwardEntries on dispose (F5, white-box)", () => {
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      null,
+      baseOpts,
+    );
+    bridge.forwardFrames(makeWebContentsStub("a"));
+    bridge.forwardFrames(makeWebContentsStub("b"));
+
+    const forwardEntries = (bridge as unknown as { forwardEntries: Set<unknown> }).forwardEntries;
+    expect(forwardEntries.size).toBe(2);
+
+    bridge.dispose();
+
+    expect(forwardEntries.size).toBe(0);
+  });
+
+  it("prunes the entry when the target WebContents emits destroyed (F14)", () => {
+    sendMock.mockReturnValue(undefined);
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      null,
+      baseOpts,
+    );
+    const wc = makeWebContentsStub("a");
+    bridge.forwardFrames(wc);
+
+    wc.emit("destroyed");
+
+    bridge.handlePaint({ texture: makeTexture() });
+    expect(forwardSharedTextureMock).not.toHaveBeenCalled();
+  });
+
+  it("does not leave a dangling destroyed listener after dispose() (F14)", () => {
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      null,
+      baseOpts,
+    );
+    const wc = makeWebContentsStub("a");
+    const forward = bridge.forwardFrames(wc);
+
+    expect(wc.listenerCount("destroyed")).toBe(1);
+
+    forward.dispose();
+
+    expect(wc.listenerCount("destroyed")).toBe(0);
   });
 });

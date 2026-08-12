@@ -235,11 +235,34 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
   }
 
   forwardFrames(target: WebContents, options?: FrameForwardOptions): FrameForward {
+    // Post-dispose registration would retain `target` in forwardEntries
+    // forever — dispose() only clears the set once, at teardown time — so a
+    // caller that registers after dispose gets an inert handle instead of a
+    // silent leak.
+    if (this._disposed) return { dispose: () => {} };
+
     const entry = { target, extraArgs: options?.extraArgs ?? [] };
     this.forwardEntries.add(entry);
+
+    // Auto-prune when the target WebContents is destroyed out from under us
+    // (e.g. its window closes without the caller ever calling dispose()) —
+    // otherwise the entry (and its WebContents reference) sits in
+    // forwardEntries forever, and every subsequent handlePaint calls
+    // forwardSharedTexture against an already-destroyed target.
+    const onDestroyed = (): void => {
+      this.forwardEntries.delete(entry);
+    };
+    target.once("destroyed", onDestroyed);
+
     return {
       dispose: () => {
         this.forwardEntries.delete(entry);
+        // `once` already self-removes once "destroyed" has fired; calling
+        // removeListener again here is a no-op in that case. This matters
+        // when the same long-lived `target` (e.g. the multiviewer window)
+        // is registered and disposed repeatedly across connect/disconnect
+        // cycles — without this, each cycle leaves a dangling listener.
+        target.removeListener("destroyed", onDestroyed);
       },
     };
   }
