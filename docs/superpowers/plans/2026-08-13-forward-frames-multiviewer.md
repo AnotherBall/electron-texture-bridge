@@ -510,7 +510,7 @@ describe("TextureBridgeImpl.forwardFrames", () => {
   - 窓 unload 時に latest を全 close
 - [ ] **Step 1: 実装**（example にテスト無し方針 — lint/typecheck が gate）
 - [ ] **Step 2: `pnpm lint && pnpm typecheck`**
-- [ ] **Step 3: 起動スモーク（実装者が実施）** — `npx electron-vite dev` で multiviewer 窓が開き、slot 0 に `[local] Grid-Demo-A` を接続してデッキと合成象限が動くこと。**確認後 example プロセスを必ず全 kill**（親 Electron プロセスまで）
+- [ ] **Step 3: 起動スモーク（実装者が実施）** — `pnpm exec electron-vite dev`（packages/example 内）で multiviewer 窓が開き、slot 0 に `[local] Grid-Demo-A` を接続してデッキと合成象限が動くこと。**確認後 example プロセスを必ず全 kill**（親 Electron プロセスまで）
 - [ ] **Step 4: Commit** — `git commit -m "feat(example): multiviewer deck UI with rAF-coalesced compositing"`（trailer 付き）
 
 ---
@@ -521,8 +521,8 @@ describe("TextureBridgeImpl.forwardFrames", () => {
 - [ ] **Step 2: lang/ja/README.md** — 対応箇所をミラー
 - [ ] **Step 3: フル検証** — `pnpm --filter @napolab/texture-bridge-core build && pnpm --filter @napolab/texture-bridge-renderer build && pnpm lint && pnpm typecheck && pnpm --filter @napolab/texture-bridge-core test && pnpm --filter @napolab/texture-bridge-renderer test`（両ガード OK 出力を確認）
 - [ ] **Step 4: Commit** — `git commit -m "docs: forwardSharedTexture / forwardFrames reference and multiviewer example"`（trailer 付き）
-- [ ] **Step 5: CDP スモーク（コントローラ実施）** — `npx electron-vite dev --remoteDebuggingPort 9222` → multiviewer に local×2 + syphon×2 を接続 → デッキ 4 面 + 合成 4 象限の非黒判定 → slot 差替 → graceful quit → プロセス全 kill
-- [ ] **Step 6: difit** — `npx difit HEAD main`。**push / PR はユーザー OK 待ち**
+- [ ] **Step 5: CDP スモーク（コントローラ実施）** — `pnpm --filter @napolab/texture-bridge-example exec electron-vite dev --remoteDebuggingPort 9222` → multiviewer に local×2 + syphon×2 を接続 → デッキ 4 面 + 合成 4 象限の非黒判定 → slot 差替 → graceful quit → プロセス全 kill
+- [ ] **Step 6: difit** — `pnpm dlx difit HEAD main`。**push / PR はユーザー OK 待ち**
 
 ## 実装しないこと（spec のスコープ外に同じ）
 
