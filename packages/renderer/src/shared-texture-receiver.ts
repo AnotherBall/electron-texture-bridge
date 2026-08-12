@@ -323,17 +323,15 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
    * Validate the frame's pixel format and import it into Electron. On any
    * failure the unconsumed native handle is released here (importSharedTexture
    * never took ownership — without this we leak a per-frame NT HANDLE /
-   * IOSurface) and the typed error propagates to `_send`'s single `.match`.
+   * IOSurface) via `orTee`, which taps the `Err` side and passes it through
+   * unchanged; the typed error still propagates to `_send`'s single `.match`.
    */
   private _prepare(
     frame: SharedTextureFrame,
   ): Result<Electron.SharedTextureImported, UnsupportedPixelFormatError | TextureImportError> {
     return this._validate(frame)
       .andThen((textureInfo) => safeImportSharedTexture(textureInfo))
-      .orElse((error) => {
-        releaseUnconsumedHandle(frame.handle);
-        return err(error);
-      });
+      .orTee(() => releaseUnconsumedHandle(frame.handle));
   }
 
   /** Reject unknown pixel formats; wrap the raw handle for Electron. */
