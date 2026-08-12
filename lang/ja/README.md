@@ -630,7 +630,7 @@ Syphon/Spout レシーバーアプリで「ElectronVJ-ThreeJS」が表示され�
 - **`[local]`** — 自プロセス内の bridge を `bridge.forwardFrames(multiviewerWindow.webContents, { extraArgs: [slot] })` で転送する経路。この機能で新たに追加された、ゼロコピーの renderer→renderer 経路の実証です。
 - **`[syphon]`** — 既存の `createSharedTextureReceiver({ senderName, target, extraArgs: [slot] })` で外部 Syphon/Spout sender を受信する経路。
 
-同じソースを両方の経路に同時に割り当てることもでき（一方は直接転送、もう一方は Syphon/Spout を経由した往復）、その場で挙動を比較できます。外部 sender がなくても 4 スロットすべて埋まるよう、ローカルソースを 4 本標準で用意しています: サンプル本体の `ElectronVJ-ThreeJS`（レイマーチング）bridge に加え、色相違いの軽量な `Grid-Demo-A/B/C` bridge（960×540・30fps）3 本です。
+同じソースを両方の経路に同時に割り当てることもでき（一方は直接転送、もう一方は Syphon/Spout を経由した往復）、その場で挙動を比較できます。外部 sender がなくても 4 スロットすべて埋まるよう、ローカルソースを 4 本標準で用意しています: サンプル本体の `ElectronVJ-ThreeJS`（レイマーチング）bridge に加え、色相違いの軽量な `Grid-Demo-A/B/C` bridge（960×540・30fps）3 本です。マルチビューアだけを手早く確認したい場合は、重い VJ bridge と receiver-test ウィンドウを省く `pnpm --filter @napolab/texture-bridge-example dev:multiviewer`（`MULTIVIEWER_ONLY=1 electron-vite dev` 相当）で起動できます — グリッドは `Grid-Demo-*` の 3 本だけで埋まります。
 
 各デッキは直近に到着した 1 フレームのみを保持し、`requestAnimationFrame` ループが毎ティック、保持中のフレームをデッキキャンバスと合成キャンバスの該当象限へ描画します。そのため描画コストはディスプレイのリフレッシュレートに固定され、接続スロット数や各ソースの fps には比例しません。到着 fps（`onFrame` の呼び出し頻度）と描画 fps（`rAF` での実描画頻度）はデッキごとに分けて計測・表示します — ソースの fps とディスプレイのリフレッシュレートが一致しない場合、両者は乖離するためです。
 

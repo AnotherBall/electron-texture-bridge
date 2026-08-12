@@ -50,41 +50,56 @@ const bootstrap = async (): Promise<void> => {
   console.log("[example] app ready");
   console.log(`[example] Electron: ${process.versions.electron}`);
 
+  // Multiviewer-only mode skips the main 4K raymarching bridge and the
+  // receiver-test window entirely, keeping only the 3 lightweight
+  // Grid-Demo bridges and the multiviewer window — a fast way to iterate
+  // on the multiviewer UI without paying for the heavy VJ renderer.
+  const multiviewerOnly = process.env.MULTIVIEWER_ONLY === "1";
+  if (multiviewerOnly) {
+    console.log("[example] multiviewer-only mode");
+  }
+
   globalShortcut.register("F12", () => {
     const focused = BrowserWindow.getFocusedWindow();
     if (!focused) return;
     focused.webContents.toggleDevTools();
   });
 
-  const bridge = await createTextureBridge({
-    name: "ElectronVJ-ThreeJS",
-    width: 1920,
-    height: 1080,
-    frameRate: 120,
-    rendererUrl: getRendererUrl(),
-    preview: { enabled: true, width: 960, height: 540 },
-    // Forward the page's alpha channel into the Syphon/Spout texture so
-    // VJ software can use this output as an overlay layer. The renderer's
-    // raymarching shader emits alpha=0 for background pixels.
-    includeAlpha: true,
-  });
-  activeBridge = bridge;
+  const localBridges = new Map<string, { label: string; bridge: TextureBridge }>();
 
-  bridge.on("fps", (fps) => {
-    console.log(`[example] FPS: ${fps.toFixed(1)}`);
-  });
+  if (!multiviewerOnly) {
+    const bridge = await createTextureBridge({
+      name: "ElectronVJ-ThreeJS",
+      width: 1920,
+      height: 1080,
+      frameRate: 120,
+      rendererUrl: getRendererUrl(),
+      preview: { enabled: true, width: 960, height: 540 },
+      // Forward the page's alpha channel into the Syphon/Spout texture so
+      // VJ software can use this output as an overlay layer. The renderer's
+      // raymarching shader emits alpha=0 for background pixels.
+      includeAlpha: true,
+    });
+    activeBridge = bridge;
 
-  bridge.on("error", (err) => {
-    console.error("[example] bridge error:", err.message);
-  });
+    bridge.on("fps", (fps) => {
+      console.log(`[example] FPS: ${fps.toFixed(1)}`);
+    });
 
-  bridge.on("frameDropped", (defect) => {
-    console.warn(`[bridge] frame dropped: ${defect.reason}`);
-  });
+    bridge.on("error", (err) => {
+      console.error("[example] bridge error:", err.message);
+    });
 
-  bridge.renderWindow.webContents.on("did-fail-load", (_event, errorCode, errorDesc) => {
-    console.error("[example] did-fail-load:", errorCode, errorDesc);
-  });
+    bridge.on("frameDropped", (defect) => {
+      console.warn(`[bridge] frame dropped: ${defect.reason}`);
+    });
+
+    bridge.renderWindow.webContents.on("did-fail-load", (_event, errorCode, errorDesc) => {
+      console.error("[example] did-fail-load:", errorCode, errorDesc);
+    });
+
+    localBridges.set("ElectronVJ-ThreeJS", { label: "ElectronVJ-ThreeJS", bridge });
+  }
 
   // ---- Multiviewer Demo Sources ----
   //
@@ -92,10 +107,10 @@ const bootstrap = async (): Promise<void> => {
   // the multiviewer window local sources to forward via `forwardFrames`
   // (the zero-copy renderer→renderer path this feature adds), without
   // depending on an external Syphon/Spout sender being available. No preview
-  // window — these are only ever consumed by the multiviewer.
+  // window — these are only ever consumed by the multiviewer. Always created
+  // (including multiviewer-only mode) since they are the multiviewer's
+  // self-contained sources.
   const gridDemoBase = getGridDemoBase();
-  const localBridges = new Map<string, { label: string; bridge: TextureBridge }>();
-  localBridges.set("ElectronVJ-ThreeJS", { label: "ElectronVJ-ThreeJS", bridge });
 
   const gridDemoDefs = [
     { name: "Grid-Demo-A", hue: 0 },
@@ -120,99 +135,104 @@ const bootstrap = async (): Promise<void> => {
 
   // ---- Receiver Test Window (zero-copy GPU path) ----
   //
-  // We drive the receiver via `createSharedTextureReceiver`, which polls
-  // `receiveSharedTexture` (NT HANDLE / IOSurface) and delivers the imported
-  // texture to the receiver window's renderer via Electron's
-  // `sharedTexture.sendSharedTexture`. The renderer consumes each frame as a
-  // `VideoFrame` and draws it via `drawImage`, which hits the GPU path
-  // without any CPU readback or IPC pixel copy.
-  type SharedTextureReceiver = ReturnType<typeof createSharedTextureReceiver>;
-  let activeReceiver: SharedTextureReceiver | null = null;
+  // Skipped entirely in multiviewer-only mode — it exists to smoke-test the
+  // standalone Syphon/Spout receive path, which the multiviewer's own
+  // "syphon" slot route already exercises.
+  if (!multiviewerOnly) {
+    // We drive the receiver via `createSharedTextureReceiver`, which polls
+    // `receiveSharedTexture` (NT HANDLE / IOSurface) and delivers the imported
+    // texture to the receiver window's renderer via Electron's
+    // `sharedTexture.sendSharedTexture`. The renderer consumes each frame as a
+    // `VideoFrame` and draws it via `drawImage`, which hits the GPU path
+    // without any CPU readback or IPC pixel copy.
+    type SharedTextureReceiver = ReturnType<typeof createSharedTextureReceiver>;
+    let activeReceiver: SharedTextureReceiver | null = null;
 
-  const stopActiveReceiver = (): void => {
-    if (!activeReceiver) return;
-    activeReceiver.dispose();
-    activeReceiver = null;
-  };
+    const stopActiveReceiver = (): void => {
+      if (!activeReceiver) return;
+      activeReceiver.dispose();
+      activeReceiver = null;
+    };
 
-  // Receiver window needs `nodeIntegration: true` + `contextIsolation: false`
-  // so the bundled renderer module can import
-  // `@napolab/texture-bridge-renderer/client` and call
-  // `installSharedTextureReceiver` / `consumeSharedTexture` directly. This is
-  // acceptable for an in-repo demo; production apps should keep isolation on
-  // and forward frames via a preload bridge.
-  const receiverWindow = new BrowserWindow({
-    width: 960,
-    height: 600,
-    title: "Receiver Test",
-    webPreferences: {
-      preload: path.join(__dirname, "../preload/receiver.js"),
-      sandbox: false,
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-  });
-
-  const receiverUrl = process.env.ELECTRON_RENDERER_URL
-    ? `${process.env.ELECTRON_RENDERER_URL}/receiver-test.html`
-    : path.join(__dirname, "../renderer/receiver-test.html");
-  if (receiverUrl.startsWith("http")) {
-    receiverWindow.loadURL(receiverUrl);
-  } else {
-    receiverWindow.loadFile(receiverUrl);
-  }
-
-  ipcMain.handle("list-senders", () => {
-    try {
-      return listSenders();
-    } catch (err) {
-      console.error("[receiver-test] listSenders error:", err);
-      return [];
-    }
-  });
-
-  ipcMain.handle("connect-receiver", (_event, senderName: string, flipY: boolean) => {
-    stopActiveReceiver();
-    console.log(`[receiver-test] connecting to "${senderName}" (zero-copy, flipY=${flipY})`);
-
-    const receiver = createSharedTextureReceiver({
-      senderName,
-      target: receiverWindow.webContents,
-      pollIntervalMs: 8,
-      flipY,
+    // Receiver window needs `nodeIntegration: true` + `contextIsolation: false`
+    // so the bundled renderer module can import
+    // `@napolab/texture-bridge-renderer/client` and call
+    // `installSharedTextureReceiver` / `consumeSharedTexture` directly. This is
+    // acceptable for an in-repo demo; production apps should keep isolation on
+    // and forward frames via a preload bridge.
+    const receiverWindow = new BrowserWindow({
+      width: 960,
+      height: 600,
+      title: "Receiver Test",
+      webPreferences: {
+        preload: path.join(__dirname, "../preload/receiver.js"),
+        sandbox: false,
+        nodeIntegration: true,
+        contextIsolation: false,
+      },
     });
-    receiver.on("fps", (fps) => {
-      if (!receiverWindow.isDestroyed()) {
-        receiverWindow.webContents.send("receiver-fps", fps);
+
+    const receiverUrl = process.env.ELECTRON_RENDERER_URL
+      ? `${process.env.ELECTRON_RENDERER_URL}/receiver-test.html`
+      : path.join(__dirname, "../renderer/receiver-test.html");
+    if (receiverUrl.startsWith("http")) {
+      receiverWindow.loadURL(receiverUrl);
+    } else {
+      receiverWindow.loadFile(receiverUrl);
+    }
+
+    ipcMain.handle("list-senders", () => {
+      try {
+        return listSenders();
+      } catch (err) {
+        console.error("[receiver-test] listSenders error:", err);
+        return [];
       }
     });
-    receiver.on("error", (err) => {
-      console.error("[receiver-test] bridge error:", err.message);
-    });
-    receiver.start();
-    activeReceiver = receiver;
-  });
 
-  ipcMain.handle("set-flip-y", (_event, flipY: boolean) => {
-    if (!activeReceiver) return;
-    activeReceiver.setFlipY(flipY);
-    console.log(`[receiver-test] live toggle flipY=${flipY}`);
-  });
-
-  ipcMain.handle("disconnect-receiver", () => {
-    if (activeReceiver) {
+    ipcMain.handle("connect-receiver", (_event, senderName: string, flipY: boolean) => {
       stopActiveReceiver();
-      console.log("[receiver-test] disconnected");
-    }
-  });
+      console.log(`[receiver-test] connecting to "${senderName}" (zero-copy, flipY=${flipY})`);
 
-  receiverWindow.on("closed", () => {
-    stopActiveReceiver();
-    ipcMain.removeHandler("list-senders");
-    ipcMain.removeHandler("connect-receiver");
-    ipcMain.removeHandler("set-flip-y");
-    ipcMain.removeHandler("disconnect-receiver");
-  });
+      const receiver = createSharedTextureReceiver({
+        senderName,
+        target: receiverWindow.webContents,
+        pollIntervalMs: 8,
+        flipY,
+      });
+      receiver.on("fps", (fps) => {
+        if (!receiverWindow.isDestroyed()) {
+          receiverWindow.webContents.send("receiver-fps", fps);
+        }
+      });
+      receiver.on("error", (err) => {
+        console.error("[receiver-test] bridge error:", err.message);
+      });
+      receiver.start();
+      activeReceiver = receiver;
+    });
+
+    ipcMain.handle("set-flip-y", (_event, flipY: boolean) => {
+      if (!activeReceiver) return;
+      activeReceiver.setFlipY(flipY);
+      console.log(`[receiver-test] live toggle flipY=${flipY}`);
+    });
+
+    ipcMain.handle("disconnect-receiver", () => {
+      if (activeReceiver) {
+        stopActiveReceiver();
+        console.log("[receiver-test] disconnected");
+      }
+    });
+
+    receiverWindow.on("closed", () => {
+      stopActiveReceiver();
+      ipcMain.removeHandler("list-senders");
+      ipcMain.removeHandler("connect-receiver");
+      ipcMain.removeHandler("set-flip-y");
+      ipcMain.removeHandler("disconnect-receiver");
+    });
+  }
 
   // ---- Multiviewer Window (multi-source shared-texture forwarding) ----
   //
