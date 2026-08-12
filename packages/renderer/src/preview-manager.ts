@@ -2,6 +2,7 @@ import { BrowserWindow, ipcMain, sharedTexture } from "electron";
 import path from "path";
 import type { TextureInfo } from "@napolab/texture-bridge-core";
 import { Result, ResultAsync, okAsync } from "neverthrow";
+import { sendImportedTexture } from "./send-imported-texture";
 import { toError } from "./to-error";
 import type { PreviewOptions } from "./types";
 
@@ -97,27 +98,15 @@ export class PreviewManager {
 
     // Preview delivery is best-effort by design: both failure channels are
     // intentionally discarded at this edge (the main bridge already reports
-    // real pipeline errors).
+    // real pipeline errors); sendImportedTexture funnels sync throws and
+    // rejections alike into the ResultAsync error channel.
     void safeImportSharedTexture(texture.textureInfo)
       .asyncAndThen((imported) => {
         if (!imported) return okAsync(undefined);
-
-        // Wrap in an async thunk (as `_deliver` in shared-texture-receiver.ts
-        // does): calling an async function never throws synchronously — a
-        // throw inside becomes a promise rejection instead, so both sync
-        // throws and rejections from sendSharedTexture funnel into the
-        // ResultAsync's error channel rather than escaping sendFrame().
-        const send = async (): Promise<void> => {
-          try {
-            await sharedTexture.sendSharedTexture({
-              frame: win.webContents.mainFrame,
-              importedSharedTexture: imported,
-            });
-          } finally {
-            imported.release();
-          }
-        };
-        return ResultAsync.fromPromise(send(), toError);
+        return ResultAsync.fromPromise(
+          sendImportedTexture(win.webContents.mainFrame, imported),
+          toError,
+        );
       })
       .match(
         () => undefined,

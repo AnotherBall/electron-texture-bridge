@@ -22,6 +22,7 @@ import {
   UnsupportedPixelFormatError,
 } from "./errors";
 import { FpsCounter } from "./fps-counter";
+import { sendImportedTexture } from "./send-imported-texture";
 import { toError } from "./to-error";
 
 /**
@@ -351,9 +352,9 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
   }
 
   /**
-   * Deliver one imported texture to the target renderer. Releases `imported`
-   * on every path (the `finally` inside `send`). Disposal mid-send maps the
-   * rejection to `"skipped"` instead of an error, as before.
+   * Deliver one imported texture to the target renderer. `sendImportedTexture`
+   * releases `imported` on every path. Disposal mid-send maps the rejection
+   * to `"skipped"` instead of an error, as before.
    */
   private _deliver(
     imported: Electron.SharedTextureImported,
@@ -363,18 +364,8 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
       imported.release();
       return okAsync("skipped");
     }
-    const send = async (): Promise<void> => {
-      try {
-        await sharedTexture.sendSharedTexture(
-          { frame: targetFrame, importedSharedTexture: imported },
-          ...this.extraArgs,
-        );
-      } finally {
-        imported.release();
-      }
-    };
     return ResultAsync.fromPromise(
-      send(),
+      sendImportedTexture(targetFrame, imported, this.extraArgs),
       (cause) => new TextureDeliveryError(toError(cause).message, { cause }),
     )
       .map((): SendResult => "delivered")
