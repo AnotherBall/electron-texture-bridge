@@ -23,9 +23,35 @@ import { TextureSendError } from "./errors.mjs";
 export const sendRgbaBuffer = () => {};
 `;
 
+const MINIFIED_FROM_IMPORT = `import{sharedTexture as s}from"electron";export const f=async()=>s;`;
+
+const BARE_SIDE_EFFECT_IMPORT = `
+import "electron";
+export const forwardSharedTexture = async () => undefined;
+`;
+
+const DYNAMIC_IMPORT = `
+export const lazyElectron = async () => import("electron");
+`;
+
 describe("findElectronImports", () => {
   it('flags a bare ESM `from "electron"` import', () => {
     const result = findElectronImports([{ path: "index.mjs", content: BARE_ESM_IMPORT }]);
+    expect(result).toEqual(["index.mjs"]);
+  });
+
+  it('flags a minified `from"electron"` import with no whitespace', () => {
+    const result = findElectronImports([{ path: "index.mjs", content: MINIFIED_FROM_IMPORT }]);
+    expect(result).toEqual(["index.mjs"]);
+  });
+
+  it('flags a bare side-effect `import "electron"` with no bindings', () => {
+    const result = findElectronImports([{ path: "index.mjs", content: BARE_SIDE_EFFECT_IMPORT }]);
+    expect(result).toEqual(["index.mjs"]);
+  });
+
+  it('flags a dynamic `import("electron")` call', () => {
+    const result = findElectronImports([{ path: "index.mjs", content: DYNAMIC_IMPORT }]);
     expect(result).toEqual(["index.mjs"]);
   });
 
