@@ -1,4 +1,5 @@
-export { createTextureBridge } from "./bridge";
+export { createTextureBridge, createTextureBridgeWith } from "./bridge";
+export type { TextureBridgeDeps } from "./bridge";
 export { createTextureReceiver } from "./receiver";
 export { createSharedTextureReceiver } from "./shared-texture-receiver";
 export { SenderDiscovery } from "./discovery";

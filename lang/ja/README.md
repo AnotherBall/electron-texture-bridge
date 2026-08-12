@@ -42,6 +42,22 @@ Electron 無しで生 RGBA を流したい（テスト / CI / サニティチェ
         後述の「Electron 無しの最小サニティチェック」を参照。
 ```
 
+### パッケージの役割と依存方向
+
+```
+@napolab/texture-bridge-renderer   高レベルファクトリ API（推奨）: createTextureBridge、
+        │                          レシーバー、ディスカバリ、プレビュー
+        ▼
+@napolab/texture-bridge-core       低レベルプリミティブ: TextureSender / TextureReceiver、
+        │                          sendTextureFromPaintEvent — Electron はオプション
+        ▼
+@napolab/texture-bridge            ネイティブアドオン（napi-rs バインディング）
+        │
+        ▼
+@napolab/texture-bridge-darwin-arm64 / -darwin-x64 / -win32-x64-msvc
+                                   プリビルド済みプラットフォームバイナリ（自動インストール）
+```
+
 ## アーキテクチャ
 
 ```
@@ -349,6 +365,29 @@ interface PreviewOptions {
 
 **`pixelExact`** — `true` のとき、ホストディスプレイの DPR に関係なくオフスクリーンフレームバッファを正確に `width × height` ピクセルに固定します。**Electron ≥ 41:** 自明に満たされ実質的に no-op です — `createTextureBridge` がすでに `offscreen.deviceScaleFactor: 1` を固定しているため、このオプションの有無に関わらずフレームバッファは常に正確です。**Electron 40:** 指定しないと Retina（scaleFactor 2）や Windows スケーリング（150% / 175%）のディスプレイでは宣言したセンダーサイズより大きいフレームバッファが生成され、多くの場合レシーバーで黒画面/崩れになります（[Retina/DPI 警告](#macos-retina-と-windows-dpi-スケーリング)参照）。センダーは常に要求ピクセルサイズで登録されるため、レシーバーは指定どおりの寸法を受け取ります。注意: 割り切れないスケール比（例: `1920 / 1.75`）では 1 ピクセルの誤差が残ることがあり、構築時のプライマリディスプレイの scaleFactor のみが反映されます — DPI 変更後は `resize()` で再適用してください。
 
+#### `createTextureBridgeWith(deps)`（上級者向け）
+
+```typescript
+interface TextureBridgeDeps {
+  createWindow: (options: Electron.BrowserWindowConstructorOptions) => BrowserWindow;
+  createSender: (name: string, width: number, height: number) => TextureSender;
+}
+
+function createTextureBridgeWith(
+  deps: TextureBridgeDeps,
+): (options: TextureBridgeOptions) => Promise<TextureBridge>;
+```
+
+注入されたコンストラクタに束縛された `createTextureBridge` を返します —
+テストや組み込み側が `BrowserWindow` の構築や、ネイティブ `TextureSender` の
+構築をテストダブルに差し替えられるようにするためのものです。
+`createTextureBridge` 自体も、実際の `BrowserWindow` / `TextureSender` に束縛した
+`createTextureBridgeWith` にすぎません。ファクトリは Electron の `app` / `screen`
+グローバルを引き続き直接参照し、プレビューウィンドウも自前で構築します
+（`PreviewManager`）— このシームはウィンドウ / センダーの構築のみを注入可能にし、
+ファクトリ全体を Electron 非依存にするものではありません。完全に Electron 無しの
+テスト環境が必要な場合は、`app` / `screen` を別途モックしてください。
+
 #### `TextureBridge`
 
 返されるハンドル：
@@ -382,6 +421,31 @@ interface TextureBridge {
 ドロップが確定していた場合（例: レンダラーページがまだロード中の場合）は、
 `bridge.droppedReason` を読んでください — 最新のドロップ理由、または成功した送信の後は
 `null` を保持します。
+
+`dispose()` は、オフスクリーンの `renderWindow` を `close()` ではなく
+`destroy()` で同期的に破棄します。これにより、Electron の `before-quit` との
+競合でクラッシュダイアログが出るリスクがなくなります。ここから 2 点が
+帰結します:
+
+- **`disposed` リスナーで `bridge.renderWindow.webContents` に触れてはいけません** —
+  `disposed` が発火する時点で、オフスクリーンウィンドウはすでに破棄済みです。
+- **レンダーウィンドウの `close` イベントと、ページの `beforeunload`/`unload`
+  ハンドラはもう発火しません** — これは `destroy()` の仕様どおりの挙動です。
+  `closed` イベントは引き続き発火します。
+
+プレビューウィンドウは影響を受けません: 実在する可視ウィンドウであり、
+引き続き `close()` により通常のクローズセマンティクスで閉じます。以前、
+旧来の非同期な `close()` を避けるため `bridge.dispose()` の後に自前で
+`bridge.renderWindow.destroy()` を呼ぶワークアラウンドをしていた場合は、
+**その外部からの `destroy()` 呼び出しを削除してください** — `dispose()` が
+今はそれを内部で行うため、`dispose()` の後に呼ぶとすでに破棄済みのウィンドウ
+に対して呼び出すことになり、Electron は二重の `destroy()` が安全であることを
+保証していません（"Object has been destroyed" で例外になり得ます）。ライブラリ
+側のガードは `dispose()` 内部の呼び出しのみを保護するものであり、`dispose()`
+呼び出し後に外部から呼ばれる `destroy()` までは保護しません。すぐに削除できない
+場合は、自分でガードする
+（`if (!bridge.renderWindow.isDestroyed()) bridge.renderWindow.destroy();`）か、
+`dispose()` より前に呼び出すようにしてください。
 
 #### `createWorkerRenderer(options)`（`renderer/client` から）
 

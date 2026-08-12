@@ -42,6 +42,22 @@ Do you want to push raw RGBA without Electron at all (test / CI / sanity check)?
         See "Minimal sanity check (no Electron)" below.
 ```
 
+### Package roles and dependency direction
+
+```
+@napolab/texture-bridge-renderer   High-level factory API (recommended): createTextureBridge,
+        │                          receivers, discovery, preview
+        ▼
+@napolab/texture-bridge-core       Low-level primitives: TextureSender / TextureReceiver,
+        │                          sendTextureFromPaintEvent — Electron optional
+        ▼
+@napolab/texture-bridge            Native addon (napi-rs binding)
+        │
+        ▼
+@napolab/texture-bridge-darwin-arm64 / -darwin-x64 / -win32-x64-msvc
+                                   Prebuilt platform binaries (installed automatically)
+```
+
 ## Architecture
 
 ### Sending (Electron → VJ Software)
@@ -583,6 +599,29 @@ interface PreviewOptions {
 
 **`pixelExact`** — when `true`, the offscreen framebuffer is pinned to exactly `width × height` pixels regardless of the host display's device pixel ratio. **Electron ≥ 41:** trivially satisfied and effectively a no-op — `createTextureBridge` already pins `offscreen.deviceScaleFactor: 1`, so the framebuffer is always exact whether or not this option is set. **Electron 40:** without it, a Retina (scaleFactor 2) or Windows-scaled (150% / 175%) display produces a framebuffer larger than the declared sender size, which typically shows up as black/garbled output in the receiver (see the [Retina/DPI warning](#macos-retina-and-windows-dpi-scaling)). The sender is always registered at the requested pixel size, so receivers see the dimensions you asked for. Note: non-divisible scale ratios (e.g. `1920 / 1.75`) can leave a 1-pixel discrepancy, and only the primary display's scaleFactor at construction time is honored — call `resize()` to re-apply after a DPI change.
 
+#### `createTextureBridgeWith(deps)` (advanced)
+
+```typescript
+interface TextureBridgeDeps {
+  createWindow: (options: Electron.BrowserWindowConstructorOptions) => BrowserWindow;
+  createSender: (name: string, width: number, height: number) => TextureSender;
+}
+
+function createTextureBridgeWith(
+  deps: TextureBridgeDeps,
+): (options: TextureBridgeOptions) => Promise<TextureBridge>;
+```
+
+Returns `createTextureBridge` bound to injected constructors — lets tests and
+embedders swap the `BrowserWindow` construction or the native `TextureSender`
+construction with test doubles. `createTextureBridge` itself is just
+`createTextureBridgeWith` bound to the real `BrowserWindow` and `TextureSender`.
+The factory still calls Electron's `app` / `screen` globals directly and
+constructs the preview window itself (`PreviewManager`) — this seam does not
+make the factory Electron-free, only its window/sender construction is
+injectable. A fully Electron-free test environment needs `app` / `screen`
+mocked separately.
+
 #### `TextureBridge`
 
 The returned handle provides:
@@ -616,6 +655,29 @@ again only after a successful send or a reason change. If a drop latches
 before your listener is attached (e.g. while the renderer page is still
 loading), read `bridge.droppedReason` — it holds the latest drop reason, or
 `null` after a successful send.
+
+`dispose()` destroys the offscreen `renderWindow` synchronously via
+`destroy()` (not `close()`), so teardown cannot lose the race against
+Electron's `before-quit` and pop a crash dialog. Two things follow from that:
+
+- **`disposed` listeners must not touch `bridge.renderWindow.webContents`** —
+  the offscreen window is already destroyed by the time `disposed` fires.
+- **The render window's `close` event and the page's `beforeunload`/`unload`
+  handlers no longer fire** — that's `destroy()`'s documented behavior. Its
+  `closed` event still fires.
+
+The preview window is unaffected: it's a real, visible window and still
+closes via `close()` with normal close semantics. If you previously worked
+around the old async `close()` by calling `bridge.dispose()` followed by your
+own `bridge.renderWindow.destroy()`, **remove that external `destroy()` call**
+— `dispose()` now does it for you, and Electron does not guarantee a second
+`destroy()` on an already-destroyed window is safe (it can throw "Object has
+been destroyed"). The library's own guard only covers its *internal*
+`destroy()` call inside `dispose()`; it does not protect an external call made
+*after* `dispose()` returns. If you must keep the workaround temporarily,
+either guard it yourself
+(`if (!bridge.renderWindow.isDestroyed()) bridge.renderWindow.destroy();`) or
+call it **before** `dispose()`, not after.
 
 #### `createWorkerRenderer(options)` (from `renderer/client`)
 
@@ -1069,6 +1131,23 @@ making `width`/`height` mean exact pixels on every display.
   a user-supplied `offscreen` block always wins.
 
 Empirical background: `reports/2026-08-11-pixelexact-osr-scale-investigation.md`.
+
+## Migration: Synchronous dispose (v0.14+)
+
+Starting from v0.14, `dispose()` also `destroy()`s the offscreen
+`renderWindow` synchronously instead of `close()`-ing it — see the
+`dispose()` notes under [`TextureBridge`](#texturebridge) above for the two
+consumer-visible changes this brings (disposed-time window access, missing
+close/beforeunload events).
+
+If you previously worked around the old async `close()` by calling
+`bridge.dispose()` and then your own `bridge.renderWindow.destroy()`,
+**remove that external `destroy()` call** — calling it after `dispose()` now
+targets an already-destroyed window, and Electron does not guarantee a second
+`destroy()` is safe. Guard it or move it before `dispose()` if you can't
+remove it right away
+(`if (!bridge.renderWindow.isDestroyed()) bridge.renderWindow.destroy();`, or
+call it **before** `dispose()`, not after).
 
 ## Migration: Explicit Disposal (v0.6+)
 

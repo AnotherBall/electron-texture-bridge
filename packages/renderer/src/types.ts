@@ -130,7 +130,14 @@ export interface TextureBridge {
    */
   readonly droppedReason: PaintDefect["reason"] | null;
 
-  /** Tear down all resources. Terminal operation — the bridge cannot be reused afterward. */
+  /**
+   * Tear down all resources. The offscreen window is `destroy()`ed
+   * synchronously (not `close()`d) so teardown cannot lose the race against
+   * `before-quit` — no separate `renderWindow.destroy()` workaround is
+   * needed. The preview window (a visible window with real close semantics)
+   * still closes normally via `close()`. Terminal operation — the bridge
+   * cannot be reused afterward.
+   */
   dispose(): void;
 
   /** Alias for dispose(), enabling `using bridge = await createTextureBridge(...)` */

@@ -9,10 +9,16 @@ import { app, BrowserWindow, globalShortcut, ipcMain } from "electron";
 import path from "path";
 import { createTextureBridge, createSharedTextureReceiver } from "@napolab/texture-bridge-renderer";
 import { listSenders } from "@napolab/texture-bridge";
+import type { TextureBridge } from "@napolab/texture-bridge-renderer";
 
 // GPU acceleration flags
 app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer");
 app.commandLine.appendSwitch("force-device-scale-factor", "1");
+
+// Hoisted so the `before-quit` handler below (registered outside the
+// `app.whenReady()` closure) can tear the bridge down deterministically —
+// mirrors the `activeReceiver` null-guard pattern used for the receiver.
+let activeBridge: TextureBridge | null = null;
 
 function getRendererUrl(): string {
   if (process.env.ELECTRON_RENDERER_URL) {
@@ -43,6 +49,7 @@ app.whenReady().then(async () => {
     // raymarching shader emits alpha=0 for background pixels.
     includeAlpha: true,
   });
+  activeBridge = bridge;
 
   bridge.on("fps", (fps) => {
     console.log(`[example] FPS: ${fps.toFixed(1)}`);
@@ -163,4 +170,8 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   globalShortcut.unregisterAll();
+  if (activeBridge) {
+    activeBridge.dispose();
+    activeBridge = null;
+  }
 });
