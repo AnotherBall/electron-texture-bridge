@@ -10,8 +10,38 @@ Cannelloni のように offscreen window（= Syphon sender）を複数持つア�
 
 ## 成果物
 
-1. **新公開 API**: `TextureBridge.forwardFrames(target, options?)`（`@napolab/texture-bridge-renderer`、feat/minor）
-2. **新 example ウィンドウ**: Multi-Receiver Grid（`packages/example` に追加）— ローカル直接転送と Syphon 受信の両経路で最大 4 ソースを監視
+1. **新公開 primitive（core）**: `forwardSharedTexture(textureInfo, target, extraArgs?)` — 新 subpath `@napolab/texture-bridge-core/electron`（feat/minor）
+2. **新公開 API（renderer）**: `TextureBridge.forwardFrames(target, options?)` — 上記 primitive を消費する driver（feat/minor）
+3. **新 example ウィンドウ**: Multi-Receiver Grid（`packages/example` に追加）— ローカル直接転送と Syphon 受信の両経路で最大 4 ソースを監視
+
+## 0. core primitive 設計 — `forwardSharedTexture`
+
+```ts
+// @napolab/texture-bridge-core/electron — 新 subpath export
+export type ForwardDefect =
+  | { readonly reason: "target-destroyed" }
+  | { readonly reason: "import-failed"; readonly cause: Error }
+  | { readonly reason: "send-failed"; readonly cause: Error };
+
+/** 1 フレームを importSharedTexture → sendSharedTexture で target renderer に転送。成功 = undefined */
+export const forwardSharedTexture = async (
+  textureInfo: TextureInfo,
+  target: WebContents,
+  extraArgs?: readonly unknown[],
+): Promise<ForwardDefect | undefined>;
+```
+
+- **subpath に置く理由**: core メインエントリの「Electron 無しで動く」保護契約（`sendRgbaBuffer` の素 Node 切り分け）を守るため。`electron` の static import はこの subpath に隔離（package.json `exports["./electron"]` + tsdown entry 追加）
+- **`sendTextureFromPaintEvent` と対称の契約**: L3 は吸収しない — 結果（`ForwardDefect | undefined`）を返して呼び出し側に委ねる。async 関数なので同期 throw は構造的に不可能。import に成功したら send の成否に関わらず release する（release-in-finally）
+- 低レベルユーザーは自前 paint ループから直接呼ぶ:
+  ```ts
+  win.webContents.on("paint", async (e) => {
+    sendTextureFromPaintEvent(sender, e.texture?.textureInfo);          // → Syphon/Spout
+    if (e.texture) await forwardSharedTexture(e.texture.textureInfo, monitorWC, [slot]); // → renderer
+    e.texture?.release();
+  });
+  ```
+- 実装は producer/driver 規約準拠（内部 Result、公開面は plain union）
 
 ## 1. API 設計 — `forwardFrames`
 
@@ -34,7 +64,7 @@ interface TextureBridge {
 
 ### 意味論
 
-- 各 paint フレームで、登録済み target ごとに `importSharedTexture` → `sendSharedTexture(frame.mainFrame, imported, ...extraArgs)`。**pixel は動かない**（GPU 共有メモリのハンドル渡し）。既存の `sendImportedTexture` ヘルパーと preview-manager の import パターン（module-scope named `fromThrowable`）を再利用
+- 各 paint フレームで、登録済み target ごとに **core の `forwardSharedTexture` primitive を呼ぶ driver**。**pixel は動かない**（GPU 共有メモリのハンドル渡し）。primitive が返す `ForwardDefect` は破棄（best-effort 吸収は L1 の責務）
 - **best-effort 契約**（preview と同一）: 転送失敗は握り潰し、bridge の `error` / `frameDropped` を汚さない。target が `isDestroyed()` なら skip
 - Syphon 送出・preview とは独立・併用可。複数 target、同一 target への複数登録も可（登録は単純な `Set`。fan-out 先が固定引数なので multi-dispatcher は使わない）
 - `bridge.dispose()` で全転送停止。`FrameForward.dispose()` は該当登録のみ解除
@@ -111,6 +141,7 @@ receiver-test と同形の handler 群: `multi-list-sources`（local bridge 一�
 
 ## 5. テスト戦略
 
+- **unit（core package）**: `forwardSharedTexture` — delivered（undefined）/ target-destroyed / import-failed（cause 保持）/ send-failed（cause 保持）/ extraArgs 透過 / import 成功後は send 失敗でも release される（electron mock）。TDD。加えて**メインエントリが electron を import しないこと**の surface 検査（dist の index に `from "electron"` が現れない）
 - **unit（renderer package）**: `forwardFrames` — 登録/複数 target/dispose 冪等/destroyed skip/extraArgs 転送/bridge dispose で停止（既存 bridge.test.ts のモックパターン）。TDD
 - **unit（example なし）**: example はテストスイート無し（既存方針）。demux/象限計算など純関数が生まれたら renderer package 側ではなく example 内に置くため lint/typecheck のみ
 - **実機（CDP スモーク）**: 単体起動 → 4 slot を local×2 + syphon×2 で接続 → 各 deck canvas と合成 canvas 全象限の非黒判定 → 到着/描画 fps の表示確認 → slot 差替 → graceful quit
@@ -120,4 +151,4 @@ receiver-test と同形の handler 群: `multi-list-sources`（local bridge 一�
 - crop / zoom UI（ユーザー裁定で削除）
 - 合成映像の Syphon 再送出
 - atlas 化・import 1 回/フレーム最適化（JSDoc note のみ）
-- core（低レベル）API への同等機能
+- preview-manager の `forwardSharedTexture` primitive への移行（将来の統一候補として note のみ）
