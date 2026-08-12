@@ -1,6 +1,8 @@
 import { BrowserWindow, ipcMain, sharedTexture } from "electron";
 import path from "path";
 import type { TextureInfo } from "@napolab/texture-bridge-core";
+import { Result, ResultAsync } from "neverthrow";
+import { toError } from "./to-error";
 import type { PreviewOptions } from "./types";
 
 /**
@@ -11,6 +13,15 @@ import type { PreviewOptions } from "./types";
 const assetPath = (filename: string): string => {
   return path.join(__dirname, "assets", filename);
 };
+
+/**
+ * `importSharedTexture` with its throw folded into a Result, bound once at
+ * module scope (arguments are forwarded — no IIFE-style immediate call).
+ */
+const safeImportSharedTexture = Result.fromThrowable(
+  (textureInfo: TextureInfo) => sharedTexture.importSharedTexture({ textureInfo }),
+  toError,
+);
 
 export class PreviewManager {
   private win: BrowserWindow | null = null;
@@ -81,23 +92,26 @@ export class PreviewManager {
   }
 
   sendFrame(texture: { textureInfo: TextureInfo }): void {
-    if (!this.win || this.win.isDestroyed() || !this.ready) return;
+    const win = this.win;
+    if (!win || win.isDestroyed() || !this.ready) return;
 
-    try {
-      const imported = sharedTexture.importSharedTexture({
-        textureInfo: texture.textureInfo,
-      });
-      if (!imported) return;
-
-      sharedTexture
-        .sendSharedTexture({
-          frame: this.win.webContents.mainFrame,
-          importedSharedTexture: imported,
-        })
-        .catch(() => {});
-    } catch {
-      // Ignore preview send errors
-    }
+    // Preview delivery is best-effort by design: both failure channels are
+    // intentionally discarded at this edge (the main bridge already reports
+    // real pipeline errors).
+    void safeImportSharedTexture(texture.textureInfo)
+      .asyncAndThen((imported) =>
+        ResultAsync.fromPromise(
+          sharedTexture.sendSharedTexture({
+            frame: win.webContents.mainFrame,
+            importedSharedTexture: imported,
+          }),
+          toError,
+        ),
+      )
+      .match(
+        () => undefined,
+        () => undefined,
+      );
   }
 
   updateSize(width: number, height: number): void {

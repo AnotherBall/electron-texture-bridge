@@ -17,3 +17,11 @@ export type {
 export type { SenderDiscoveryEvents } from "./discovery";
 export type { PaintDefect } from "@napolab/texture-bridge-core";
 export { TextureSendError } from "@napolab/texture-bridge-core";
+export {
+  FrameReceiveError,
+  TextureImportError,
+  TextureDeliveryError,
+  UnsupportedPixelFormatError,
+  ReceiverStoppedError,
+} from "./errors";
+export type { SendPipelineError } from "./errors";
