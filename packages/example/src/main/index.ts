@@ -283,9 +283,15 @@ const bootstrap = async (): Promise<void> => {
         case "local": {
           const entry = localBridges.get(source.id);
           if (!entry) {
-            console.error(`[multiviewer] unknown local bridge id: ${source.id}`);
-            sendSlotStatus(slot, "state", "error: unknown local source");
-            return;
+            // Throw (not a soft-fail push) so the `ipcMain.handle` promise
+            // rejects. The renderer's connect-button handler is optimistic —
+            // it marks the slot connected once the invoke resolves — so a
+            // soft-fail push here previously still let that success path
+            // run, showing a false "connected: ..." and locking the buttons
+            // into connected appearance. Rejecting routes it into the
+            // existing catch, which sets an `error: ...` state and leaves
+            // the buttons in disconnected state.
+            throw new Error(`unknown local source: ${source.id}`);
           }
           const forward = entry.bridge.forwardFrames(multiviewerWindow.webContents, {
             extraArgs: [slot],
