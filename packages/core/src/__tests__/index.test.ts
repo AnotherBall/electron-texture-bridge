@@ -215,12 +215,14 @@ describe("sendTextureFromPaintEvent", () => {
     Object.defineProperty(process, "platform", { value: "darwin" });
 
     try {
-      const { sendTextureFromPaintEvent, TextureSender } = await import("../index");
+      const { sendTextureFromPaintEvent, TextureSendError, TextureSender } =
+        await import("../index");
       const sender = new TextureSender("Test", 1920, 1080);
 
       // After stop(), sendSurface should throw
+      const nativeError = new Error("TextureSender has been stopped");
       mockSendSurface.mockImplementation(() => {
-        throw new Error("TextureSender has been stopped");
+        throw nativeError;
       });
       sender.stop();
 
@@ -231,9 +233,47 @@ describe("sendTextureFromPaintEvent", () => {
         handle: { ioSurface: Buffer.alloc(8) },
       };
 
-      expect(() => sendTextureFromPaintEvent(sender, textureInfo)).toThrow(
-        "TextureSender has been stopped",
-      );
+      try {
+        sendTextureFromPaintEvent(sender, textureInfo);
+        expect.unreachable("sendTextureFromPaintEvent should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(TextureSendError);
+        expect((err as Error).message).toBe("TextureSender has been stopped");
+        expect((err as Error).cause).toBe(nativeError);
+      }
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform });
+    }
+  });
+
+  it("wraps non-Error thrown values with stringified message and cause", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+
+    try {
+      const { sendTextureFromPaintEvent, TextureSendError, TextureSender } =
+        await import("../index");
+      const sender = new TextureSender("Test", 1920, 1080);
+
+      mockSendSurface.mockImplementation(() => {
+        throw "native boom";
+      });
+
+      const textureInfo = {
+        pixelFormat: "bgra" as const,
+        codedSize: { width: 1920, height: 1080 },
+        visibleRect: { x: 0, y: 0, width: 1920, height: 1080 },
+        handle: { ioSurface: Buffer.alloc(8) },
+      };
+
+      try {
+        sendTextureFromPaintEvent(sender, textureInfo);
+        expect.unreachable("sendTextureFromPaintEvent should have thrown");
+      } catch (err) {
+        expect(err).toBeInstanceOf(TextureSendError);
+        expect((err as Error).message).toBe("native boom");
+        expect((err as Error).cause).toBe("native boom");
+      }
     } finally {
       Object.defineProperty(process, "platform", { value: originalPlatform });
     }
