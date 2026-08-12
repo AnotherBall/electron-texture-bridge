@@ -1,3 +1,4 @@
+import { Result } from "neverthrow";
 import {
   TextureSender,
   TextureReceiver,
@@ -5,6 +6,7 @@ import {
   getPlatform,
   listSenders,
 } from "@napolab/texture-bridge";
+import { TextureSendError } from "./errors";
 import type {
   TextureInfo,
   PaintTexture,
@@ -40,6 +42,7 @@ declare module "@napolab/texture-bridge" {
 }
 
 export { TextureSender, TextureReceiver, closeNativeHandle, getPlatform, listSenders };
+export { TextureSendError } from "./errors";
 export type {
   TextureInfo,
   PaintTexture,
@@ -52,21 +55,16 @@ export type {
 export type { SharedTextureFrame } from "@napolab/texture-bridge";
 
 /**
- * Send a texture from an Electron paint event to Syphon/Spout.
- *
- * Handles platform detection and buffer extraction automatically.
- *
- * @returns `undefined` when the texture was handed to the sender, or a
- * {@link PaintDefect} describing why the frame was dropped. Drops are normal
- * no-ops (e.g. Chromium delivered a paint without a shareable handle), not
- * errors — but callers should surface them instead of letting output go
- * silently black. Native send failures still throw as before.
+ * Platform dispatch onto the native sender. Returns a {@link PaintDefect}
+ * when the frame was dropped (no shareable handle / unsupported platform).
+ * `send()` / `sendSurface()` can still throw (e.g. "TextureSender has been
+ * stopped") — the public entry point below folds that throw through
+ * `Result.fromThrowable`.
  */
-export const sendTextureFromPaintEvent = (
+const dispatchSend = (
   sender: InstanceType<typeof TextureSender>,
-  textureInfo: TextureInfo | undefined,
+  textureInfo: TextureInfo,
 ): PaintDefect | undefined => {
-  if (!textureInfo) return { reason: "no-texture" };
   const { handle, codedSize } = textureInfo;
 
   switch (process.platform) {
@@ -86,4 +84,43 @@ export const sendTextureFromPaintEvent = (
     default:
       return { reason: "unsupported-platform", platform: process.platform };
   }
+};
+
+/**
+ * `dispatchSend` with its throw folded into
+ * `Result<PaintDefect | undefined, TextureSendError>`. Bound once at module
+ * scope — `Result.fromThrowable` forwards the arguments.
+ */
+const safeDispatchSend = Result.fromThrowable(
+  dispatchSend,
+  (cause) => new TextureSendError(cause instanceof Error ? cause.message : `${cause}`, { cause }),
+);
+
+/**
+ * Send a texture from an Electron paint event to Syphon/Spout.
+ *
+ * Handles platform detection and buffer extraction automatically.
+ *
+ * @returns `undefined` when the texture was handed to the sender, or a
+ * {@link PaintDefect} describing why the frame was dropped. Drops are normal
+ * no-ops (e.g. Chromium delivered a paint without a shareable handle), not
+ * errors — but callers should surface them instead of letting output go
+ * silently black. The native `send()` / `sendSurface()` throw is wrapped with
+ * `Result.fromThrowable` and consumed here with a single `.match` — the
+ * `Result` never crosses the public API. On native failure a
+ * {@link TextureSendError} is thrown with the original message preserved and
+ * the thrown value on `Error.cause`.
+ */
+export const sendTextureFromPaintEvent = (
+  sender: InstanceType<typeof TextureSender>,
+  textureInfo: TextureInfo | undefined,
+): PaintDefect | undefined => {
+  if (!textureInfo) return { reason: "no-texture" };
+
+  return safeDispatchSend(sender, textureInfo).match(
+    (defect) => defect,
+    (error) => {
+      throw error;
+    },
+  );
 };
