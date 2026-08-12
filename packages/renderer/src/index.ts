@@ -3,7 +3,14 @@ export type { TextureBridgeDeps } from "./bridge";
 export { createTextureReceiver } from "./receiver";
 export { createSharedTextureReceiver } from "./shared-texture-receiver";
 export { SenderDiscovery } from "./discovery";
-export type { TextureBridgeOptions, PreviewOptions, BridgeEvents, TextureBridge } from "./types";
+export type {
+  TextureBridgeOptions,
+  PreviewOptions,
+  BridgeEvents,
+  TextureBridge,
+  FrameForwardOptions,
+  FrameForward,
+} from "./types";
 export type {
   TextureReceiverBridgeOptions,
   ReceiverBridgeEvents,

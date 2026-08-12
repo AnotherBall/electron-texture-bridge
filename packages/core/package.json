@@ -10,10 +10,14 @@
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
     },
+    "./electron": {
+      "import": "./dist/electron.mjs",
+      "require": "./dist/electron.cjs"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "tsdown src/index.ts --format cjs,esm --dts --exports",
+    "build": "tsdown src/index.ts src/electron.ts --format cjs,esm --dts && node scripts/electron-free-guard.mjs",
     "test": "vitest run",
     "typecheck": "tsgo --noEmit"
   },

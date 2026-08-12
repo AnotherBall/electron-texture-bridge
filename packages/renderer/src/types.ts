@@ -1,4 +1,4 @@
-import type { BrowserWindow } from "electron";
+import type { BrowserWindow, WebContents } from "electron";
 import type { PaintDefect } from "@napolab/texture-bridge-core";
 
 /** Options for the preview window */
@@ -100,6 +100,18 @@ export interface BridgeEvents {
   resize: [width: number, height: number];
 }
 
+/** Options for {@link TextureBridge.forwardFrames} */
+export interface FrameForwardOptions {
+  /** consumeSharedTexture の handler に varargs で届くタグ(例: slot 番号) */
+  readonly extraArgs?: readonly unknown[];
+}
+
+/** Handle returned by {@link TextureBridge.forwardFrames} */
+export interface FrameForward {
+  /** 転送登録を解除する。冪等 */
+  dispose(): void;
+}
+
 /** High-level texture bridge handle */
 export interface TextureBridge {
   on<K extends keyof BridgeEvents>(event: K, listener: (...args: BridgeEvents[K]) => void): this;
@@ -113,6 +125,25 @@ export interface TextureBridge {
 
   /** Resize all layers: offscreen window, sender, preview, and worker */
   resize(width: number, height: number): void;
+
+  /**
+   * Register a `WebContents` (e.g. a monitor/multiviewer window) to receive
+   * every subsequent paint frame via zero-copy shared-texture forwarding.
+   * Same best-effort contract as the preview path: forward failures
+   * (`ForwardDefect`, from `forwardSharedTexture`) are discarded by this
+   * driver and never surface as an `"error"` event — the receiving end is
+   * `installSharedTextureReceiver` / `consumeSharedTexture` on
+   * `@napolab/texture-bridge-renderer/client`. Call `dispose()` on the
+   * returned {@link FrameForward} to stop forwarding to that target
+   * (idempotent).
+   *
+   * The current implementation imports the texture once per target per
+   * frame. When multiple targets share the same source frame, there is
+   * room to optimize to "import once per frame → send to every target →
+   * release only after all sends settle" — deferred as YAGNI until a
+   * multi-target workload actually needs it.
+   */
+  forwardFrames(target: WebContents, options?: FrameForwardOptions): FrameForward;
 
   /** The offscreen BrowserWindow used for rendering */
   readonly renderWindow: BrowserWindow;

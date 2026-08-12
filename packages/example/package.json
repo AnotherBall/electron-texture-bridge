@@ -7,6 +7,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "dev:multiviewer": "MULTIVIEWER_ONLY=1 electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "postinstall": "electron-builder install-app-deps",
