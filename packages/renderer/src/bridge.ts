@@ -1,14 +1,20 @@
 import { EventEmitter } from "events";
-import { app, BrowserWindow, screen, type Event } from "electron";
+import { app, BrowserWindow, screen, type Event, type WebContents } from "electron";
 import {
   TextureSender,
   sendTextureFromPaintEvent,
   type PaintTexture,
   type PaintDefect,
 } from "@napolab/texture-bridge-core";
+import { forwardSharedTexture } from "@napolab/texture-bridge-core/electron";
 import { PreviewManager } from "./preview-manager";
 import { FpsCounter } from "./fps-counter";
-import type { TextureBridgeOptions, TextureBridge } from "./types";
+import type {
+  TextureBridgeOptions,
+  TextureBridge,
+  FrameForward,
+  FrameForwardOptions,
+} from "./types";
 import { toError } from "./to-error";
 
 /**
@@ -111,6 +117,10 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
   private options: TextureBridgeOptions;
   private readonly policy: OsrScalePolicy;
   private readonly createSender: TextureBridgeDeps["createSender"];
+  private readonly forwardEntries = new Set<{
+    readonly target: WebContents;
+    readonly extraArgs: readonly unknown[];
+  }>();
 
   constructor(
     renderWindow: BrowserWindow,
@@ -179,6 +189,11 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
         this.emitFrameDropped(defect);
       }
       this.previewManager?.sendFrame(texture);
+      // Best-effort monitors: the primitive reports defects, this driver
+      // discards them by contract (same stance as the preview path).
+      for (const entry of this.forwardEntries) {
+        void forwardSharedTexture(texture.textureInfo, entry.target, entry.extraArgs);
+      }
     } catch (err) {
       this.emit("error", toError(err));
     } finally {
@@ -206,6 +221,16 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
 
   closePreview(): void {
     this.previewManager?.close();
+  }
+
+  forwardFrames(target: WebContents, options?: FrameForwardOptions): FrameForward {
+    const entry = { target, extraArgs: options?.extraArgs ?? [] };
+    this.forwardEntries.add(entry);
+    return {
+      dispose: () => {
+        this.forwardEntries.delete(entry);
+      },
+    };
   }
 
   resize(width: number, height: number): void {
@@ -262,6 +287,7 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
       this._renderWindow.destroy();
     }
 
+    this.forwardEntries.clear();
     this.sender.stop();
     this.previewManager?.dispose();
     this.previewManager = null;

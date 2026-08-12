@@ -7,6 +7,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      "@napolab/texture-bridge-core/electron": path.resolve(__dirname, "../core/src/electron.ts"),
       "@napolab/texture-bridge-core": path.resolve(__dirname, "../core/src/index.ts"),
       "@napolab/texture-bridge": path.resolve(__dirname, "../native/index.stub.js"),
     },

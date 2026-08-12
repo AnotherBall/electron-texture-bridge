@@ -60,6 +60,13 @@ vi.mock("@napolab/texture-bridge-core", () => ({
   sendTextureFromPaintEvent: vi.fn(),
 }));
 
+const forwardSharedTextureMock = vi.fn(
+  async (..._args: unknown[]): Promise<ForwardDefect | undefined> => undefined,
+);
+vi.mock("@napolab/texture-bridge-core/electron", () => ({
+  forwardSharedTexture: (...args: unknown[]) => forwardSharedTextureMock(...args),
+}));
+
 import {
   buildBrowserWindowOptions,
   computeDipSize,
@@ -73,6 +80,7 @@ import {
 import { BrowserWindow } from "electron";
 import { TextureSender, sendTextureFromPaintEvent } from "@napolab/texture-bridge-core";
 import type { PaintDefect, PaintTexture } from "@napolab/texture-bridge-core";
+import type { ForwardDefect } from "@napolab/texture-bridge-core/electron";
 import type { TextureBridgeOptions } from "../types";
 import type { PreviewManager } from "../preview-manager";
 
@@ -80,7 +88,12 @@ afterEach(() => {
   getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 1 });
   senderCtorBehavior.throwsRemaining = 0;
   senderCtorArgs.length = 0;
+  forwardSharedTextureMock.mockClear();
 });
+
+// Module-scope so both `TextureBridgeImpl.handlePaint — frameDropped` and
+// `TextureBridgeImpl.forwardFrames` describe blocks can drive the same mock.
+const sendMock = vi.mocked(sendTextureFromPaintEvent);
 
 const baseOpts: TextureBridgeOptions = {
   name: "test",
@@ -263,8 +276,6 @@ describe("computeDipSize", () => {
 });
 
 describe("TextureBridgeImpl.handlePaint — frameDropped", () => {
-  const sendMock = vi.mocked(sendTextureFromPaintEvent);
-
   const makeBridge = () =>
     new TextureBridgeImpl(new BrowserWindow(), new TextureSender("t", 16, 9), null, baseOpts);
 
@@ -679,5 +690,96 @@ describe("TextureBridgeImpl.dispose — synchronous teardown", () => {
       disposedListener.mock.invocationCallOrder[0],
     ];
     expect([...order].sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual(order);
+  });
+});
+
+describe("TextureBridgeImpl.forwardFrames", () => {
+  const makeTexture = () => ({
+    textureInfo: {
+      pixelFormat: "bgra" as const,
+      codedSize: { width: 16, height: 9 },
+      visibleRect: { x: 0, y: 0, width: 16, height: 9 },
+      handle: {},
+    },
+    release: vi.fn(),
+  });
+
+  it("forwards each paint frame to every registered target with its extraArgs", () => {
+    sendMock.mockReturnValue(undefined);
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      null,
+      baseOpts,
+    );
+    // WebContents はクラス型のため構造スタブは two-step cast で注入(確立パターン)
+    const wcA: unknown = { id: "a" };
+    const wcB: unknown = { id: "b" };
+    bridge.forwardFrames(wcA as Electron.WebContents, { extraArgs: [0] });
+    bridge.forwardFrames(wcB as Electron.WebContents, { extraArgs: [1] });
+
+    const texture = makeTexture();
+    bridge.handlePaint({ texture });
+
+    expect(forwardSharedTextureMock).toHaveBeenCalledTimes(2);
+    expect(forwardSharedTextureMock).toHaveBeenCalledWith(texture.textureInfo, wcA, [0]);
+    expect(forwardSharedTextureMock).toHaveBeenCalledWith(texture.textureInfo, wcB, [1]);
+  });
+
+  it("stops forwarding after FrameForward.dispose(), idempotently", () => {
+    sendMock.mockReturnValue(undefined);
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      null,
+      baseOpts,
+    );
+    const wc: unknown = { id: "a" };
+    const forward = bridge.forwardFrames(wc as Electron.WebContents);
+    forward.dispose();
+    forward.dispose();
+
+    bridge.handlePaint({ texture: makeTexture() });
+    expect(forwardSharedTextureMock).not.toHaveBeenCalled();
+  });
+
+  it("defaults extraArgs to [] and keeps forwarding on defect results (best-effort)", async () => {
+    sendMock.mockReturnValue(undefined);
+    forwardSharedTextureMock.mockResolvedValueOnce({
+      reason: "send-failed",
+      cause: new Error("x"),
+    });
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      null,
+      baseOpts,
+    );
+    const wc: unknown = { id: "a" };
+    bridge.forwardFrames(wc as Electron.WebContents);
+    const errors: Error[] = [];
+    bridge.on("error", (e) => {
+      errors.push(e);
+    });
+
+    bridge.handlePaint({ texture: makeTexture() });
+    bridge.handlePaint({ texture: makeTexture() });
+    await Promise.resolve();
+
+    expect(forwardSharedTextureMock).toHaveBeenCalledTimes(2);
+    expect(forwardSharedTextureMock).toHaveBeenNthCalledWith(1, expect.anything(), wc, []);
+    expect(errors).toEqual([]); // defect は error イベントを汚さない
+  });
+
+  it("stops all forwards when the bridge is disposed", () => {
+    sendMock.mockReturnValue(undefined);
+    const win = new BrowserWindow();
+    const bridge = new TextureBridgeImpl(win, new TextureSender("t", 16, 9), null, baseOpts);
+    const wc: unknown = { id: "a" };
+    bridge.forwardFrames(wc as Electron.WebContents);
+    bridge.dispose();
+
+    bridge.handlePaint({ texture: makeTexture() });
+    expect(forwardSharedTextureMock).not.toHaveBeenCalled();
   });
 });
