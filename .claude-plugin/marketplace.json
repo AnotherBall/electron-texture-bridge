@@ -1,0 +1,27 @@
+{
+  "name": "electron-texture-bridge",
+  "owner": {
+    "name": "naporin0624",
+    "url": "https://github.com/naporin0624"
+  },
+  "metadata": {
+    "description": "Claude Code plugins for @napolab/texture-bridge — zero-copy GPU texture sharing between Electron and VJ apps (Syphon / Spout)",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "texture-bridge",
+      "source": "./plugins/texture-bridge",
+      "description": "Skills for installing, choosing, migrating to, and receiving from @napolab/texture-bridge APIs (forwardSharedTexture / forwardFrames / shared-texture receivers)",
+      "category": "development",
+      "keywords": [
+        "electron",
+        "syphon",
+        "spout",
+        "shared-texture",
+        "offscreen-rendering",
+        "vj"
+      ]
+    }
+  ]
+}

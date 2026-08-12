@@ -1,0 +1,20 @@
+{
+  "name": "texture-bridge",
+  "version": "0.1.0",
+  "description": "Usage, migration, and receiver skills for @napolab/texture-bridge — zero-copy GPU texture sharing for Electron offscreen windows (Syphon / Spout / renderer-to-renderer forwarding)",
+  "author": {
+    "name": "naporin0624",
+    "url": "https://github.com/naporin0624"
+  },
+  "homepage": "https://github.com/naporin0624/electron-texture-bridge",
+  "repository": "https://github.com/naporin0624/electron-texture-bridge",
+  "license": "MIT",
+  "keywords": [
+    "electron",
+    "syphon",
+    "spout",
+    "shared-texture",
+    "forwardFrames",
+    "offscreen-rendering"
+  ]
+}
