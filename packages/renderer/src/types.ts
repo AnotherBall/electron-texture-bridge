@@ -136,6 +136,12 @@ export interface TextureBridge {
    * `@napolab/texture-bridge-renderer/client`. Call `dispose()` on the
    * returned {@link FrameForward} to stop forwarding to that target
    * (idempotent).
+   *
+   * The current implementation imports the texture once per target per
+   * frame. When multiple targets share the same source frame, there is
+   * room to optimize to "import once per frame → send to every target →
+   * release only after all sends settle" — deferred as YAGNI until a
+   * multi-target workload actually needs it.
    */
   forwardFrames(target: WebContents, options?: FrameForwardOptions): FrameForward;
 

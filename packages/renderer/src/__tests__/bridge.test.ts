@@ -84,16 +84,21 @@ import type { ForwardDefect } from "@napolab/texture-bridge-core/electron";
 import type { TextureBridgeOptions } from "../types";
 import type { PreviewManager } from "../preview-manager";
 
+// Module-scope so both `TextureBridgeImpl.handlePaint — frameDropped` and
+// `TextureBridgeImpl.forwardFrames` describe blocks can drive the same mock.
+const sendMock = vi.mocked(sendTextureFromPaintEvent);
+
 afterEach(() => {
   getPrimaryDisplayMock.mockReturnValue({ scaleFactor: 1 });
   senderCtorBehavior.throwsRemaining = 0;
   senderCtorArgs.length = 0;
   forwardSharedTextureMock.mockClear();
+  // sendMock is module-scope (see above) — reset it here too, so a leftover
+  // mockReturnValue/mockImplementation from one describe block cannot leak
+  // into the next. The forwardFrames describe block being last in the file
+  // is currently incidental, not guaranteed.
+  sendMock.mockReset();
 });
-
-// Module-scope so both `TextureBridgeImpl.handlePaint — frameDropped` and
-// `TextureBridgeImpl.forwardFrames` describe blocks can drive the same mock.
-const sendMock = vi.mocked(sendTextureFromPaintEvent);
 
 const baseOpts: TextureBridgeOptions = {
   name: "test",
@@ -781,5 +786,44 @@ describe("TextureBridgeImpl.forwardFrames", () => {
 
     bridge.handlePaint({ texture: makeTexture() });
     expect(forwardSharedTextureMock).not.toHaveBeenCalled();
+  });
+
+  it("still forwards when the Syphon send returns a defect", () => {
+    sendMock.mockReturnValue({ reason: "no-nt-handle" });
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      null,
+      baseOpts,
+    );
+    const wc: unknown = { id: "a" };
+    bridge.forwardFrames(wc as Electron.WebContents);
+
+    bridge.handlePaint({ texture: makeTexture() });
+
+    expect(forwardSharedTextureMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("still forwards when the native send throws", () => {
+    sendMock.mockImplementation(() => {
+      throw new Error("TextureSender has been stopped");
+    });
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      null,
+      baseOpts,
+    );
+    const wc: unknown = { id: "a" };
+    bridge.forwardFrames(wc as Electron.WebContents);
+    const errors: Error[] = [];
+    bridge.on("error", (e) => {
+      errors.push(e);
+    });
+
+    bridge.handlePaint({ texture: makeTexture() });
+
+    expect(forwardSharedTextureMock).toHaveBeenCalledTimes(1);
+    expect(errors).toHaveLength(1);
   });
 });

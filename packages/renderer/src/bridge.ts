@@ -182,6 +182,22 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
     }
 
     try {
+      // Best-effort monitors: the primitive reports defects, this driver
+      // discards them by contract (same stance as the preview path).
+      // Independent of the native Syphon/Spout send — this runs before
+      // sendTextureFromPaintEvent so a native send throw cannot suppress a
+      // monitor forward. Each call must START synchronously — the paint
+      // texture is released in the finally below; the primitive's
+      // import/send dispatch runs before its first await.
+      for (const entry of this.forwardEntries) {
+        // The primitive cannot reject today, but the best-effort contract
+        // must not depend on another package's discipline — an unhandled
+        // rejection would surface in the main process.
+        void forwardSharedTexture(texture.textureInfo, entry.target, entry.extraArgs).catch(
+          () => {},
+        );
+      }
+
       const defect = sendTextureFromPaintEvent(this.sender, texture.textureInfo);
       if (defect === undefined) {
         this.lastDropReason = null;
@@ -189,11 +205,6 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
         this.emitFrameDropped(defect);
       }
       this.previewManager?.sendFrame(texture);
-      // Best-effort monitors: the primitive reports defects, this driver
-      // discards them by contract (same stance as the preview path).
-      for (const entry of this.forwardEntries) {
-        void forwardSharedTexture(texture.textureInfo, entry.target, entry.extraArgs);
-      }
     } catch (err) {
       this.emit("error", toError(err));
     } finally {
