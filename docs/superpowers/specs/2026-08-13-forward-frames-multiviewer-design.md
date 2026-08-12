@@ -95,7 +95,7 @@ crop 機能は**作らない**（ユーザー裁定）。
 
 ```ts
 type SlotSource =
-  | { readonly kind: "local"; readonly bridgeId: string }   // 自プロセスの bridge → forwardFrames
+  | { readonly kind: "local"; readonly id: string }   // 自プロセスの bridge → forwardFrames
   | { readonly kind: "syphon"; readonly senderName: string }; // Syphon ディレクトリ → createSharedTextureReceiver
 ```
 

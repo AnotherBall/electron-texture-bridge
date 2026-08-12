@@ -638,6 +638,7 @@ interface TextureBridge {
   resize(width: number, height: number): void;  // Cascades to all layers + Worker
   openPreview(): void;
   closePreview(): void;
+  forwardFrames(target: WebContents, options?: FrameForwardOptions): FrameForward;
   dispose(): void;
 
   readonly renderWindow: BrowserWindow;
@@ -678,6 +679,24 @@ been destroyed"). The library's own guard only covers its *internal*
 either guard it yourself
 (`if (!bridge.renderWindow.isDestroyed()) bridge.renderWindow.destroy();`) or
 call it **before** `dispose()`, not after.
+
+#### `TextureBridge.forwardFrames(target, options?)`
+
+```typescript
+const forward = bridge.forwardFrames(monitorWindow.webContents, { extraArgs: [slot] });
+// later
+forward.dispose(); // idempotent
+```
+
+Registers a `WebContents` (e.g. a monitor/multiviewer window) to receive every subsequent paint frame over the same zero-copy shared-texture path `forwardSharedTexture` uses — no pixel readback, just a GPU handle.
+
+**Best-effort contract**, same as the preview path: forward failures (a `ForwardDefect` from the core `forwardSharedTexture` primitive) are discarded by this driver and never surface as an `"error"` event or affect `frameDropped`/`droppedReason`. **Independent of the native Syphon/Spout send** — forwarding runs before `sendTextureFromPaintEvent` inside the paint handler, so a thrown native send failure can't suppress a registered forward, and a forward failure can never block the native send either; the two paths fire regardless of each other's outcome.
+
+`FrameForward.dispose()` unregisters that one target and is idempotent — calling it twice, or after `bridge.dispose()` already cleared it, is a no-op. `bridge.dispose()` clears every registered forward.
+
+The receiving end needs nothing new: a forwarded target consumes frames exactly like a Syphon/Spout receiver does — call `installSharedTextureReceiver()` once at renderer startup, then `consumeSharedTexture({ onFrame: (frame, ...extraArgs) => ... })`. The `extraArgs` passed to `forwardFrames(target, { extraArgs })` arrive verbatim as the handler's trailing arguments, so one target can demultiplex frames forwarded from several sources (e.g. tag each source with its slot index).
+
+The current implementation imports the texture once per registered target per frame. When several targets share the same source frame, there's room to optimize to "import once per frame → send to every target → release only after all sends settle" — documented as a future option rather than built now, since no current caller needs it (a multiviewer slot is one source to one target).
 
 #### `createWorkerRenderer(options)` (from `renderer/client`)
 
@@ -847,6 +866,39 @@ thrown value is available on `error.cause`. With `createTextureBridge`,
 these surface on the bridge's `error` event, so you can discriminate with
 `instanceof TextureSendError`.
 
+#### `forwardSharedTexture(textureInfo, target, extraArgs?)` (from `core/electron`)
+
+```typescript
+import { forwardSharedTexture, type ForwardDefect } from "@napolab/texture-bridge-core/electron";
+
+const defect = await forwardSharedTexture(textureInfo, target, extraArgs);
+```
+
+Forwards one paint frame to a renderer `WebContents` via Electron's shared-texture channel (`sharedTexture.importSharedTexture` → `sharedTexture.sendSharedTexture`). Zero-copy: only a GPU handle crosses the process boundary — no pixels move.
+
+This lives on a **separate subpath**, `@napolab/texture-bridge-core/electron`, not the package's main entry. The main entry must stay importable without Electron installed — the plain-Node `sendRgbaBuffer` sanity check (see "Minimal sanity check (no Electron)" above) depends on that — so the static `import { sharedTexture } from "electron"` this function needs is quarantined to this subpath and enforced at build time by an electron-free guard on the main entry's output.
+
+Returns `undefined` when the frame was handed to Electron for delivery, or a `ForwardDefect` describing why it was not — the same reporting idiom as `sendTextureFromPaintEvent`'s `PaintDefect | undefined`: the low-level tier reports, the caller decides.
+
+```typescript
+type ForwardDefect =
+  | { reason: "target-destroyed" }   // target.isDestroyed(), or its mainFrame is gone
+  | { reason: "import-failed"; cause: Error }
+  | { reason: "send-failed"; cause: Error };
+```
+
+Because it's an `async` function, it can never throw synchronously — a defect always surfaces through the returned promise, never as a thrown exception at the call site. When the import succeeds, the imported texture is released in a `finally` regardless of whether the subsequent send succeeds or fails (release-in-finally).
+
+Low-level callers driving their own paint loop can call it directly, alongside `sendTextureFromPaintEvent`:
+
+```typescript
+win.webContents.on("paint", async (e) => {
+  sendTextureFromPaintEvent(sender, e.texture?.textureInfo);          // → Syphon/Spout
+  if (e.texture) await forwardSharedTexture(e.texture.textureInfo, monitorWC, [slot]); // → renderer
+  e.texture?.release();
+});
+```
+
 #### `TextureSender`
 
 Native class for sending textures to Syphon/Spout receivers.
@@ -1000,6 +1052,19 @@ pnpm dev:example
 ```
 
 Look for "ElectronVJ-ThreeJS" in your Syphon/Spout receiver application.
+
+### Multi-Receiver Grid (multiviewer)
+
+The example also includes a second window that exercises `forwardFrames` end-to-end: **4 decks** (480×270 canvases) plus a **2×2 composite preview** (960×540) monitoring up to 4 sources at once. Each deck is independently assignable to one of two routes:
+
+- **`[local]`** — an in-process bridge forwarded via `bridge.forwardFrames(multiviewerWindow.webContents, { extraArgs: [slot] })`, the new zero-copy renderer→renderer path this feature adds.
+- **`[syphon]`** — an external Syphon/Spout sender received via the existing `createSharedTextureReceiver({ senderName, target, extraArgs: [slot] })` path.
+
+The same source can be assigned to both routes at once (once forwarded directly, once round-tripped through Syphon/Spout) for side-by-side comparison. Four local sources ship out of the box so all 4 slots can be filled without any external sender: the example's own `ElectronVJ-ThreeJS` raymarching bridge, plus three lightweight `Grid-Demo-A/B/C` bridges (960×540, 30 fps, distinct hues).
+
+Each deck holds only its latest arrived frame; a `requestAnimationFrame` loop redraws whatever's held into the deck canvas and its composite quadrant on every tick, so draw cost is fixed to the display refresh rate regardless of how many slots are connected or how fast each source produces frames. Arrival fps (`onFrame` call rate) and draw fps (`rAF` draw rate) are tracked and shown separately per deck, since the two diverge whenever a source's frame rate and the display's refresh rate don't match.
+
+The composite canvas is itself the "renderer-side atlas": the grid deliberately does **not** GPU-atlas the four sources into one texture before forwarding — atlasing would only save a handful of import/IPC calls per frame (not a bottleneck at this scale) at the cost of adding a main-process compositing pass and a frame of latency, which defeats the point of a low-latency multiviewer.
 
 ### Packaging the example
 

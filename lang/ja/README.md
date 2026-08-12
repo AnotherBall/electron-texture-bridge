@@ -404,6 +404,7 @@ interface TextureBridge {
   resize(width: number, height: number): void;  // 全レイヤー + Worker にカスケード
   openPreview(): void;
   closePreview(): void;
+  forwardFrames(target: WebContents, options?: FrameForwardOptions): FrameForward;
   dispose(): void;
 
   readonly renderWindow: BrowserWindow;
@@ -446,6 +447,24 @@ interface TextureBridge {
 場合は、自分でガードする
 （`if (!bridge.renderWindow.isDestroyed()) bridge.renderWindow.destroy();`）か、
 `dispose()` より前に呼び出すようにしてください。
+
+#### `TextureBridge.forwardFrames(target, options?)`
+
+```typescript
+const forward = bridge.forwardFrames(monitorWindow.webContents, { extraArgs: [slot] });
+// 後で
+forward.dispose(); // 冪等
+```
+
+`WebContents`（モニター/マルチビューアウィンドウなど）を登録し、以降すべての paint フレームを `forwardSharedTexture` と同じゼロコピーの shared-texture 経路で受け取れるようにします — ピクセル readback はなく、GPU ハンドルの受け渡しのみです。
+
+**ベストエフォート契約** はプレビュー経路と同一です: 転送失敗（core の `forwardSharedTexture` primitive が返す `ForwardDefect`）はこの driver が握り潰し、`"error"` イベントや `frameDropped` / `droppedReason` を汚しません。**ネイティブの Syphon/Spout 送信からは独立** しています — paint ハンドラ内で転送は `sendTextureFromPaintEvent` より先に実行されるため、ネイティブ送信が throw しても登録済みの転送を止められませんし、転送側の失敗がネイティブ送信をブロックすることもありません。両者は互いの結果と無関係に発火します。
+
+`FrameForward.dispose()` はその 1 件の登録だけを解除し、冪等です — 2 回呼んでも、あるいは `bridge.dispose()` が先に全登録を解除した後に呼んでも no-op です。`bridge.dispose()` は登録済みの転送をすべて解除します。
+
+受け取り側は新たに何も必要ありません: 転送先の target は Syphon/Spout レシーバーとまったく同じ方法でフレームを受け取ります — renderer 起動時に一度 `installSharedTextureReceiver()` を呼び、`consumeSharedTexture({ onFrame: (frame, ...extraArgs) => ... })` で受信します。`forwardFrames(target, { extraArgs })` に渡した `extraArgs` はハンドラの末尾引数としてそのまま届くため、1 つの target が複数ソースからの転送を（例えばスロット番号で）判別できます。
+
+現在の実装は、フレームごとに登録済み target の数だけテクスチャを import します。複数 target が同一ソースフレームを共有する場合は「フレームごとに import は 1 回 → 全 target へ send → 全 send の settle 後に release」へ最適化する余地がありますが、現時点でその需要のある呼び出し元がないため（multiviewer は 1 ソース = 1 target）、将来のオプションとして記録するに留め、実装はしていません。
 
 #### `createWorkerRenderer(options)`（`renderer/client` から）
 
@@ -494,6 +513,39 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
 throw されます — メッセージはそのまま保持され、元の throw 値は `error.cause` から参照できます。
 `createTextureBridge` を使っている場合、これらはブリッジの `error` イベントとして表面化するため、
 `instanceof TextureSendError` で判別できます。
+
+#### `forwardSharedTexture(textureInfo, target, extraArgs?)`（`core/electron` から）
+
+```typescript
+import { forwardSharedTexture, type ForwardDefect } from "@napolab/texture-bridge-core/electron";
+
+const defect = await forwardSharedTexture(textureInfo, target, extraArgs);
+```
+
+1 フレームの paint を、Electron の shared-texture チャネル（`sharedTexture.importSharedTexture` → `sharedTexture.sendSharedTexture`）経由で renderer の `WebContents` に転送します。ゼロコピー — プロセス境界を越えるのは GPU ハンドルのみで、ピクセルは動きません。
+
+この関数はパッケージのメインエントリではなく、**独立したサブパス** `@napolab/texture-bridge-core/electron` に置かれています。メインエントリは Electron 未インストールでも import できる状態を保つ必要があります（前述の「Electron 無しの最小サニティチェック」の `sendRgbaBuffer` がそれに依存しています）。そのためこの関数が必要とする静的な `import { sharedTexture } from "electron"` はこのサブパスに隔離し、メインエントリの出力に electron-free ガードをビルド時に適用して強制しています。
+
+フレームが Electron への配送に成功した場合は `undefined` を、失敗した理由は `ForwardDefect` で返します — `sendTextureFromPaintEvent` の `PaintDefect | undefined` と同じ報告方式です: 低レベル層は結果を報告するだけで、判断は呼び出し側に委ねます。
+
+```typescript
+type ForwardDefect =
+  | { reason: "target-destroyed" }   // target.isDestroyed()、または mainFrame が存在しない
+  | { reason: "import-failed"; cause: Error }
+  | { reason: "send-failed"; cause: Error };
+```
+
+`async` 関数であるため、同期的に throw することは構造的にありません — 失敗は常に返り値の Promise を通じて表面化し、呼び出し箇所で例外として飛ぶことはありません。import に成功した場合は、後続の send が成功しても失敗しても `finally` で必ず import 済みテクスチャを release します（release-in-finally）。
+
+自前の paint ループを持つ低レベル利用者は、`sendTextureFromPaintEvent` と並べて直接呼び出せます:
+
+```typescript
+win.webContents.on("paint", async (e) => {
+  sendTextureFromPaintEvent(sender, e.texture?.textureInfo);          // → Syphon/Spout
+  if (e.texture) await forwardSharedTexture(e.texture.textureInfo, monitorWC, [slot]); // → renderer
+  e.texture?.release();
+});
+```
 
 #### `TextureSender`
 
@@ -570,6 +622,19 @@ pnpm dev:example
 ```
 
 Syphon/Spout レシーバーアプリで「ElectronVJ-ThreeJS」が表示されれば成功です。
+
+### Multi-Receiver Grid（マルチビューア）
+
+サンプルには、`forwardFrames` をエンドツーエンドで実演するもう 1 つのウィンドウも含まれています。**デッキ 4 面**（480×270 のキャンバス）と **2×2 の合成プレビュー**（960×540）で、最大 4 ソースを同時に監視できます。各デッキは 2 つの経路のどちらかを個別に割り当て可能です:
+
+- **`[local]`** — 自プロセス内の bridge を `bridge.forwardFrames(multiviewerWindow.webContents, { extraArgs: [slot] })` で転送する経路。この機能で新たに追加された、ゼロコピーの renderer→renderer 経路の実証です。
+- **`[syphon]`** — 既存の `createSharedTextureReceiver({ senderName, target, extraArgs: [slot] })` で外部 Syphon/Spout sender を受信する経路。
+
+同じソースを両方の経路に同時に割り当てることもでき（一方は直接転送、もう一方は Syphon/Spout を経由した往復）、その場で挙動を比較できます。外部 sender がなくても 4 スロットすべて埋まるよう、ローカルソースを 4 本標準で用意しています: サンプル本体の `ElectronVJ-ThreeJS`（レイマーチング）bridge に加え、色相違いの軽量な `Grid-Demo-A/B/C` bridge（960×540・30fps）3 本です。
+
+各デッキは直近に到着した 1 フレームのみを保持し、`requestAnimationFrame` ループが毎ティック、保持中のフレームをデッキキャンバスと合成キャンバスの該当象限へ描画します。そのため描画コストはディスプレイのリフレッシュレートに固定され、接続スロット数や各ソースの fps には比例しません。到着 fps（`onFrame` の呼び出し頻度）と描画 fps（`rAF` での実描画頻度）はデッキごとに分けて計測・表示します — ソースの fps とディスプレイのリフレッシュレートが一致しない場合、両者は乖離するためです。
+
+合成キャンバス自体が「renderer 側のアトラス」であり、4 ソースを転送前に GPU 上で 1 枚のテクスチャへアトラス化することはあえてしていません。アトラス化で節約できるのはフレームあたり数回の import/IPC 呼び出しだけ（この規模ではボトルネックになりません）で、代わりに main プロセス側の合成パスと 1 フレーム分の遅延が必要になり、低レイテンシなマルチビューアという目的には本末転倒だからです。
 
 ### サンプルアプリのパッケージング
 
