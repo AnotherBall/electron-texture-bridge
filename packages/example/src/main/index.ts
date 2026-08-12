@@ -243,9 +243,12 @@ const bootstrap = async (): Promise<void> => {
     multiviewerWindow.loadFile(multiviewerUrl);
   }
 
-  const sendSlotStatus = (slot: number, text: string): void => {
+  // `kind` categorizes the push so the renderer can keep durable connection
+  // state ("state": connected/disconnected/error) separate from ephemeral
+  // per-tick numbers ("metric": fps) instead of one clobbering the other.
+  const sendSlotStatus = (slot: number, kind: "state" | "metric", text: string): void => {
     if (multiviewerWindow.isDestroyed()) return;
-    multiviewerWindow.webContents.send("multi-slot-status", slot, text);
+    multiviewerWindow.webContents.send("multi-slot-status", slot, kind, text);
   };
 
   // Each slot holds whichever `dispose()`-able handle is currently feeding
@@ -281,14 +284,14 @@ const bootstrap = async (): Promise<void> => {
           const entry = localBridges.get(source.id);
           if (!entry) {
             console.error(`[multiviewer] unknown local bridge id: ${source.id}`);
-            sendSlotStatus(slot, "error: unknown local source");
+            sendSlotStatus(slot, "state", "error: unknown local source");
             return;
           }
           const forward = entry.bridge.forwardFrames(multiviewerWindow.webContents, {
             extraArgs: [slot],
           });
           slots.set(slot, { dispose: () => forward.dispose() });
-          sendSlotStatus(slot, `connected: local (${source.id})`);
+          sendSlotStatus(slot, "state", `connected: local (${source.id})`);
           return;
         }
         case "syphon": {
@@ -300,14 +303,14 @@ const bootstrap = async (): Promise<void> => {
             flipY,
           });
           receiver.on("fps", (fps) => {
-            sendSlotStatus(slot, `fps: ${fps.toFixed(1)}`);
+            sendSlotStatus(slot, "metric", `fps: ${fps.toFixed(1)}`);
           });
           receiver.on("error", (err) => {
-            sendSlotStatus(slot, `error: ${err.message}`);
+            sendSlotStatus(slot, "state", `error: ${err.message}`);
           });
           receiver.start();
           slots.set(slot, { dispose: () => receiver.dispose() });
-          sendSlotStatus(slot, `connected: syphon (${source.senderName})`);
+          sendSlotStatus(slot, "state", `connected: syphon (${source.senderName})`);
           return;
         }
       }
@@ -316,7 +319,7 @@ const bootstrap = async (): Promise<void> => {
 
   ipcMain.handle("multi-disconnect", (_event, slot: number) => {
     disposeSlot(slot);
-    sendSlotStatus(slot, "disconnected");
+    sendSlotStatus(slot, "state", "disconnected");
   });
 
   multiviewerWindow.on("closed", () => {

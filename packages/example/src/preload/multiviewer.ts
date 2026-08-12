@@ -155,6 +155,18 @@ const parseSourceValue = (value: string): SlotSourceDescriptor | null => {
   return null;
 };
 
+// Mirrors the main-process `connected: local (${id})` / `connected: syphon
+// (${senderName})` text so the deck reads correctly even before (or if) the
+// corresponding "state" push arrives over IPC.
+const describeSource = (descriptor: SlotSourceDescriptor): string => {
+  switch (descriptor.kind) {
+    case "local":
+      return `local (${descriptor.id})`;
+    case "syphon":
+      return `syphon (${descriptor.senderName})`;
+  }
+};
+
 const disconnectSlot = async (
   deck: DeckUI,
   compositeCtx: CanvasRenderingContext2D,
@@ -172,6 +184,13 @@ const disconnectSlot = async (
   const quadX = (slot % 2) * DECK_WIDTH;
   const quadY = Math.floor(slot / 2) * DECK_HEIGHT;
   compositeCtx.clearRect(quadX, quadY, DECK_WIDTH, DECK_HEIGHT);
+
+  const stats = slotStats[slot];
+  if (stats) {
+    stats.connState = "disconnected";
+    stats.pushText = "";
+  }
+  updateStatusText(slot);
 };
 
 const wireDeck = (multiviewer: MultiviewerUI, slot: number): void => {
@@ -188,6 +207,9 @@ const wireDeck = (multiviewer: MultiviewerUI, slot: number): void => {
     try {
       await ipcRenderer.invoke("multi-connect", slot, descriptor, multiviewer.flipY.checked);
       connectedSlots[slot] = true;
+      const stats = slotStats[slot];
+      if (stats) stats.connState = `connected: ${describeSource(descriptor)}`;
+      updateStatusText(slot);
       deck.connectBtn.disabled = true;
       deck.disconnectBtn.disabled = false;
       deck.source.disabled = true;
@@ -279,12 +301,23 @@ consumeSharedTexture({
 requestAnimationFrame(drawFrame);
 setInterval(tickFpsWindow, 1000);
 
-ipcRenderer.on("multi-slot-status", (_event, slot: number, text: string) => {
-  const stats = slotStats[slot];
-  if (!stats) return;
-  stats.pushText = text;
-  updateStatusText(slot);
-});
+// `kind` mirrors the main-process `sendSlotStatus` categorization: "state"
+// (connected/disconnected/error) writes to `connState`, "metric" (fps ticks)
+// writes to `pushText` — kept separate so a fps tick never overwrites the
+// connection text.
+ipcRenderer.on(
+  "multi-slot-status",
+  (_event, slot: number, kind: "state" | "metric", text: string) => {
+    const stats = slotStats[slot];
+    if (!stats) return;
+    if (kind === "state") {
+      stats.connState = text;
+    } else {
+      stats.pushText = text;
+    }
+    updateStatusText(slot);
+  },
+);
 
 window.addEventListener("beforeunload", () => {
   for (const slot of SLOTS) {
