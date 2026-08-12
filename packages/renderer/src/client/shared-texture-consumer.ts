@@ -20,6 +20,7 @@
  */
 
 import { sharedTexture } from "electron";
+import { toError } from "../to-error";
 import { createMultiDispatcher } from "./multi-dispatcher";
 
 export interface SharedTextureConsumerFrame {
@@ -151,7 +152,7 @@ export const consumeSharedTexture = (
       // A consumer whose `onError` itself throws must not crash the outer
       // try/finally (which would leak VideoFrame.close()).
       try {
-        handlers.onError?.(err instanceof Error ? err : new Error(String(err)));
+        handlers.onError?.(toError(err));
       } catch (handlerErr) {
         console.error("[consumeSharedTexture] onError handler threw:", handlerErr);
       }

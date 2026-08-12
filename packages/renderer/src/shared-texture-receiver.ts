@@ -13,7 +13,17 @@ import { sharedTexture } from "electron";
 import type { WebContents } from "electron";
 import { TextureReceiver, closeNativeHandle } from "@napolab/texture-bridge-core";
 import type { SharedTextureFrame } from "@napolab/texture-bridge-core";
+import { Result, ResultAsync, ok, err, okAsync, errAsync } from "neverthrow";
+import {
+  FrameReceiveError,
+  ReceiverStoppedError,
+  TextureDeliveryError,
+  TextureImportError,
+  UnsupportedPixelFormatError,
+} from "./errors";
 import { FpsCounter } from "./fps-counter";
+import { sendImportedTexture } from "./send-imported-texture";
+import { toError } from "./to-error";
 
 /**
  * Safely release a native shared-texture handle that was minted by the native
@@ -41,7 +51,7 @@ type SharedTexturePixelFormat = "bgra" | "rgba" | "rgbaf16";
 const VALID_PIXEL_FORMATS: readonly SharedTexturePixelFormat[] = ["bgra", "rgba", "rgbaf16"];
 
 const isValidPixelFormat = (value: string): value is SharedTexturePixelFormat => {
-  return (VALID_PIXEL_FORMATS as readonly string[]).includes(value);
+  return VALID_PIXEL_FORMATS.some((format) => format === value);
 };
 
 /**
@@ -50,6 +60,22 @@ const isValidPixelFormat = (value: string): value is SharedTexturePixelFormat =>
  * permanently broken.
  */
 const MAX_CONSECUTIVE_TICK_ERRORS = 10;
+
+/**
+ * Throwable native/Electron calls, each bound once to a named
+ * `Result.fromThrowable` wrapper (arguments are forwarded — no per-call
+ * wrapping, no IIFE-style immediate invocation).
+ */
+const safeReceiveSharedTexture = Result.fromThrowable(
+  (receiver: InstanceType<typeof TextureReceiver>) => receiver.receiveSharedTexture(),
+  (cause) => new FrameReceiveError(toError(cause).message, { cause }),
+);
+
+const safeImportSharedTexture = Result.fromThrowable(
+  (textureInfo: Electron.SharedTextureImportTextureInfo) =>
+    sharedTexture.importSharedTexture({ textureInfo }),
+  (cause) => new TextureImportError(toError(cause).message, { cause }),
+);
 
 export interface SharedTextureReceiverOptions {
   readonly senderName: string;
@@ -187,7 +213,8 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
    * Emit `"error"` and count it toward the circuit breaker. If the consecutive
    * count crosses `MAX_CONSECUTIVE_TICK_ERRORS`, stop the receiver and emit a
    * final shutdown error. Does NOT call `dispose()` — releasing native
-   * resources is the caller's responsibility.
+   * resources is the caller's responsibility. Called from `_tick`, the single
+   * consumer of both `_receiveFrame()`'s and `_send()`'s `Result` values.
    */
   private _recordTickError(error: Error): void {
     this.emit("error", error);
@@ -195,150 +222,195 @@ class SharedTextureReceiverBridgeImpl extends EventEmitter implements SharedText
   }
 
   /**
-   * Count a tick-level error without re-emitting. Used when `_send()` already
-   * emitted the error itself (so we don't emit twice) but the failure should
-   * still count toward the circuit breaker.
+   * Bump the consecutive-error counter and, once it crosses the threshold,
+   * stop the receiver and emit the circuit-breaker error. Shared bookkeeping
+   * behind `_recordTickError`.
    */
   private _countTickError(): void {
     this._consecutiveErrors += 1;
     if (this._consecutiveErrors >= MAX_CONSECUTIVE_TICK_ERRORS) {
       this.stop();
-      this.emit(
-        "error",
-        new Error(
-          `shared texture receiver stopped after ${MAX_CONSECUTIVE_TICK_ERRORS} consecutive errors`,
-        ),
-      );
+      this.emit("error", new ReceiverStoppedError(MAX_CONSECUTIVE_TICK_ERRORS));
     }
   }
 
   /**
-   * One poll tick. Drop-latest: if a previous send is still in flight (the
-   * Electron `sendSharedTexture` Promise has not resolved yet), this tick is a
-   * no-op. That keeps at most one imported-texture reference alive on the main
+   * One poll tick — the single consumer of both `_receiveFrame()`'s and
+   * `_send()`'s `Result` values; each `.match()` here is the one place a
+   * pipeline value crosses from the `Result` channel into `"error"` emits /
+   * circuit-breaker bookkeeping. Producers (`_receiveFrame`, `_send`,
+   * `_prepare`, `_deliver`) only ever return `Result`/`ResultAsync` — they
+   * never emit or consume themselves.
+   *
+   * Drop-latest: if a previous send is still in flight (the Electron
+   * `sendSharedTexture` Promise has not resolved yet), this tick is a no-op.
+   * That keeps at most one imported-texture reference alive on the main
    * process at any time and prevents frame pile-up when the renderer is slow.
+   *
+   * Receive errors are consumed synchronously (same-tick circuit-breaker
+   * accounting — matches the pre-neverthrow behavior); send/prepare/deliver
+   * errors are consumed after the `await` — one microtask later than the
+   * pre-neverthrow code, an already-accepted contract (see `_send`).
    */
   private async _tick(): Promise<void> {
     if (this._disposed || this._inFlight) return;
 
-    let frame: SharedTextureFrame | null;
-    try {
-      frame = this.receiver.receiveSharedTexture();
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      this._recordTickError(error);
-      return;
-    }
+    const frame = this._receiveFrame().match(
+      (value) => value,
+      (error) => {
+        this._recordTickError(error);
+        return null;
+      },
+    );
     if (!frame) return;
 
-    this._inFlight = true;
-    let result: SendResult;
-    try {
-      result = await this._send(frame);
-    } finally {
-      this._inFlight = false;
-    }
+    const sent = await this._sendTracked(frame);
 
     if (this._disposed) return;
 
-    if (result === "failed") {
-      // The error itself was already emitted inside `_send()`. Still count it
-      // toward the circuit breaker so a stuck pipeline eventually stops.
-      this._countTickError();
-      return;
-    }
-
-    if (result === "skipped") {
-      // Not a failure (e.g. destroyed target during teardown). Don't touch the
-      // error counter and don't tick FPS.
-      return;
-    }
-
-    // Successful frame delivery — reset the consecutive-error counter.
-    this._consecutiveErrors = 0;
-
-    const fps = this.fpsCounter.tick();
-    if (fps !== null) this.emit("fps", fps);
+    sent.match(
+      (result) => {
+        switch (result) {
+          case "skipped":
+            // Not a failure (e.g. destroyed target during teardown). Don't touch
+            // the error counter and don't tick FPS.
+            return;
+          case "delivered": {
+            // Successful frame delivery — reset the consecutive-error counter.
+            this._consecutiveErrors = 0;
+            const fps = this.fpsCounter.tick();
+            if (fps !== null) this.emit("fps", fps);
+            return;
+          }
+          default: {
+            const _exhaustive: never = result;
+            throw new Error(`unhandled send result: ${JSON.stringify(_exhaustive)}`);
+          }
+        }
+      },
+      (error) => {
+        this._recordTickError(error);
+      },
+    );
   }
 
-  private async _send(frame: SharedTextureFrame): Promise<SendResult> {
+  /**
+   * Poll the native receiver once. Returns `Ok(frame | null)` on the success
+   * channel — `null` means no new frame, not a failure — or the typed
+   * `FrameReceiveError` on the `Err` side. A pure producer: consumption
+   * (recording against the circuit breaker, emitting) happens once, in
+   * `_tick`, the single usage site.
+   */
+  private _receiveFrame(): Result<SharedTextureFrame | null, FrameReceiveError> {
+    return safeReceiveSharedTexture(this.receiver);
+  }
+
+  /**
+   * Run `_send()` with the `_inFlight` drop-latest flag held for its
+   * duration. Awaiting a `ResultAsync` yields a `Result` — that's not
+   * consumption, just unwrapping the promise; the `Result` still flows
+   * through to `_tick`'s `.match()`.
+   */
+  private async _sendTracked(
+    frame: SharedTextureFrame,
+  ): Promise<
+    Result<SendResult, UnsupportedPixelFormatError | TextureImportError | TextureDeliveryError>
+  > {
+    this._inFlight = true;
+    try {
+      return await this._send(frame);
+    } finally {
+      this._inFlight = false;
+    }
+  }
+
+  private _send(
+    frame: SharedTextureFrame,
+  ): ResultAsync<
+    SendResult,
+    UnsupportedPixelFormatError | TextureImportError | TextureDeliveryError
+  > {
     if (this.target.isDestroyed()) {
       // Target is gone — handle was minted but Electron will never consume it.
-      // Release it directly via the native helper so we don't leak
-      // NT HANDLE / IOSurface per frame during window teardown.
       releaseUnconsumedHandle(frame.handle);
-      return "skipped";
+      return okAsync("skipped");
     }
 
+    // Single pipeline: prepare (sync) chains into delivery (async). No
+    // consumption here — the combined Result/ResultAsync propagates to
+    // `_tick`'s single `.match()`.
+    return this._prepare(frame).asyncAndThen((imported) => this._deliver(imported));
+  }
+
+  /**
+   * Validate the frame's pixel format and import it into Electron. On any
+   * failure the unconsumed native handle is released here (importSharedTexture
+   * never took ownership — without this we leak a per-frame NT HANDLE /
+   * IOSurface) via `orTee`, which taps the `Err` side and passes it through
+   * unchanged; the typed error still propagates to `_tick`'s single `.match`.
+   */
+  private _prepare(
+    frame: SharedTextureFrame,
+  ): Result<Electron.SharedTextureImported, UnsupportedPixelFormatError | TextureImportError> {
+    return this._validate(frame)
+      .andThen((textureInfo) => safeImportSharedTexture(textureInfo))
+      .orTee(() => releaseUnconsumedHandle(frame.handle));
+  }
+
+  /** Reject unknown pixel formats; wrap the raw handle for Electron. */
+  private _validate(
+    frame: SharedTextureFrame,
+  ): Result<Electron.SharedTextureImportTextureInfo, UnsupportedPixelFormatError> {
     if (!isValidPixelFormat(frame.pixelFormat)) {
-      const error = new Error(
-        `shared texture frame has unsupported pixelFormat "${frame.pixelFormat}" (expected one of ${VALID_PIXEL_FORMATS.join(", ")})`,
-      );
-      this.emit("error", error);
-      // Handle was minted but will never reach importSharedTexture — release it
-      // here to avoid leaking an NT HANDLE / IOSurface on unknown pixelFormat.
-      releaseUnconsumedHandle(frame.handle);
-      return "failed";
+      return err(new UnsupportedPixelFormatError(frame.pixelFormat, VALID_PIXEL_FORMATS));
     }
-
-    // Wrap the raw handle under the platform-specific key that Electron's
-    // SharedTextureHandle expects.
     const handle =
       process.platform === "win32" ? { ntHandle: frame.handle } : { ioSurface: frame.handle };
-
-    const textureInfo: Electron.SharedTextureImportTextureInfo = {
+    return ok({
       codedSize: { width: frame.width, height: frame.height },
       handle,
       pixelFormat: frame.pixelFormat,
-    };
+    });
+  }
 
-    let imported: Electron.SharedTextureImported;
-    try {
-      imported = sharedTexture.importSharedTexture({ textureInfo });
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err));
-      this.emit("error", error);
-      // importSharedTexture threw before taking ownership — release the handle
-      // ourselves so we don't leak a per-frame NT HANDLE / IOSurface.
-      releaseUnconsumedHandle(frame.handle);
-      return "failed";
-    }
-
+  /**
+   * Deliver one imported texture to the target renderer. `sendImportedTexture`
+   * releases `imported` on every path. Disposal mid-send maps the rejection
+   * to `"skipped"` instead of an error, as before.
+   */
+  private _deliver(
+    imported: Electron.SharedTextureImported,
+  ): ResultAsync<SendResult, TextureDeliveryError> {
     const targetFrame = this.target.mainFrame;
     if (!targetFrame) {
       imported.release();
-      return "skipped";
+      return okAsync("skipped");
     }
-
-    try {
-      await sharedTexture.sendSharedTexture(
-        { frame: targetFrame, importedSharedTexture: imported },
-        ...this.extraArgs,
+    return ResultAsync.fromPromise(
+      sendImportedTexture(targetFrame, imported, this.extraArgs),
+      (cause) => new TextureDeliveryError(toError(cause).message, { cause }),
+    )
+      .map((): SendResult => "delivered")
+      .orElse((error) =>
+        this._disposed
+          ? okAsync<SendResult, TextureDeliveryError>("skipped")
+          : errAsync<SendResult, TextureDeliveryError>(error),
       );
-      return "delivered";
-    } catch (err) {
-      if (this._disposed) return "skipped";
-      const error = err instanceof Error ? err : new Error(String(err));
-      this.emit("error", error);
-      return "failed";
-    } finally {
-      imported.release();
-    }
   }
 }
 
 /**
- * Outcome of a single `_send()` call.
+ * `Ok` outcome of a single `_send()` call — pipeline failures (invalid pixel
+ * format, `importSharedTexture` throw, `sendSharedTexture` rejection) ride
+ * the `Err` channel instead (see `_prepare` / `_deliver`) and are consumed by
+ * `_tick`.
  *
  * - `"delivered"`: frame reached `sendSharedTexture` and resolved. Resets the
  *   circuit-breaker counter and ticks FPS.
- * - `"failed"`: a user-visible pipeline error fired (invalid pixel format,
- *   `importSharedTexture` threw, `sendSharedTexture` rejected). Counts toward
- *   the circuit breaker.
  * - `"skipped"`: an expected non-error path (target webContents destroyed, no
  *   mainFrame, disposed mid-send). Neither counts nor resets.
  */
-type SendResult = "delivered" | "failed" | "skipped";
+type SendResult = "delivered" | "skipped";
 
 /**
  * Create a shared-texture receiver bridge.
@@ -350,9 +422,9 @@ type SendResult = "delivered" | "failed" | "skipped";
  *
  * @experimental Requires Electron 40+ `sharedTexture` module.
  */
-export function createSharedTextureReceiver(
+export const createSharedTextureReceiver = (
   options: SharedTextureReceiverOptions,
-): SharedTextureReceiverBridge {
+): SharedTextureReceiverBridge => {
   const {
     senderName,
     appName,
@@ -374,4 +446,4 @@ export function createSharedTextureReceiver(
     receiver.setFlipY(flipY);
   }
   return new SharedTextureReceiverBridgeImpl(receiver, target, extraArgs, pollIntervalMs);
-}
+};
