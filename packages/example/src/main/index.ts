@@ -251,7 +251,14 @@ const bootstrap = async (): Promise<void> => {
   // acceptable for an in-repo demo; production apps should keep isolation on
   // and forward frames via a preload bridge.
   const multiviewerWindow = new BrowserWindow({
-    width: 960,
+    // Measured content width: the decks grid is 968px (2 × 480px + 8px gap)
+    // and the composite section is 962px (960px canvas + 2px border) — the
+    // wider of the two, plus the body's 12px horizontal padding on each
+    // side (see multiviewer.html), is 992px. useContentSize: true sizes the
+    // window by content area (excluding chrome), so 1000 leaves headroom
+    // without clipping either section.
+    useContentSize: true,
+    width: 1000,
     height: 1200,
     title: "Multiviewer",
     webPreferences: {

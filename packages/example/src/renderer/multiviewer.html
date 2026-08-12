@@ -16,7 +16,11 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        padding: 16px;
+        /* Horizontal padding trimmed to 12px so content (968px decks grid /
+           962px composite, whichever is wider) plus padding fits inside the
+           BrowserWindow's 1000px content width (useContentSize: true) —
+           968 + 24 = 992 <= 1000. Vertical padding unchanged. */
+        padding: 16px 12px;
         gap: 12px;
       }
       h1 {
@@ -105,7 +109,7 @@
           <canvas id="deck-0" width="480" height="270"></canvas>
           <div class="deck-controls">
             <select id="source-0"></select>
-            <button id="connect-0">Connect</button>
+            <button id="connect-0" disabled>Connect</button>
             <button id="disconnect-0" disabled>Disconnect</button>
           </div>
           <span id="status-0" class="deck-status">P0 | idle</span>
@@ -115,7 +119,7 @@
           <canvas id="deck-1" width="480" height="270"></canvas>
           <div class="deck-controls">
             <select id="source-1"></select>
-            <button id="connect-1">Connect</button>
+            <button id="connect-1" disabled>Connect</button>
             <button id="disconnect-1" disabled>Disconnect</button>
           </div>
           <span id="status-1" class="deck-status">P1 | idle</span>
@@ -125,7 +129,7 @@
           <canvas id="deck-2" width="480" height="270"></canvas>
           <div class="deck-controls">
             <select id="source-2"></select>
-            <button id="connect-2">Connect</button>
+            <button id="connect-2" disabled>Connect</button>
             <button id="disconnect-2" disabled>Disconnect</button>
           </div>
           <span id="status-2" class="deck-status">P2 | idle</span>
@@ -135,7 +139,7 @@
           <canvas id="deck-3" width="480" height="270"></canvas>
           <div class="deck-controls">
             <select id="source-3"></select>
-            <button id="connect-3">Connect</button>
+            <button id="connect-3" disabled>Connect</button>
             <button id="disconnect-3" disabled>Disconnect</button>
           </div>
           <span id="status-3" class="deck-status">P3 | idle</span>
