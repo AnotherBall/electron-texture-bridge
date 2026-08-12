@@ -7,9 +7,13 @@
 
 import { app, BrowserWindow, globalShortcut, ipcMain } from "electron";
 import path from "path";
+import { pathToFileURL } from "node:url";
 import { createTextureBridge, createSharedTextureReceiver } from "@napolab/texture-bridge-renderer";
 import { listSenders } from "@napolab/texture-bridge";
 import type { TextureBridge } from "@napolab/texture-bridge-renderer";
+
+/** Source descriptor for a multiviewer slot — mirrored structurally over IPC (no shared type import). */
+type SlotSourceDescriptor = { kind: "local"; id: string } | { kind: "syphon"; senderName: string };
 
 // GPU acceleration flags
 app.commandLine.appendSwitch("enable-features", "SharedArrayBuffer");
@@ -19,12 +23,27 @@ app.commandLine.appendSwitch("force-device-scale-factor", "1");
 // `app.whenReady()` closure) can tear the bridge down deterministically —
 // mirrors the `activeReceiver` null-guard pattern used for the receiver.
 let activeBridge: TextureBridge | null = null;
+// Same rationale as `activeBridge` — the three `Grid-Demo-*` multiviewer
+// demo sources must be disposed on `before-quit` too.
+let activeDemoBridges: TextureBridge[] = [];
 
 const getRendererUrl = (): string => {
   if (process.env.ELECTRON_RENDERER_URL) {
     return `${process.env.ELECTRON_RENDERER_URL}/index.html`;
   }
   return path.join(__dirname, "../renderer/index.html");
+};
+
+// `createTextureBridge` loads `rendererUrl` via `loadURL` only when it starts
+// with http(s):// or file:// — anything else goes through `loadFile`, which
+// treats the whole string as an OS path and cannot carry a `?hue=` query.
+// So unlike `getRendererUrl` (used with an external loadURL/loadFile branch),
+// this base is always URL-scheme-prefixed so bridges can append `?hue=<n>`.
+const getGridDemoBase = (): string => {
+  if (process.env.ELECTRON_RENDERER_URL) {
+    return process.env.ELECTRON_RENDERER_URL;
+  }
+  return pathToFileURL(path.join(__dirname, "../renderer")).href;
 };
 
 const bootstrap = async (): Promise<void> => {
@@ -66,6 +85,38 @@ const bootstrap = async (): Promise<void> => {
   bridge.renderWindow.webContents.on("did-fail-load", (_event, errorCode, errorDesc) => {
     console.error("[example] did-fail-load:", errorCode, errorDesc);
   });
+
+  // ---- Multiviewer Demo Sources ----
+  //
+  // Three lightweight, distinct-per-hue bridges that exist purely to give
+  // the multiviewer window local sources to forward via `forwardFrames`
+  // (the zero-copy renderer→renderer path this feature adds), without
+  // depending on an external Syphon/Spout sender being available. No preview
+  // window — these are only ever consumed by the multiviewer.
+  const gridDemoBase = getGridDemoBase();
+  const localBridges = new Map<string, { label: string; bridge: TextureBridge }>();
+  localBridges.set("ElectronVJ-ThreeJS", { label: "ElectronVJ-ThreeJS", bridge });
+
+  const gridDemoDefs = [
+    { name: "Grid-Demo-A", hue: 0 },
+    { name: "Grid-Demo-B", hue: 120 },
+    { name: "Grid-Demo-C", hue: 240 },
+  ];
+
+  for (const demoDef of gridDemoDefs) {
+    const demoBridge = await createTextureBridge({
+      name: demoDef.name,
+      width: 960,
+      height: 540,
+      frameRate: 30,
+      rendererUrl: `${gridDemoBase}/grid-demo.html?hue=${demoDef.hue}`,
+    });
+    demoBridge.on("error", (err) => {
+      console.error(`[example] ${demoDef.name} bridge error:`, err.message);
+    });
+    activeDemoBridges = [...activeDemoBridges, demoBridge];
+    localBridges.set(demoDef.name, { label: demoDef.name, bridge: demoBridge });
+  }
 
   // ---- Receiver Test Window (zero-copy GPU path) ----
   //
@@ -162,6 +213,119 @@ const bootstrap = async (): Promise<void> => {
     ipcMain.removeHandler("set-flip-y");
     ipcMain.removeHandler("disconnect-receiver");
   });
+
+  // ---- Multiviewer Window (multi-source shared-texture forwarding) ----
+  //
+  // Same rationale as the receiver window: `nodeIntegration: true` +
+  // `contextIsolation: false` lets the bundled renderer module import
+  // `@napolab/texture-bridge-renderer/client` and call
+  // `installSharedTextureReceiver` / `consumeSharedTexture` directly. This is
+  // acceptable for an in-repo demo; production apps should keep isolation on
+  // and forward frames via a preload bridge.
+  const multiviewerWindow = new BrowserWindow({
+    width: 960,
+    height: 1200,
+    title: "Multiviewer",
+    webPreferences: {
+      preload: path.join(__dirname, "../preload/multiviewer.js"),
+      sandbox: false,
+      nodeIntegration: true,
+      contextIsolation: false,
+    },
+  });
+
+  const multiviewerUrl = process.env.ELECTRON_RENDERER_URL
+    ? `${process.env.ELECTRON_RENDERER_URL}/multiviewer.html`
+    : path.join(__dirname, "../renderer/multiviewer.html");
+  if (multiviewerUrl.startsWith("http")) {
+    multiviewerWindow.loadURL(multiviewerUrl);
+  } else {
+    multiviewerWindow.loadFile(multiviewerUrl);
+  }
+
+  const sendSlotStatus = (slot: number, text: string): void => {
+    if (multiviewerWindow.isDestroyed()) return;
+    multiviewerWindow.webContents.send("multi-slot-status", slot, text);
+  };
+
+  // Each slot holds whichever `dispose()`-able handle is currently feeding
+  // it — a `FrameForward` (local route) or a `SharedTextureReceiverBridge`
+  // (Syphon route) — wrapped behind a common shape so `multi-connect` /
+  // `multi-disconnect` don't need to know which route is active.
+  const slots = new Map<number, { dispose(): void }>();
+
+  const disposeSlot = (slot: number): void => {
+    const existing = slots.get(slot);
+    if (!existing) return;
+    existing.dispose();
+    slots.delete(slot);
+  };
+
+  ipcMain.handle("multi-list-sources", () => {
+    const local = Array.from(localBridges, ([id, entry]) => ({ id, label: entry.label }));
+    try {
+      return { local, syphon: listSenders() };
+    } catch (err) {
+      console.error("[multiviewer] listSenders error:", err);
+      return { local, syphon: [] };
+    }
+  });
+
+  ipcMain.handle(
+    "multi-connect",
+    (_event, slot: number, source: SlotSourceDescriptor, flipY: boolean) => {
+      disposeSlot(slot);
+
+      switch (source.kind) {
+        case "local": {
+          const entry = localBridges.get(source.id);
+          if (!entry) {
+            console.error(`[multiviewer] unknown local bridge id: ${source.id}`);
+            return;
+          }
+          const forward = entry.bridge.forwardFrames(multiviewerWindow.webContents, {
+            extraArgs: [slot],
+          });
+          slots.set(slot, { dispose: () => forward.dispose() });
+          sendSlotStatus(slot, `connected: local (${source.id})`);
+          return;
+        }
+        case "syphon": {
+          const receiver = createSharedTextureReceiver({
+            senderName: source.senderName,
+            target: multiviewerWindow.webContents,
+            extraArgs: [slot],
+            pollIntervalMs: 8,
+            flipY,
+          });
+          receiver.on("fps", (fps) => {
+            sendSlotStatus(slot, `fps: ${fps.toFixed(1)}`);
+          });
+          receiver.on("error", (err) => {
+            sendSlotStatus(slot, `error: ${err.message}`);
+          });
+          receiver.start();
+          slots.set(slot, { dispose: () => receiver.dispose() });
+          sendSlotStatus(slot, `connected: syphon (${source.senderName})`);
+          return;
+        }
+      }
+    },
+  );
+
+  ipcMain.handle("multi-disconnect", (_event, slot: number) => {
+    disposeSlot(slot);
+    sendSlotStatus(slot, "disconnected");
+  });
+
+  multiviewerWindow.on("closed", () => {
+    for (const slot of slots.keys()) {
+      disposeSlot(slot);
+    }
+    ipcMain.removeHandler("multi-list-sources");
+    ipcMain.removeHandler("multi-connect");
+    ipcMain.removeHandler("multi-disconnect");
+  });
 };
 
 void app.whenReady().then(bootstrap);
@@ -176,4 +340,8 @@ app.on("before-quit", () => {
     activeBridge.dispose();
     activeBridge = null;
   }
+  for (const demoBridge of activeDemoBridges) {
+    demoBridge.dispose();
+  }
+  activeDemoBridges = [];
 });
