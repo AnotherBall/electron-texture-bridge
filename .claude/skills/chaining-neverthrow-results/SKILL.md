@@ -109,6 +109,7 @@ A sync `Result` matched in the driver keeps same-tick timing (e.g. a circuit bre
 | `.match` mid-pipeline to branch then re-wrap in `ok`/`err` | `.andThen` (success path) / `.orElse` (recovery) |
 | `.match` inside a value-producing private method | Return the `Result`; the driver (tick loop / public void method / event boundary) holds the only `.match` |
 | `.orElse((e) => { sideEffect(); return err(e); })` — tap then re-wrap | `.orTee(sideEffect)` — `Err` passthrough is implicit; keep `.orElse` for conditional recovery only |
+| A side-effect (release, log) smuggled into the `fromPromise` / `fromThrowable` error mapper | Keep mappers pure — they only build the error. Put the effect in `.orTee(...)` on the chain |
 | A `"failed"`-style variant in the ok channel mirroring the error channel | Narrow the ok union; failures ride the `Err` side to the driver's `.match` |
 | Recovering via `match(ok, err => …)` then `okAsync(...)` | `.orElse((e) => handled ? okAsync(x) : errAsync(e))` |
 | `_unsafeUnwrap()` / `_unsafeUnwrapErr()` in production code | Carry the `Result`; collapse only at the edge with `.match` |
@@ -128,3 +129,4 @@ A sync `Result` matched in the driver keeps same-tick timing (e.g. a circuit bre
 - About to `.match` inside a private method that returns a value → return the `Result`/`ResultAsync`; consume in the driver.
 - About to write an ok variant named like a failure (`"failed"`, `"errored"`) → the error channel already carries it; narrow the ok union.
 - About to `.orElse` only to run a side-effect and `return err(e)` → `.orTee`.
+- About to do anything but construct an error inside a `fromPromise` / `fromThrowable` error mapper → move the effect to `.orTee`.
