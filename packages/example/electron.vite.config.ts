@@ -12,8 +12,7 @@ export default defineConfig({
         input: {
           index: resolve("src/preload/index.ts"),
           receiver: resolve("src/preload/receiver.ts"),
-          // "multiviewer" input deferred to Task 4 — src/preload/multiviewer.ts
-          // doesn't exist yet on this branch.
+          multiviewer: resolve("src/preload/multiviewer.ts"),
         },
       },
     },
@@ -25,8 +24,7 @@ export default defineConfig({
           index: resolve("src/renderer/index.html"),
           "receiver-test": resolve("src/renderer/receiver-test.html"),
           "grid-demo": resolve("src/renderer/grid-demo.html"),
-          // "multiviewer" input deferred to Task 4 — src/renderer/multiviewer.html
-          // doesn't exist yet on this branch.
+          multiviewer: resolve("src/renderer/multiviewer.html"),
         },
       },
     },

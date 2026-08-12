@@ -281,6 +281,7 @@ const bootstrap = async (): Promise<void> => {
           const entry = localBridges.get(source.id);
           if (!entry) {
             console.error(`[multiviewer] unknown local bridge id: ${source.id}`);
+            sendSlotStatus(slot, "error: unknown local source");
             return;
           }
           const forward = entry.bridge.forwardFrames(multiviewerWindow.webContents, {
