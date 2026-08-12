@@ -16,3 +16,4 @@ export type {
 } from "./shared-texture-receiver";
 export type { SenderDiscoveryEvents } from "./discovery";
 export type { PaintDefect } from "@napolab/texture-bridge-core";
+export { TextureSendError } from "@napolab/texture-bridge-core";

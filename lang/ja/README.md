@@ -490,7 +490,10 @@ self.onmessage = (e: MessageEvent<WorkerMessage>) => {
 `unsupported-platform` バリアントには該当する `platform` も含まれます）を返します。
 ドロップは通常のノーオペレーションであり、エラーではありません — `createTextureBridge` が
 `frameDropped` イベントで行っているのと同様に、自前の paint ループでも表面化させてください。
-ネイティブの送信失敗は引き続き throw されます。
+ネイティブの送信失敗は `TextureSendError`（両パッケージからエクスポートされます）として
+throw されます — メッセージはそのまま保持され、元の throw 値は `error.cause` から参照できます。
+`createTextureBridge` を使っている場合、これらはブリッジの `error` イベントとして表面化するため、
+`instanceof TextureSendError` で判別できます。
 
 #### `TextureSender`
 

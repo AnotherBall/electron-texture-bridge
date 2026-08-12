@@ -841,7 +841,11 @@ Returns `undefined` when the frame was handed to the sender, or a `PaintDefect`
 the `unsupported-platform` variant also carries the offending `platform`)
 when the frame was dropped. Drops are normal no-ops, not errors — surface them
 in your own paint loop the same way `createTextureBridge` does with its
-`frameDropped` event. Native send failures still throw.
+`frameDropped` event. Native send failures throw a `TextureSendError`
+(exported from both packages) — the message is preserved and the original
+thrown value is available on `error.cause`. With `createTextureBridge`,
+these surface on the bridge's `error` event, so you can discriminate with
+`instanceof TextureSendError`.
 
 #### `TextureSender`
 
