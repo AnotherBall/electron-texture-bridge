@@ -904,6 +904,27 @@ win.webContents.on("paint", (e) => {
 });
 ```
 
+#### `sendImportedTexture(frame, imported, extraArgs?)` (from `core/electron`)
+
+```typescript
+import { sendImportedTexture } from "@napolab/texture-bridge-core/electron";
+
+await sendImportedTexture(targetFrame, importedSharedTexture, extraArgs);
+```
+
+Delivers an **already-imported** shared texture (the result of
+`sharedTexture.importSharedTexture(...)`) to a target `WebFrameMain`,
+releasing it in a `finally` regardless of whether the send succeeds or
+fails — release-in-finally, same contract as `forwardSharedTexture`'s
+internal delivery step. This is the shared helper both `forwardSharedTexture`
+(above) and the renderer package's shared-texture receiver path
+(`shared-texture-receiver.ts`, `preview-manager.ts`) call into, so there is
+one implementation of "deliver + always release" instead of duplicated
+copies. Most callers want `forwardSharedTexture`, which also does the
+`importSharedTexture` step; reach for `sendImportedTexture` directly only
+when you already hold an imported texture from elsewhere (e.g. a receiver
+polling loop) and just need the send-and-release half.
+
 #### `TextureSender`
 
 Native class for sending textures to Syphon/Spout receivers.

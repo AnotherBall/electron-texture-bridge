@@ -552,6 +552,16 @@ win.webContents.on("paint", (e) => {
 });
 ```
 
+#### `sendImportedTexture(frame, imported, extraArgs?)`（`core/electron` から）
+
+```typescript
+import { sendImportedTexture } from "@napolab/texture-bridge-core/electron";
+
+await sendImportedTexture(targetFrame, importedSharedTexture, extraArgs);
+```
+
+**すでに import 済みの** shared texture（`sharedTexture.importSharedTexture(...)` の戻り値）を対象の `WebFrameMain` に配送し、send の成否に関わらず `finally` で必ず release します — release-in-finally は `forwardSharedTexture` 内部の配送ステップと同じ契約です。これは `forwardSharedTexture`（前述）とレンダラーパッケージの shared-texture receiver 経路（`shared-texture-receiver.ts`、`preview-manager.ts`）の両方が内部で呼び出している共有ヘルパーで、「配送して必ず release する」処理の実装が重複せず一本化されています。ほとんどの利用者は `importSharedTexture` のステップも行う `forwardSharedTexture` を使うべきです — `sendImportedTexture` を直接使うのは、すでに他所（例: receiver のポーリングループ）で import 済みのテクスチャを持っていて、send-and-release の半分だけが必要な場合に限ります。
+
 #### `TextureSender`
 
 Syphon/Spout レシーバーにテクスチャを送信するネイティブクラスです。

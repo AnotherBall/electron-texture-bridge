@@ -23,6 +23,28 @@ import { TextureSendError } from "./errors.mjs";
 export const sendRgbaBuffer = () => {};
 `;
 
+// N6: negative cases pinning that package names merely PREFIXED or SCOPED
+// with "electron" — not the bare specifier itself — don't false-positive.
+const UNRELATED_PACKAGE_ELECTRON_STORE = `
+import Store from "electron-store";
+export const store = new Store();
+`;
+
+const UNRELATED_PACKAGE_ELECTRON_LOG = `
+import log from "electron-log";
+export const logInfo = (msg) => log.info(msg);
+`;
+
+const UNRELATED_SCOPED_PACKAGE = `
+import { thing } from "@scope/electron";
+export const useThing = () => thing;
+`;
+
+const RELATIVE_ELECTRON_DOT_MJS = `
+import { helper } from "./electron.mjs";
+export const useHelper = () => helper();
+`;
+
 const MINIFIED_FROM_IMPORT = `import{sharedTexture as s}from"electron";export const f=async()=>s;`;
 
 const BARE_SIDE_EFFECT_IMPORT = `
@@ -67,6 +89,30 @@ describe("findElectronImports", () => {
 
   it("passes a file with only relative imports", () => {
     const result = findElectronImports([{ path: "index.mjs", content: RELATIVE_ONLY }]);
+    expect(result).toEqual([]);
+  });
+
+  it('does not flag an unrelated package prefixed with "electron" (electron-store)', () => {
+    const result = findElectronImports([
+      { path: "index.mjs", content: UNRELATED_PACKAGE_ELECTRON_STORE },
+    ]);
+    expect(result).toEqual([]);
+  });
+
+  it('does not flag an unrelated package prefixed with "electron" (electron-log)', () => {
+    const result = findElectronImports([
+      { path: "index.mjs", content: UNRELATED_PACKAGE_ELECTRON_LOG },
+    ]);
+    expect(result).toEqual([]);
+  });
+
+  it('does not flag an unrelated scoped package ("@scope/electron")', () => {
+    const result = findElectronImports([{ path: "index.mjs", content: UNRELATED_SCOPED_PACKAGE }]);
+    expect(result).toEqual([]);
+  });
+
+  it('does not flag a relative import of "./electron.mjs"', () => {
+    const result = findElectronImports([{ path: "index.mjs", content: RELATIVE_ELECTRON_DOT_MJS }]);
     expect(result).toEqual([]);
   });
 

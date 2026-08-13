@@ -47,10 +47,20 @@ if (invokedAsScript) {
       .then(() => true)
       .catch(() => false),
   ]);
-  if (!electronMjsExists && !electronCjsExists) {
+  // `exports["./electron"]` in package.json declares BOTH `import` and
+  // `require` conditions, and the renderer package's CJS build really does
+  // `require(".../electron")` — so both artifacts must exist, not just
+  // either one. A missing .cjs would dangle for every CJS consumer even
+  // though the guard's own .mjs check passed.
+  const missing = [
+    !electronMjsExists ? "dist/electron.mjs" : null,
+    !electronCjsExists ? "dist/electron.cjs" : null,
+  ].filter((path) => path !== null);
+  if (missing.length > 0) {
     console.error(
-      `[electron-free-guard] neither dist/electron.mjs nor dist/electron.cjs exists — the ` +
-        `./electron export in package.json would dangle. Did the electron.ts build entry fail or get dropped?`,
+      `[electron-free-guard] ${missing.join(" and ")} missing — the ./electron export in ` +
+        `package.json declares both import and require conditions, so both artifacts must exist. ` +
+        `Did the electron.ts build entry fail or get dropped?`,
     );
     process.exit(1);
   }
