@@ -26,6 +26,13 @@
 ここに書かれているリポジトリには gh コマンドで参照し、既存実装を参照する前に ref repository の内容を先に探すこと
 issue, .claude/rules, skills やコードが参考になる。
 
+<--- ここから --->
+electron としてはこちらが参考になる
+https://github.com/swanpute/request-invite-system/tree/main/packages/electron
+https://github.com/naporin0624/Cannelloni
+VJ システムとしてはこちらが参考になる
+https://github.com/naporin0624/Genovese
+<--- ここまで --->
 ## comment rules
 - `<--- ここから --->` `<--- ここまで --->` と書かれている場合はその範囲は commit しないこと
 
