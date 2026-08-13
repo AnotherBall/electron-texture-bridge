@@ -106,7 +106,7 @@ On this path YOU own DPR correctness: Electron ≥ 41 pass `offscreen: { useShar
 `sendRgbaBuffer` needs no Electron — fastest way to split "Electron problem vs bridge problem":
 
 ```typescript
-// npx tsx sanity.ts — look for sender "CHECK" in your VJ app
+// pnpm dlx tsx sanity.ts — look for sender "CHECK" in your VJ app
 import { TextureSender } from "@napolab/texture-bridge-core";
 const s = new TextureSender("CHECK", 512, 512);
 setInterval(() => s.sendRgbaBuffer(Buffer.alloc(512 * 512 * 4, 0x80), 512, 512), 33);
