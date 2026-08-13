@@ -114,6 +114,19 @@ class TextureReceiverBridgeImpl extends EventEmitter implements TextureReceiverB
   }
 }
 
+/**
+ * Create an RGBA-readback receiver bridge for an external Syphon/Spout
+ * sender. Use this only when the pixels must reach JS; display-only paths
+ * belong on `createSharedTextureReceiver`.
+ *
+ * @throws when the native `TextureReceiver` cannot be constructed — most
+ * commonly no sender is publishing under `senderName` yet. Construction is
+ * the only throwing step: once the bridge exists, `start()` / `stop()` /
+ * `dispose()` never throw, and every per-frame failure arrives on `"error"`.
+ *
+ * Note `pollIntervalMs` is passed to `setInterval` unvalidated here, unlike
+ * `createSharedTextureReceiver`, which rejects non-positive values.
+ */
 export const createTextureReceiver = (
   options: TextureReceiverBridgeOptions,
 ): TextureReceiverBridge => {

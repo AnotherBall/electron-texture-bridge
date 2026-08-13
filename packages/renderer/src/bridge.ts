@@ -429,6 +429,17 @@ export const buildBrowserWindowOptions = (
  * optional preview, and FPS tracking.
  *
  * Must be called after `app.whenReady()`.
+ *
+ * Async, so it never throws synchronously — every failure below is a
+ * rejection of the returned promise:
+ * - called before `app.whenReady()`
+ * - the native `TextureSender` cannot be constructed (name collision, device
+ *   failure)
+ * - `rendererUrl` fails to load
+ *
+ * Once the bridge exists, per-frame failures no longer reject or throw: they
+ * arrive on `"error"` (`TextureSendError`) and `"frameDropped"`
+ * (`PaintDefect`).
  */
 export const createTextureBridgeWith =
   (deps: TextureBridgeDeps) =>

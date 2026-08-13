@@ -19,6 +19,9 @@ Skills activate automatically from conversation context — no commands to learn
 | `choosing-texture-bridge-api` | Which API tier to use — simple vs core, `forwardSharedTexture` vs `forwardFrames`, send vs receive paths — and integration-plan review |
 | `migrating-to-forward-frames` | Replacing `capturePage` polling / bitmap-IPC previews / Syphon loopbacks with zero-copy forwarding |
 | `receiving-shared-textures` | The receiving side: consuming forwarded frames, multiviewer grids, `VideoFrame` lifecycle, frames reappearing after disconnect |
+| `managing-frame-forward-lifecycle` | Registering and tearing down `forwardFrames` targets: monitor windows that close and reopen, repeated connect/disconnect, `MaxListenersExceededWarning`, leaks around forwarding |
+| `delivering-imported-textures` | Delivering a texture to a renderer from main: `importSharedTexture` / `sendSharedTexture` / `release()` by hand, where `release()` belongs, `sendImportedTexture` vs `forwardSharedTexture` |
+| `handling-texture-bridge-failures` | Error handling and telemetry: which calls throw, reject, model a defect, or emit — what to wrap with `Result.fromThrowable`, silently black output, a main-process crash from a bridge call |
 
 ## Why these skills exist
 
