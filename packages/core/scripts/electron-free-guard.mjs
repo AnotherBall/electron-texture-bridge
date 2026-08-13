@@ -22,8 +22,12 @@ import { pathToFileURL } from "node:url";
 
 const ELECTRON_ENTRY_BASENAMES = new Set(["electron.mjs", "electron.cjs"]);
 
+// Matches `require("electron")`, static `from "electron"` (including the
+// zero-whitespace minified form `from"electron"`), bare side-effect
+// `import "electron"`, and dynamic `import("electron")` — plus any subpath
+// of each (`electron/main`, etc).
 const ELECTRON_IMPORT_PATTERN =
-  /require\(["']electron(\/[^"']*)?["']\)|from\s+["']electron(\/[^"']*)?["']/;
+  /(?:from\s*|import\s*\(\s*|import\s+|require\s*\(\s*)["']electron(\/[^"']*)?["']/;
 
 export const findElectronImports = (sources) =>
   sources.filter(({ content }) => ELECTRON_IMPORT_PATTERN.test(content)).map(({ path }) => path);
@@ -33,14 +37,30 @@ const invokedAsScript =
 
 if (invokedAsScript) {
   const distDir = new URL("../dist/", import.meta.url);
-  const electronEntryFile = new URL("../dist/electron.mjs", import.meta.url);
-  const electronEntryExists = await stat(electronEntryFile)
-    .then(() => true)
-    .catch(() => false);
-  if (!electronEntryExists) {
+  const electronEntryMjs = new URL("../dist/electron.mjs", import.meta.url);
+  const electronEntryCjs = new URL("../dist/electron.cjs", import.meta.url);
+  const [electronMjsExists, electronCjsExists] = await Promise.all([
+    stat(electronEntryMjs)
+      .then(() => true)
+      .catch(() => false),
+    stat(electronEntryCjs)
+      .then(() => true)
+      .catch(() => false),
+  ]);
+  // `exports["./electron"]` in package.json declares BOTH `import` and
+  // `require` conditions, and the renderer package's CJS build really does
+  // `require(".../electron")` — so both artifacts must exist, not just
+  // either one. A missing .cjs would dangle for every CJS consumer even
+  // though the guard's own .mjs check passed.
+  const missing = [
+    !electronMjsExists ? "dist/electron.mjs" : null,
+    !electronCjsExists ? "dist/electron.cjs" : null,
+  ].filter((path) => path !== null);
+  if (missing.length > 0) {
     console.error(
-      `[electron-free-guard] dist/electron.mjs is missing — the ./electron export in package.json ` +
-        `would dangle. Did the electron.ts build entry fail or get dropped?`,
+      `[electron-free-guard] ${missing.join(" and ")} missing — the ./electron export in ` +
+        `package.json declares both import and require conditions, so both artifacts must exist. ` +
+        `Did the electron.ts build entry fail or get dropped?`,
     );
     process.exit(1);
   }

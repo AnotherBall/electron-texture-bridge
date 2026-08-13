@@ -889,15 +889,41 @@ type ForwardDefect =
 
 Because it's an `async` function, it can never throw synchronously — a defect always surfaces through the returned promise, never as a thrown exception at the call site. When the import succeeds, the imported texture is released in a `finally` regardless of whether the subsequent send succeeds or fails (release-in-finally).
 
-Low-level callers driving their own paint loop can call it directly, alongside `sendTextureFromPaintEvent`:
+Low-level callers driving their own paint loop can call it directly, alongside `sendTextureFromPaintEvent`. Release the texture in a `finally` — otherwise a thrown `TextureSendError` from `sendTextureFromPaintEvent` (native send failures throw) skips `texture.release()` and leaks the frame. `forwardSharedTexture` never throws synchronously (see above), so it's safe to fire-and-forget before `sendTextureFromPaintEvent` runs — no `await` needed to guarantee the dispatch already started:
 
 ```typescript
-win.webContents.on("paint", async (e) => {
-  sendTextureFromPaintEvent(sender, e.texture?.textureInfo);          // → Syphon/Spout
-  if (e.texture) await forwardSharedTexture(e.texture.textureInfo, monitorWC, [slot]); // → renderer
-  e.texture?.release();
+win.webContents.on("paint", (e) => {
+  const texture = e.texture;
+  if (!texture) return;
+  try {
+    void forwardSharedTexture(texture.textureInfo, monitorWC, [slot]); // → renderer (dispatch is synchronous)
+    sendTextureFromPaintEvent(sender, texture.textureInfo);           // → Syphon/Spout (throws on failure)
+  } finally {
+    texture.release();
+  }
 });
 ```
+
+#### `sendImportedTexture(frame, imported, extraArgs?)` (from `core/electron`)
+
+```typescript
+import { sendImportedTexture } from "@napolab/texture-bridge-core/electron";
+
+await sendImportedTexture(targetFrame, importedSharedTexture, extraArgs);
+```
+
+Delivers an **already-imported** shared texture (the result of
+`sharedTexture.importSharedTexture(...)`) to a target `WebFrameMain`,
+releasing it in a `finally` regardless of whether the send succeeds or
+fails — release-in-finally, same contract as `forwardSharedTexture`'s
+internal delivery step. This is the shared helper both `forwardSharedTexture`
+(above) and the renderer package's shared-texture receiver path
+(`shared-texture-receiver.ts`, `preview-manager.ts`) call into, so there is
+one implementation of "deliver + always release" instead of duplicated
+copies. Most callers want `forwardSharedTexture`, which also does the
+`importSharedTexture` step; reach for `sendImportedTexture` directly only
+when you already hold an imported texture from elsewhere (e.g. a receiver
+polling loop) and just need the send-and-release half.
 
 #### `TextureSender`
 

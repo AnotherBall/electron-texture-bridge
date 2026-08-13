@@ -118,19 +118,27 @@ const bootstrap = async (): Promise<void> => {
     { name: "Grid-Demo-C", hue: 240 },
   ];
 
+  // Each demo source is independent decoration for the multiviewer — one
+  // failing to construct (e.g. a transient renderer load failure) must not
+  // abort bootstrap and take the whole app down with it. Per-bridge
+  // try/catch: log and skip the failed demo, keep creating the rest.
   for (const demoDef of gridDemoDefs) {
-    const demoBridge = await createTextureBridge({
-      name: demoDef.name,
-      width: 960,
-      height: 540,
-      frameRate: 30,
-      rendererUrl: `${gridDemoBase}/grid-demo.html?hue=${demoDef.hue}`,
-    });
-    demoBridge.on("error", (err) => {
-      console.error(`[example] ${demoDef.name} bridge error:`, err.message);
-    });
-    activeDemoBridges = [...activeDemoBridges, demoBridge];
-    localBridges.set(demoDef.name, { label: demoDef.name, bridge: demoBridge });
+    try {
+      const demoBridge = await createTextureBridge({
+        name: demoDef.name,
+        width: 960,
+        height: 540,
+        frameRate: 30,
+        rendererUrl: `${gridDemoBase}/grid-demo.html?hue=${demoDef.hue}`,
+      });
+      demoBridge.on("error", (err) => {
+        console.error(`[example] ${demoDef.name} bridge error:`, err.message);
+      });
+      activeDemoBridges = [...activeDemoBridges, demoBridge];
+      localBridges.set(demoDef.name, { label: demoDef.name, bridge: demoBridge });
+    } catch (err) {
+      console.error(`[example] ${demoDef.name} bridge failed to start:`, err);
+    }
   }
 
   // ---- Receiver Test Window (zero-copy GPU path) ----
@@ -243,8 +251,21 @@ const bootstrap = async (): Promise<void> => {
   // acceptable for an in-repo demo; production apps should keep isolation on
   // and forward frames via a preload bridge.
   const multiviewerWindow = new BrowserWindow({
-    width: 960,
-    height: 1200,
+    // Measured content width: the decks grid is 968px (2 × 480px + 8px gap)
+    // and the composite section is 962px (960px canvas + 2px border) — the
+    // wider of the two, plus the body's 12px horizontal padding on each
+    // side (see multiviewer.html), is 992px. useContentSize: true sizes the
+    // window by content area (excluding chrome), so 1000 leaves headroom
+    // without clipping either section.
+    //
+    // Full content height measures ~1348px — taller than most laptop
+    // displays, so height is intentionally NOT grown to match. 1000 fits
+    // the deck grid plus a good part of the (CSS-display-scaled, see
+    // multiviewer.html #composite) composite preview on a typical display;
+    // the remainder is reachable via the body's overflow-y: auto scroll.
+    useContentSize: true,
+    width: 1000,
+    height: 1000,
     title: "Multiviewer",
     webPreferences: {
       preload: path.join(__dirname, "../preload/multiviewer.js"),
@@ -284,6 +305,15 @@ const bootstrap = async (): Promise<void> => {
     slots.delete(slot);
   };
 
+  // Shared by the window "closed" handler and the reload/crash teardown
+  // paths below — every path that ends the multiviewer window's current
+  // session must release every slot's forward/receiver handle the same way.
+  const disposeAllSlots = (): void => {
+    for (const slot of slots.keys()) {
+      disposeSlot(slot);
+    }
+  };
+
   ipcMain.handle("multi-list-sources", () => {
     const local = Array.from(localBridges, ([id, entry]) => ({ id, label: entry.label }));
     try {
@@ -297,6 +327,13 @@ const bootstrap = async (): Promise<void> => {
   ipcMain.handle(
     "multi-connect",
     (_event, slot: number, source: SlotSourceDescriptor, flipY: boolean) => {
+      // `slot` and `source` arrive over IPC from the renderer — untyped at
+      // the wire, so a stray/forged value must fail loudly here rather than
+      // silently corrupting `slots` (e.g. a NaN/negative/out-of-range slot
+      // key that `disposeSlot`/`sendSlotStatus` would never look up again).
+      if (!Number.isInteger(slot) || slot < 0 || slot > 3) {
+        throw new Error(`invalid slot: ${slot}`);
+      }
       disposeSlot(slot);
 
       switch (source.kind) {
@@ -339,6 +376,12 @@ const bootstrap = async (): Promise<void> => {
           sendSlotStatus(slot, "state", `connected: syphon (${source.senderName})`);
           return;
         }
+        default:
+          // `source` crossed the IPC boundary as an unvalidated value — the
+          // switch is exhaustive over `SlotSourceDescriptor` so TS narrows
+          // this branch to `never` (no `.kind` to read), but a forged or
+          // future-version descriptor can still reach here at runtime.
+          throw new Error(`unknown source kind`);
       }
     },
   );
@@ -348,17 +391,38 @@ const bootstrap = async (): Promise<void> => {
     sendSlotStatus(slot, "state", "disconnected");
   });
 
+  // Cmd+R (or any in-page navigation) reloads the renderer, which resets its
+  // preload state to "disconnected" — but the main-side slots/forwards keep
+  // running against the pre-reload webContents, feeding frames the reloaded
+  // page never asked for. `render-process-gone` (renderer crash) leaves the
+  // same kind of orphaned state. Both need the same teardown as a real
+  // window close.
+  multiviewerWindow.webContents.on("did-navigate", disposeAllSlots);
+  multiviewerWindow.webContents.on("render-process-gone", disposeAllSlots);
+
   multiviewerWindow.on("closed", () => {
-    for (const slot of slots.keys()) {
-      disposeSlot(slot);
-    }
+    disposeAllSlots();
     ipcMain.removeHandler("multi-list-sources");
     ipcMain.removeHandler("multi-connect");
     ipcMain.removeHandler("multi-disconnect");
+
+    // In MULTIVIEWER_ONLY mode this is the only visible window — the three
+    // Grid-Demo bridges each own a hidden `show: false` offscreen
+    // BrowserWindow that stays alive and keeps Electron from ever seeing
+    // "all windows closed", so the app would otherwise become an invisible
+    // zombie process once this window closes.
+    if (multiviewerOnly) {
+      app.quit();
+    }
   });
 };
 
-void app.whenReady().then(bootstrap);
+void app
+  .whenReady()
+  .then(bootstrap)
+  .catch((err: unknown) => {
+    console.error("[example] bootstrap failed:", err);
+  });
 
 app.on("window-all-closed", () => {
   app.quit();

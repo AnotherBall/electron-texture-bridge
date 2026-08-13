@@ -1,8 +1,8 @@
 import { BrowserWindow, ipcMain, sharedTexture } from "electron";
 import path from "path";
 import type { TextureInfo } from "@napolab/texture-bridge-core";
+import { sendImportedTexture } from "@napolab/texture-bridge-core/electron";
 import { Result, ResultAsync, okAsync } from "neverthrow";
-import { sendImportedTexture } from "./send-imported-texture";
 import { toError } from "./to-error";
 import type { PreviewOptions } from "./types";
 

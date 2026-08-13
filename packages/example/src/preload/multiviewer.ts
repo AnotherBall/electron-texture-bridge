@@ -137,12 +137,19 @@ const drawSlot = (deck: DeckUI, compositeCtx: CanvasRenderingContext2D, slot: nu
 };
 
 const drawFrame = (): void => {
-  if (ui) {
-    for (const [slot, deck] of ui.decks.entries()) {
-      drawSlot(deck, ui.compositeCtx, slot);
+  // A throw from drawSlot (e.g. drawImage on a frame closed out from under
+  // it) must not fall out of the rAF chain silently — finally re-arms the
+  // next frame regardless, so one bad draw degrades to "this frame skipped"
+  // instead of "the entire multiviewer freezes forever".
+  try {
+    if (ui) {
+      for (const [slot, deck] of ui.decks.entries()) {
+        drawSlot(deck, ui.compositeCtx, slot);
+      }
     }
+  } finally {
+    requestAnimationFrame(drawFrame);
   }
-  requestAnimationFrame(drawFrame);
 };
 
 const parseSourceValue = (value: string): SlotSourceDescriptor | null => {
@@ -255,8 +262,17 @@ const populateSourceSelect = (select: HTMLSelectElement, listing: SourceListing)
 const refreshSources = async (): Promise<void> => {
   if (!ui) return;
   const listing: SourceListing = await ipcRenderer.invoke("multi-list-sources");
-  for (const deck of ui.decks) {
+  for (const [slot, deck] of ui.decks.entries()) {
     populateSourceSelect(deck.source, listing);
+    // populateSourceSelect can reset `select.value` to "" without firing a
+    // "change" event (e.g. the previously-selected source no longer exists
+    // in the refreshed listing) — resync here so a stale enabled Connect
+    // button can't survive a refresh. Skip while connected: the select is
+    // already `disabled` then, and connectBtn's disabled state is owned by
+    // the connect/disconnect handlers instead.
+    if (!connectedSlots[slot]) {
+      deck.connectBtn.disabled = !deck.source.value;
+    }
   }
 };
 
@@ -286,9 +302,13 @@ consumeSharedTexture({
 
     // The consumer pool closes `frame.videoFrame` itself once this handler
     // returns, so we must clone to hold the frame past that point for the
-    // rAF loop to draw later.
+    // rAF loop to draw later. Clone BEFORE closing the previously-held
+    // frame: if `.clone()` throws, the old held frame must stay open and
+    // drawable — closing it first would leave `latestFrames[slot]` pointing
+    // at a closed frame with no replacement ever assigned.
+    const cloned = frame.videoFrame.clone();
     latestFrames[slot]?.videoFrame.close();
-    latestFrames[slot] = { textureId: frame.textureId, videoFrame: frame.videoFrame.clone() };
+    latestFrames[slot] = { textureId: frame.textureId, videoFrame: cloned };
 
     const stats = slotStats[slot];
     if (stats) stats.arrivalCount += 1;

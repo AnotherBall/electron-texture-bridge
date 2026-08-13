@@ -31,11 +31,17 @@ Same zero-copy path (`sharedTexture.importSharedTexture` → `sendSharedTexture`
 - `forwardSharedTexture(textureInfo, target, extraArgs?)` — **primitive** for manual paint loops. Async, never throws synchronously; resolves `undefined` on success or a `ForwardDefect` (`target-destroyed` / `import-failed` / `send-failed`). Lives on the `/electron` subpath so the core main entry stays importable without Electron.
 
 ```typescript
-// manual paint loop: Syphon and renderer-forward are independent, per frame
-win.webContents.on("paint", async (e) => {
-  sendTextureFromPaintEvent(sender, e.texture?.textureInfo);              // → Syphon/Spout
-  if (e.texture) await forwardSharedTexture(e.texture.textureInfo, monitorWC, [slot]); // → renderer
-  e.texture?.release();
+// manual paint loop: Syphon and renderer-forward are independent, per frame.
+// Sync handler + try/finally + fire-and-forget forward — all three are load-bearing.
+win.webContents.on("paint", (e) => {
+  const texture = e.texture;
+  if (!texture) return;
+  try {
+    void forwardSharedTexture(texture.textureInfo, monitorWC, [slot]);  // → renderer
+    sendTextureFromPaintEvent(sender, texture.textureInfo);             // → Syphon/Spout (throws)
+  } finally {
+    texture.release();   // runs even when the Syphon send throws
+  }
 });
 ```
 
@@ -49,6 +55,8 @@ win.webContents.on("paint", async (e) => {
 | Mixing `createTextureBridge` with your own `paint` handler on the same window | Pick one tier. The factory already consumes paint; double handling double-releases textures |
 | Holding shared textures to build queues/backpressure buffers | Latest-frame-wins: hold at most one, release/close superseded frames immediately |
 | Skipping `texture.release()` (manual loop) or `sender.stop()` / `bridge.dispose()` / `receiver.dispose()` at teardown | Resource lifecycle is deterministic — nothing is GC-cleaned |
+| `release()` after the sends instead of in a `finally` | `sendTextureFromPaintEvent` throws on native failure — a bare sequence leaks one paint texture per frame from then on |
+| `await forwardSharedTexture(...)` before `release()` | Its import + send dispatch already ran synchronously. Awaiting only pins the paint texture for an IPC round-trip (and forces an `async` handler, turning a send throw into an unhandled rejection) |
 | Unpacking `textureInfo.handle` yourself for platform branching | `sendTextureFromPaintEvent` / `forwardSharedTexture` already handle IOSurface vs NT-handle |
 
 ## APIs That Do Not Exist

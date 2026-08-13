@@ -13,6 +13,7 @@ import { sharedTexture } from "electron";
 import type { WebContents } from "electron";
 import { TextureReceiver, closeNativeHandle } from "@napolab/texture-bridge-core";
 import type { SharedTextureFrame } from "@napolab/texture-bridge-core";
+import { sendImportedTexture } from "@napolab/texture-bridge-core/electron";
 import { Result, ResultAsync, ok, err, okAsync, errAsync } from "neverthrow";
 import {
   FrameReceiveError,
@@ -22,7 +23,6 @@ import {
   UnsupportedPixelFormatError,
 } from "./errors";
 import { FpsCounter } from "./fps-counter";
-import { sendImportedTexture } from "./send-imported-texture";
 import { toError } from "./to-error";
 
 /**

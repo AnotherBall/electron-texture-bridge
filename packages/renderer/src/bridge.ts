@@ -91,6 +91,23 @@ interface PaintEvent extends Event {
 }
 
 /**
+ * Remove a `forwardFrames` entry's "destroyed" listener from its target.
+ * Module scope so the dependency (the entry) is an explicit argument — no
+ * inner function declarations. Guarded with `isDestroyed()` because
+ * `removeListener` can throw once the underlying WebContents itself has
+ * been destroyed; on a dead target the listener has either already fired
+ * and self-removed via `once`, or removing it is moot either way, so
+ * skipping is safe in both cases.
+ */
+const unhookDestroyedListener = (entry: {
+  readonly target: WebContents;
+  readonly onDestroyed: () => void;
+}): void => {
+  if (entry.target.isDestroyed()) return;
+  entry.target.removeListener("destroyed", entry.onDestroyed);
+};
+
+/**
  * Injectable constructors for {@link createTextureBridgeWith}. Lets tests and
  * embedders substitute the two heavyweight resources — the offscreen
  * BrowserWindow and the native TextureSender — with doubles (the pattern
@@ -120,6 +137,7 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
   private readonly forwardEntries = new Set<{
     readonly target: WebContents;
     readonly extraArgs: readonly unknown[];
+    readonly onDestroyed: () => void;
   }>();
 
   constructor(
@@ -235,11 +253,42 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
   }
 
   forwardFrames(target: WebContents, options?: FrameForwardOptions): FrameForward {
-    const entry = { target, extraArgs: options?.extraArgs ?? [] };
+    // Post-dispose registration would retain `target` in forwardEntries
+    // forever — dispose() only clears the set once, at teardown time — so a
+    // caller that registers after dispose gets an inert handle instead of a
+    // silent leak. An already-destroyed target has the same failure mode
+    // from the other direction: `once("destroyed", ...)` below would never
+    // fire for a target that's already dead, so the entry would never
+    // self-prune either — reject it up front instead.
+    if (this._disposed || target.isDestroyed()) return { dispose: () => {} };
+
+    // `entry` closes over itself via `onDestroyed` — safe despite the
+    // apparent forward reference: the closure only runs once `target`
+    // fires "destroyed", by which point `entry` has long been assigned.
+    const entry = {
+      target,
+      extraArgs: options?.extraArgs ?? [],
+      onDestroyed: (): void => {
+        this.forwardEntries.delete(entry);
+      },
+    };
     this.forwardEntries.add(entry);
+
+    // Auto-prune when the target WebContents is destroyed out from under us
+    // (e.g. its window closes without the caller ever calling dispose()) —
+    // otherwise the entry (and its WebContents reference) sits in
+    // forwardEntries forever, and every subsequent handlePaint calls
+    // forwardSharedTexture against an already-destroyed target.
+    target.once("destroyed", entry.onDestroyed);
+
     return {
       dispose: () => {
         this.forwardEntries.delete(entry);
+        // This matters when the same long-lived `target` (e.g. the
+        // multiviewer window) is registered and disposed repeatedly across
+        // connect/disconnect cycles — without unhooking here, each cycle
+        // leaves a dangling "destroyed" listener on that target.
+        unhookDestroyedListener(entry);
       },
     };
   }
@@ -298,6 +347,14 @@ export class TextureBridgeImpl extends EventEmitter implements TextureBridge {
       this._renderWindow.destroy();
     }
 
+    // Unhook every entry's "destroyed" listener before clearing — otherwise
+    // it stays registered on a caller-owned, possibly long-lived
+    // WebContents (e.g. the multiviewer window) forever, retaining this
+    // disposed bridge instance and eventually tripping
+    // MaxListenersExceededWarning across repeated create/dispose cycles.
+    for (const entry of this.forwardEntries) {
+      unhookDestroyedListener(entry);
+    }
     this.forwardEntries.clear();
     this.sender.stop();
     this.previewManager?.dispose();

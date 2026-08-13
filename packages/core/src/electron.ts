@@ -20,18 +20,30 @@ export type ForwardDefect =
   | { readonly reason: "send-failed"; readonly cause: Error };
 
 const toCauseError = (value: unknown): Error =>
-  value instanceof Error ? value : new Error(`${value}`);
+  value instanceof Error ? value : new Error(`${value}`, { cause: value });
 
 const safeImportSharedTexture = Result.fromThrowable(
   (textureInfo: TextureInfo) => sharedTexture.importSharedTexture({ textureInfo }),
   toCauseError,
 );
 
-/** Deliver + release in all outcomes. Module scope so deps are explicit args. */
-const deliver = async (
+/**
+ * Deliver an imported shared texture to a frame, releasing the import in all
+ * outcomes. Declared at module scope so its dependencies are explicit
+ * arguments — no inner function declarations. Invoking an async function
+ * never throws synchronously (a throw inside becomes a promise rejection
+ * instead), so callers can hand `sendImportedTexture(...)` straight to
+ * `ResultAsync.fromPromise` and both sync throws and rejections from
+ * `sendSharedTexture` funnel into the error channel.
+ *
+ * Exported so both `forwardSharedTexture` (below) and the renderer package's
+ * `shared-texture-receiver.ts` / `preview-manager.ts` share one
+ * implementation instead of maintaining duplicate deliver-and-release logic.
+ */
+export const sendImportedTexture = async (
   frame: NonNullable<WebContents["mainFrame"]>,
   imported: ReturnType<typeof sharedTexture.importSharedTexture>,
-  extraArgs: readonly unknown[],
+  extraArgs: readonly unknown[] = [],
 ): Promise<void> => {
   try {
     await sharedTexture.sendSharedTexture({ frame, importedSharedTexture: imported }, ...extraArgs);
@@ -66,7 +78,7 @@ export const forwardSharedTexture = async (
     .mapErr((cause): ForwardDefect => ({ reason: "import-failed", cause }))
     .asyncAndThen((imported) =>
       ResultAsync.fromPromise(
-        deliver(frame, imported, extraArgs),
+        sendImportedTexture(frame, imported, extraArgs),
         (cause): ForwardDefect => ({ reason: "send-failed", cause: toCauseError(cause) }),
       ),
     )

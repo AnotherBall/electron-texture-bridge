@@ -76,6 +76,8 @@ describe("forwardSharedTexture", () => {
     if (result?.reason !== "import-failed") throw new Error("unreachable");
     expect(result.cause).toBeInstanceOf(Error);
     expect(result.cause.message).toBe("raw string failure");
+    // Cause preserved for debugging, mirroring renderer's toError.
+    expect(result.cause.cause).toBe("raw string failure");
     expect(mockSendSharedTexture).not.toHaveBeenCalled();
   });
 
@@ -90,12 +92,20 @@ describe("forwardSharedTexture", () => {
     expect(imported.release).toHaveBeenCalledTimes(1);
   });
 
-  it("never throws synchronously even when import throws", () => {
-    mockImportSharedTexture.mockImplementation(() => {
-      throw new Error("sync boom");
-    });
-    expect(() => {
-      void forwardSharedTexture(textureInfo, makeTarget());
-    }).not.toThrow();
+  it("dispatches import and send synchronously before the first await", async () => {
+    // Pins the invariant that handlePaint's release-in-finally (bridge.ts)
+    // depends on: importSharedTexture/sendSharedTexture must both be invoked
+    // synchronously, before this call's first await, so a caller that
+    // releases the paint texture in a `finally` right after firing this
+    // call off (without awaiting it) cannot race ahead of dispatch.
+    const imported = makeImported();
+    mockImportSharedTexture.mockReturnValue(imported);
+    mockSendSharedTexture.mockResolvedValue(undefined);
+
+    const p = forwardSharedTexture(textureInfo, makeTarget());
+    expect(mockImportSharedTexture).toHaveBeenCalledTimes(1);
+    expect(mockSendSharedTexture).toHaveBeenCalledTimes(1);
+
+    await p;
   });
 });
