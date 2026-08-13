@@ -9,6 +9,15 @@
         padding: 0;
         box-sizing: border-box;
       }
+      /* html+body height:100% turns body into the scrolling container that
+         matches the window's client area — required for overflow-y: auto
+         below to actually produce a reachable scrollbar instead of letting
+         the flex column silently grow past the viewport with no scroll
+         affordance. */
+      html,
+      body {
+        height: 100%;
+      }
       body {
         background: #111;
         color: #eee;
@@ -22,6 +31,13 @@
            968 + 24 = 992 <= 1000. Vertical padding unchanged. */
         padding: 16px 12px;
         gap: 12px;
+        /* Full content (decks grid + composite preview) measures ~1348px
+           tall — taller than the window's ~1000px content height and than
+           most laptop displays. Rather than growing the window to match,
+           the composite preview is display-scaled down (see #composite
+           below) and the remainder is reachable by scrolling this element,
+           the document's scrolling box now that html/body are 100% tall. */
+        overflow-y: auto;
       }
       h1 {
         font-size: 16px;
@@ -88,6 +104,14 @@
       #composite {
         border: 1px solid #444;
         background: #000;
+        /* Display-scaled down via CSS only — the backing store stays its
+           full 960x540 (see the `width`/`height` attributes on the element
+           below), so multiviewer.ts's drawImage/quadrant math (which
+           targets the canvas's internal pixel coordinate space, not its
+           CSS box) is completely untouched. This is purely a layout fix to
+           shrink the composite section's on-screen footprint. */
+        width: 640px;
+        height: 360px;
       }
     </style>
   </head>

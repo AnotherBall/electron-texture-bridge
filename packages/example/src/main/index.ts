@@ -257,9 +257,15 @@ const bootstrap = async (): Promise<void> => {
     // side (see multiviewer.html), is 992px. useContentSize: true sizes the
     // window by content area (excluding chrome), so 1000 leaves headroom
     // without clipping either section.
+    //
+    // Full content height measures ~1348px — taller than most laptop
+    // displays, so height is intentionally NOT grown to match. 1000 fits
+    // the deck grid plus a good part of the (CSS-display-scaled, see
+    // multiviewer.html #composite) composite preview on a typical display;
+    // the remainder is reachable via the body's overflow-y: auto scroll.
     useContentSize: true,
     width: 1000,
-    height: 1200,
+    height: 1000,
     title: "Multiviewer",
     webPreferences: {
       preload: path.join(__dirname, "../preload/multiviewer.js"),
