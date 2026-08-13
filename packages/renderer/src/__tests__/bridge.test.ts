@@ -715,7 +715,11 @@ describe("TextureBridgeImpl.forwardFrames", () => {
   // once() で購読するようになったため(F14 pruning)、プレーンオブジェクトの
   // 構造スタブでは足りず実 EventEmitter を土台にする。
   const makeWebContentsStub = (id: string): Electron.WebContents => {
-    const stub: unknown = Object.assign(new EventEmitter(), { id });
+    // forwardFrames() calls target.isDestroyed() at registration time (N3
+    // guard) in addition to relying on the "destroyed" event, so the stub
+    // needs a default (alive) isDestroyed — individual tests override it
+    // via Object.assign when they need an already-destroyed target.
+    const stub: unknown = Object.assign(new EventEmitter(), { id, isDestroyed: () => false });
     return stub as Electron.WebContents;
   };
 
@@ -915,5 +919,76 @@ describe("TextureBridgeImpl.forwardFrames", () => {
     forward.dispose();
 
     expect(wc.listenerCount("destroyed")).toBe(0);
+  });
+
+  it("unhooks every entry's destroyed listener on bridge.dispose() (N1)", () => {
+    // Bug class F14 fixed via FrameForward.dispose() — bridge.dispose()
+    // itself only cleared forwardEntries without unhooking, so a listener
+    // stayed registered on a caller-owned, possibly long-lived target
+    // (e.g. the multiviewer window) after the bridge that registered it was
+    // gone. Enough create/dispose cycles against the same target without
+    // this trip MaxListenersExceededWarning.
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      null,
+      baseOpts,
+    );
+    const wcA = makeWebContentsStub("a");
+    const wcB = makeWebContentsStub("b");
+    bridge.forwardFrames(wcA);
+    bridge.forwardFrames(wcB);
+
+    expect(wcA.listenerCount("destroyed")).toBe(1);
+    expect(wcB.listenerCount("destroyed")).toBe(1);
+
+    bridge.dispose();
+
+    expect(wcA.listenerCount("destroyed")).toBe(0);
+    expect(wcB.listenerCount("destroyed")).toBe(0);
+  });
+
+  it("does not throw when disposing with an entry whose target is already destroyed (N1)", () => {
+    // removeListener can throw once the underlying WebContents itself has
+    // been destroyed — bridge.dispose() must guard against that instead of
+    // assuming every registered target is still alive.
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      null,
+      baseOpts,
+    );
+    const wc = makeWebContentsStub("a");
+    bridge.forwardFrames(wc);
+    Object.assign(wc, { isDestroyed: () => true });
+
+    expect(() => bridge.dispose()).not.toThrow();
+  });
+
+  it("returns an inert handle and does not register against an already-destroyed target (N3)", () => {
+    sendMock.mockReturnValue(undefined);
+    const bridge = new TextureBridgeImpl(
+      new BrowserWindow(),
+      new TextureSender("t", 16, 9),
+      null,
+      baseOpts,
+    );
+    const wc = makeWebContentsStub("a");
+    Object.assign(wc, { isDestroyed: () => true });
+
+    const forward = bridge.forwardFrames(wc);
+
+    // A "destroyed" listener registered against an already-destroyed
+    // target would never fire — the entry would never self-prune. White-box
+    // assert no registration happened at all (checked before calling
+    // dispose(), same rationale as the F5 inert-handle test above).
+    const forwardEntries = (bridge as unknown as { forwardEntries: Set<unknown> }).forwardEntries;
+    expect(forwardEntries.size).toBe(0);
+    expect(wc.listenerCount("destroyed")).toBe(0);
+
+    bridge.handlePaint({ texture: makeTexture() });
+    expect(forwardSharedTextureMock).not.toHaveBeenCalled();
+
+    expect(() => forward.dispose()).not.toThrow();
   });
 });
