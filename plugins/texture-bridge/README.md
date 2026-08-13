@@ -4,10 +4,35 @@ Claude Code skills for using [`@napolab/texture-bridge`](https://github.com/napo
 
 ## Install
 
+### Claude Code (plugin)
+
 ```
 /plugin marketplace add naporin0624/electron-texture-bridge
 /plugin install texture-bridge
 ```
+
+### Any other agent (Skills CLI)
+
+Works with Codex, GitHub Copilot, Amp, Cursor, Antigravity, and others via
+[skills.sh](https://skills.sh/naporin0624/electron-texture-bridge). **Install one
+skill per command** — passing several at once only installs the first:
+
+```bash
+npx skills add naporin0624/electron-texture-bridge@setting-up-texture-bridge
+npx skills add naporin0624/electron-texture-bridge@choosing-texture-bridge-api
+npx skills add naporin0624/electron-texture-bridge@migrating-to-forward-frames
+npx skills add naporin0624/electron-texture-bridge@receiving-shared-textures
+npx skills add naporin0624/electron-texture-bridge@managing-frame-forward-lifecycle
+npx skills add naporin0624/electron-texture-bridge@delivering-imported-textures
+npx skills add naporin0624/electron-texture-bridge@handling-texture-bridge-failures
+```
+
+Add `-g` to install globally instead of into the current project.
+
+> Omitting the `@skill-name` suffix installs **every** skill in the repository,
+> including this project's own internal development-rule skills (`ci`,
+> `smart-commit`, and others) that are not about texture-bridge at all. Name the
+> skills you want.
 
 ## Skills
 
