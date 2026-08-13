@@ -420,6 +420,18 @@ type SendResult = "delivered" | "skipped";
  * must register a handler via `consumeSharedTexture` from
  * `@napolab/texture-bridge-renderer/client`.
  *
+ * @throws {TypeError} `pollIntervalMs` was passed and is not a positive
+ * finite number.
+ * @throws when the native `TextureReceiver` cannot be constructed — most
+ * commonly no sender is publishing under `senderName` yet.
+ *
+ * Construction is the only throwing step: `start()` / `stop()` /
+ * `dispose()` / `setFlipY()` never throw, and every per-frame failure
+ * arrives on `"error"` as `FrameReceiveError`, `TextureImportError`,
+ * `TextureDeliveryError`, `UnsupportedPixelFormatError`, or
+ * `ReceiverStoppedError` (emitted after 10 consecutive failures, which stops
+ * the poll timer without disposing the bridge).
+ *
  * @experimental Requires Electron 40+ `sharedTexture` module.
  */
 export const createSharedTextureReceiver = (

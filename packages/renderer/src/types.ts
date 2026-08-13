@@ -118,12 +118,25 @@ export interface TextureBridge {
   off<K extends keyof BridgeEvents>(event: K, listener: (...args: BridgeEvents[K]) => void): this;
   once<K extends keyof BridgeEvents>(event: K, listener: (...args: BridgeEvents[K]) => void): this;
 
-  /** Open the preview window (no-op if already open) */
+  /**
+   * Open the preview window (no-op if already open, and after dispose).
+   *
+   * @throws whatever `new BrowserWindow` throws — this is one of the two
+   * `TextureBridge` methods with a failure path; the rest are no-op-or-emit.
+   */
   openPreview(): void;
-  /** Close the preview window (no-op if already closed) */
+  /** Close the preview window (no-op if already closed). Never throws. */
   closePreview(): void;
 
-  /** Resize all layers: offscreen window, sender, preview, and worker */
+  /**
+   * Resize all layers: offscreen window, sender, preview, and worker.
+   * No-op after dispose.
+   *
+   * @throws when the replacement native `TextureSender` cannot be
+   * constructed (name collision, device failure). The requested size is
+   * rolled back and the previous sender rebuilt before the throw escapes,
+   * so the bridge stays usable.
+   */
   resize(width: number, height: number): void;
 
   /**
