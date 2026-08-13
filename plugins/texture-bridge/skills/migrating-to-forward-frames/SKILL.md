@@ -37,14 +37,25 @@ Applies when you run your own offscreen window + `paint` handler (core tier) and
 ```typescript
 import { forwardSharedTexture } from "@napolab/texture-bridge-core/electron";
 
-win.webContents.on("paint", async (e) => {
-  sendTextureFromPaintEvent(sender, e.texture?.textureInfo);   // existing Syphon/Spout send
-  if (e.texture) await forwardSharedTexture(e.texture.textureInfo, monitorWC, [slot]);
-  e.texture?.release();   // still exactly once, after both consumers
+win.webContents.on("paint", (e) => {          // stays sync — see below
+  const texture = e.texture;
+  if (!texture) return;
+  try {
+    void forwardSharedTexture(texture.textureInfo, monitorWC, [slot]);   // fire-and-forget
+    sendTextureFromPaintEvent(sender, texture.textureInfo);              // existing Syphon/Spout send
+  } finally {
+    texture.release();   // exactly once, on every path
+  }
 });
 ```
 
 `forwardSharedTexture` imports and releases its own imported texture internally (release-in-finally) — your `e.texture.release()` obligation is unchanged. It never throws synchronously; it resolves `undefined` or a `ForwardDefect` (`target-destroyed` / `import-failed` / `send-failed`) — check it if you want failure metrics, ignore it for best-effort.
+
+Three properties of that handler are load-bearing, and adding forwarding is exactly when they get broken:
+
+- **`try/finally`** — `sendTextureFromPaintEvent` throws on native send failure. Releasing after a bare sequence leaks one paint texture per frame from the first failure onward, until the shared-texture pool starves and paint stops.
+- **Fire-and-forget, never `await`** — the primitive's import and send dispatch both run before its first `await`, so releasing in the same tick is safe. Awaiting instead pins this paint texture for a full IPC round-trip.
+- **Keep the handler synchronous** — an `async` paint handler converts a send throw into an unhandled rejection.
 
 ## Contract Changes to Communicate
 

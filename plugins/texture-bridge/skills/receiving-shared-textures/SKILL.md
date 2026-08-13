@@ -72,22 +72,26 @@ consumeSharedTexture({
     const slot = args[0];
     if (typeof slot !== "number" || slot < 0 || slot >= SLOT_COUNT) return;
     if (!connected[slot]) return;
-    latest[slot]?.videoFrame.close();                      // close the superseded clone
-    latest[slot] = { textureId: frame.textureId, videoFrame: frame.videoFrame.clone() };
+    const held = frame.videoFrame.clone();                 // clone FIRST…
+    latest[slot]?.videoFrame.close();                      // …then close the superseded one
+    latest[slot] = { textureId: frame.textureId, videoFrame: held };
   },
   onError: (err) => console.error("[monitor]", err),
 });
 
 const draw = (): void => {
-  for (const [slot, held] of latest.entries()) {
-    if (!held) continue;
-    const deckCtx = deckContexts[slot];
-    deckCtx?.drawImage(held.videoFrame, 0, 0, W, H);       // GPU blit; draw scales full-res frame
-    // 2x2 composite = renderer-side atlas: blit each held frame into its quadrant
-    compositeCtx.drawImage(held.videoFrame, (slot % 2) * W, Math.floor(slot / 2) * H, W, H);
-    // do NOT close here — the held clone is redrawn every tick until replaced
+  try {
+    for (const [slot, held] of latest.entries()) {
+      if (!held) continue;
+      const deckCtx = deckContexts[slot];
+      deckCtx?.drawImage(held.videoFrame, 0, 0, W, H);     // GPU blit; draw scales full-res frame
+      // 2x2 composite = renderer-side atlas: blit each held frame into its quadrant
+      compositeCtx.drawImage(held.videoFrame, (slot % 2) * W, Math.floor(slot / 2) * H, W, H);
+      // do NOT close here — the held clone is redrawn every tick until replaced
+    }
+  } finally {
+    requestAnimationFrame(draw);   // re-arm in finally: one throw must not end the loop
   }
-  requestAnimationFrame(draw);
 };
 requestAnimationFrame(draw);
 
@@ -116,6 +120,8 @@ For WebGPU, replace `drawImage` with `device.importExternalTexture({ source: hel
 | Drawing directly in `onFrame` | Ties draw cost to arrival rate (N sources × paint rate). Hold latest clone, draw in one rAF loop. |
 | Closing the held frame after drawing it | Held clone is redrawn every tick — closing it blanks the deck until the next arrival. Close only when superseded, disconnected, or unloading. |
 | Skipping the `connected` guard | In-flight frames arriving after disconnect resurrect the slot with a stale image. |
+| Closing the superseded clone before `clone()` returns | If `clone()` throws you are left holding a closed frame; the next `drawImage` throws `InvalidStateError`. Clone first, then close. |
+| `requestAnimationFrame(draw)` outside a `finally` | One `drawImage`/`clone` throw ends the loop for the session — every deck freezes while arrival counters keep ticking. |
 | Clearing canvases between frames | Paint-driven sources go idle legitimately; clearing causes flicker. Clear only on disconnect (deck AND composite quadrant). |
 | `setSharedTextureReceiver` directly, or importing `/client` in a Vite renderer page | Single-slot API conflicts with the pool; Vite dev can't pre-bundle `electron`. Preload + `installSharedTextureReceiver()`. |
 | Inventing `exposeFrameReceiver` / `subscribeFrames` / `@napolab/texture-bridge/preload` | None exist. The receiving surface is exactly `installSharedTextureReceiver` + `consumeSharedTexture` (+ `createMultiDispatcher` for custom fan-out adapters). |
