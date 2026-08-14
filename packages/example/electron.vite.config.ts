@@ -12,6 +12,7 @@ export default defineConfig({
         input: {
           index: resolve("src/preload/index.ts"),
           receiver: resolve("src/preload/receiver.ts"),
+          multiviewer: resolve("src/preload/multiviewer.ts"),
         },
       },
     },
@@ -22,6 +23,8 @@ export default defineConfig({
         input: {
           index: resolve("src/renderer/index.html"),
           "receiver-test": resolve("src/renderer/receiver-test.html"),
+          "grid-demo": resolve("src/renderer/grid-demo.html"),
+          multiviewer: resolve("src/renderer/multiviewer.html"),
         },
       },
     },

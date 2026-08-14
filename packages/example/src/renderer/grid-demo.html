@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Grid Demo</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+      }
+      canvas {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage" width="960" height="540"></canvas>
+    <script type="module">
+      // Multiviewer demo source: a self-contained hue-tinted animation used
+      // as one of the `Grid-Demo-A/B/C` bridges in packages/example/src/main/index.ts.
+      // The `hue` query param (0-360) gives each bridge a distinct look.
+      const params = new URLSearchParams(location.search);
+      const hue = Number.parseFloat(params.get("hue") ?? "0");
+      const canvas = document.getElementById("stage");
+      const ctx = canvas.getContext("2d");
+      const rectIndices = [0, 1, 2, 3, 4, 5];
+
+      const draw = (timeMs) => {
+        const t = timeMs / 1000;
+        ctx.fillStyle = `hsl(${hue}, 70%, ${18 + 8 * Math.sin(t)}%)`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        for (const i of rectIndices) {
+          const angle = t * (0.4 + i * 0.15) + (i * Math.PI * 2) / rectIndices.length;
+          const radius = 120 + i * 30;
+          const cx = canvas.width / 2 + Math.cos(angle) * radius;
+          const cy = canvas.height / 2 + Math.sin(angle) * radius;
+
+          ctx.save();
+          ctx.translate(cx, cy);
+          ctx.rotate(angle * 2);
+          ctx.fillStyle = `hsl(${(hue + i * 40) % 360}, 90%, 60%)`;
+          ctx.fillRect(-40, -40, 80, 80);
+          ctx.restore();
+        }
+
+        requestAnimationFrame(draw);
+      };
+
+      requestAnimationFrame(draw);
+    </script>
+  </body>
+</html>

@@ -13,6 +13,7 @@
 #include <set>
 #include <string>
 #include <d3d11_1.h>
+#include <dxgi1_2.h>
 #include "SpoutDX.h"
 #include "SpoutSenderNames.h"
 #include "SpoutFrameCount.h"
@@ -20,6 +21,7 @@
 
 struct SpoutBridge {
     spoutDX sender;
+    char senderName[256];
     ID3D11Device* device;
     ID3D11Device1* device1;  // For OpenSharedResource1 (NT handles)
     ID3D11DeviceContext* context;
@@ -28,10 +30,119 @@ struct SpoutBridge {
     bool initialized;
 };
 
+static void release_sender_device(SpoutBridge* bridge) {
+    if (bridge->initialized) {
+        bridge->sender.ReleaseSender();
+        bridge->sender.CloseDirectX11();
+        bridge->initialized = false;
+    }
+    if (bridge->device1) { bridge->device1->Release(); bridge->device1 = nullptr; }
+    if (bridge->context) { bridge->context->Release(); bridge->context = nullptr; }
+    if (bridge->device)  { bridge->device->Release();  bridge->device = nullptr; }
+}
+
+static bool create_device_for_adapter(IDXGIAdapter1* adapter,
+                                      ID3D11Device** outDevice,
+                                      ID3D11DeviceContext** outContext) {
+    const D3D_FEATURE_LEVEL featureLevels[] = {
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+    };
+    D3D_FEATURE_LEVEL obtained = D3D_FEATURE_LEVEL_11_0;
+    HRESULT hr = D3D11CreateDevice(
+        adapter,
+        D3D_DRIVER_TYPE_UNKNOWN,
+        nullptr,
+        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        featureLevels,
+        ARRAYSIZE(featureLevels),
+        D3D11_SDK_VERSION,
+        outDevice,
+        &obtained,
+        outContext);
+    return SUCCEEDED(hr) && *outDevice && *outContext;
+}
+
+// Chromium exports NT handles from the adapter used by its compositor. A D3D
+// shared resource can only be opened on that same adapter, so probe each
+// hardware adapter instead of relying on Windows' default-adapter choice.
+static ID3D11Texture2D* initialize_sender_for_handle(SpoutBridge* bridge,
+                                                     HANDLE ntHandle) {
+    IDXGIFactory1* factory = nullptr;
+    HRESULT hr = CreateDXGIFactory1(
+        __uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory));
+    if (FAILED(hr) || !factory) return nullptr;
+
+    ID3D11Texture2D* openedTexture = nullptr;
+    for (UINT index = 0; ; ++index) {
+        IDXGIAdapter1* adapter = nullptr;
+        const HRESULT enumHr = factory->EnumAdapters1(index, &adapter);
+        if (enumHr == DXGI_ERROR_NOT_FOUND) break;
+        if (FAILED(enumHr) || !adapter) break;
+
+        DXGI_ADAPTER_DESC1 desc = {};
+        adapter->GetDesc1(&desc);
+        if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) {
+            adapter->Release();
+            continue;
+        }
+
+        ID3D11Device* candidateDevice = nullptr;
+        ID3D11DeviceContext* candidateContext = nullptr;
+        ID3D11Device1* candidateDevice1 = nullptr;
+        if (create_device_for_adapter(adapter, &candidateDevice, &candidateContext)) {
+            candidateDevice->QueryInterface(
+                __uuidof(ID3D11Device1), reinterpret_cast<void**>(&candidateDevice1));
+            if (candidateDevice1) {
+                hr = candidateDevice1->OpenSharedResource1(
+                    ntHandle,
+                    __uuidof(ID3D11Texture2D),
+                    reinterpret_cast<void**>(&openedTexture));
+            } else {
+                hr = candidateDevice->OpenSharedResource(
+                    ntHandle,
+                    __uuidof(ID3D11Texture2D),
+                    reinterpret_cast<void**>(&openedTexture));
+            }
+        }
+
+        if (openedTexture) {
+            bridge->device = candidateDevice;
+            bridge->device1 = candidateDevice1;
+            bridge->context = candidateContext;
+            const bool directXOpened = bridge->sender.OpenDirectX11(bridge->device);
+            if (directXOpened && bridge->sender.SetSenderName(bridge->senderName)) {
+                bridge->sender.SetSenderFormat(DXGI_FORMAT_B8G8R8A8_UNORM);
+                bridge->initialized = true;
+                fprintf(stderr,
+                        "[SpoutBridge] sender matched DXGI adapter %u (vendor=0x%04x device=0x%04x)\n",
+                        index, desc.VendorId, desc.DeviceId);
+            } else {
+                openedTexture->Release();
+                openedTexture = nullptr;
+                if (directXOpened) bridge->sender.CloseDirectX11();
+                release_sender_device(bridge);
+            }
+        } else {
+            if (candidateDevice1) candidateDevice1->Release();
+            if (candidateContext) candidateContext->Release();
+            if (candidateDevice) candidateDevice->Release();
+        }
+        adapter->Release();
+        if (bridge->initialized) break;
+    }
+    factory->Release();
+    return openedTexture;
+}
+
 extern "C" {
 
 void* spout_bridge_create(const char* name, uint32_t width, uint32_t height) {
     SpoutBridge* bridge = new SpoutBridge();
+    memset(bridge->senderName, 0, sizeof(bridge->senderName));
+    if (name && name[0]) {
+        strncpy(bridge->senderName, name, sizeof(bridge->senderName) - 1);
+    }
     bridge->width = width;
     bridge->height = height;
     bridge->initialized = false;
@@ -39,34 +150,8 @@ void* spout_bridge_create(const char* name, uint32_t width, uint32_t height) {
     bridge->device1 = nullptr;
     bridge->context = nullptr;
 
-    // Initialize DirectX 11
-    if (!bridge->sender.OpenDirectX11()) {
-        delete bridge;
-        return nullptr;
-    }
-
-    bridge->device = bridge->sender.GetDX11Device();
-    bridge->context = bridge->sender.GetDX11Context();
-
-    // Get ID3D11Device1 interface for OpenSharedResource1 (required for NT handles)
-    HRESULT hr = bridge->device->QueryInterface(__uuidof(ID3D11Device1), (void**)&bridge->device1);
-    if (FAILED(hr)) {
-        // Fallback: device1 will be null, we'll try OpenSharedResource instead
-        bridge->device1 = nullptr;
-    }
-
-    // Set sender name
-    if (!bridge->sender.SetSenderName(name)) {
-        if (bridge->device1) bridge->device1->Release();
-        bridge->sender.CloseDirectX11();
-        delete bridge;
-        return nullptr;
-    }
-
-    // Set format to BGRA (matches Chromium's compositor output)
-    bridge->sender.SetSenderFormat(DXGI_FORMAT_B8G8R8A8_UNORM);
-
-    bridge->initialized = true;
+    // Device selection is deferred until the first frame. Only the frame's NT
+    // handle tells us which GPU Chromium used for its compositor texture.
     return bridge;
 }
 
@@ -74,12 +159,7 @@ void spout_bridge_destroy(void* handle) {
     if (!handle) return;
 
     SpoutBridge* bridge = static_cast<SpoutBridge*>(handle);
-    bridge->sender.ReleaseSender();
-    if (bridge->device1) {
-        bridge->device1->Release();
-        bridge->device1 = nullptr;
-    }
-    bridge->sender.CloseDirectX11();
+    release_sender_device(bridge);
     delete bridge;
 }
 
@@ -87,35 +167,30 @@ int32_t spout_bridge_send(void* handle, int64_t shared_handle) {
     if (!handle) return -1;
 
     SpoutBridge* bridge = static_cast<SpoutBridge*>(handle);
-    if (!bridge->initialized || !bridge->device) return -2;
-
     // Cast the shared handle from Electron's texture
     HANDLE nt_handle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(shared_handle));
     if (!nt_handle) return -3;
 
-    // Open the shared texture from the handle
     ID3D11Texture2D* shared_texture = nullptr;
-    HRESULT hr;
-
-    // Electron 40+ uses NT handles, which require OpenSharedResource1 (ID3D11Device1)
-    if (bridge->device1) {
-        hr = bridge->device1->OpenSharedResource1(
-            nt_handle,
-            __uuidof(ID3D11Texture2D),
-            reinterpret_cast<void**>(&shared_texture)
-        );
+    if (!bridge->initialized) {
+        shared_texture = initialize_sender_for_handle(bridge, nt_handle);
+    } else if (bridge->device1) {
+        bridge->device1->OpenSharedResource1(
+            nt_handle, __uuidof(ID3D11Texture2D),
+            reinterpret_cast<void**>(&shared_texture));
     } else {
-        // Fallback to legacy DXGI handle method (for older Electron versions)
-        hr = bridge->device->OpenSharedResource(
-            nt_handle,
-            __uuidof(ID3D11Texture2D),
-            reinterpret_cast<void**>(&shared_texture)
-        );
+        bridge->device->OpenSharedResource(
+            nt_handle, __uuidof(ID3D11Texture2D),
+            reinterpret_cast<void**>(&shared_texture));
     }
 
-    if (FAILED(hr) || !shared_texture) {
-        return -4;
+    // Chromium can move to another adapter after a device reset. Re-probe in
+    // that case rather than permanently failing every subsequent frame.
+    if (!shared_texture && bridge->initialized) {
+        release_sender_device(bridge);
+        shared_texture = initialize_sender_for_handle(bridge, nt_handle);
     }
+    if (!shared_texture) return -4;
 
     // Send the texture via Spout
     bool success = bridge->sender.SendTexture(shared_texture);
@@ -191,11 +266,97 @@ static void release_sender_texture(SpoutReceiverBridge* bridge) {
     bridge->cachedSenderHandle = nullptr;
 }
 
+static void release_receiver_graphics(SpoutReceiverBridge* bridge) {
+    if (bridge->cachedNtHandle) {
+        CloseHandle(bridge->cachedNtHandle);
+        bridge->cachedNtHandle = nullptr;
+    }
+    if (bridge->ntStaging)  { bridge->ntStaging->Release();  bridge->ntStaging = nullptr; }
+    if (bridge->cpuStaging) { bridge->cpuStaging->Release(); bridge->cpuStaging = nullptr; }
+    release_sender_texture(bridge);
+    if (bridge->context) { bridge->context->Release(); bridge->context = nullptr; }
+    if (bridge->device1) { bridge->device1->Release(); bridge->device1 = nullptr; }
+    if (bridge->device)  { bridge->device->Release();  bridge->device = nullptr; }
+}
+
+static bool open_sender_texture(ID3D11Device* device,
+                                ID3D11Device1* device1,
+                                HANDLE shareHandle,
+                                ID3D11Texture2D** outTexture) {
+    HRESULT hr = device->OpenSharedResource(
+        shareHandle,
+        __uuidof(ID3D11Texture2D),
+        reinterpret_cast<void**>(outTexture));
+    if (FAILED(hr) && device1) {
+        hr = device1->OpenSharedResource1(
+            shareHandle,
+            __uuidof(ID3D11Texture2D),
+            reinterpret_cast<void**>(outTexture));
+    }
+    return SUCCEEDED(hr) && *outTexture;
+}
+
+static bool select_receiver_adapter(SpoutReceiverBridge* bridge,
+                                    HANDLE shareHandle) {
+    release_receiver_graphics(bridge);
+
+    IDXGIFactory1* factory = nullptr;
+    HRESULT hr = CreateDXGIFactory1(
+        __uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory));
+    if (FAILED(hr) || !factory) return false;
+
+    bool matched = false;
+    for (UINT index = 0; ; ++index) {
+        IDXGIAdapter1* adapter = nullptr;
+        const HRESULT enumHr = factory->EnumAdapters1(index, &adapter);
+        if (enumHr == DXGI_ERROR_NOT_FOUND) break;
+        if (FAILED(enumHr) || !adapter) break;
+
+        DXGI_ADAPTER_DESC1 desc = {};
+        adapter->GetDesc1(&desc);
+        if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0) {
+            adapter->Release();
+            continue;
+        }
+
+        ID3D11Device* candidateDevice = nullptr;
+        ID3D11DeviceContext* candidateContext = nullptr;
+        ID3D11Device1* candidateDevice1 = nullptr;
+        ID3D11Texture2D* candidateTexture = nullptr;
+        if (create_device_for_adapter(adapter, &candidateDevice, &candidateContext)) {
+            candidateDevice->QueryInterface(
+                __uuidof(ID3D11Device1), reinterpret_cast<void**>(&candidateDevice1));
+            if (open_sender_texture(candidateDevice, candidateDevice1,
+                                    shareHandle, &candidateTexture)) {
+                bridge->device = candidateDevice;
+                bridge->device1 = candidateDevice1;
+                bridge->context = candidateContext;
+                bridge->senderTexture = candidateTexture;
+                matched = true;
+                fprintf(stderr,
+                        "[SpoutBridge] receiver matched DXGI adapter %u (vendor=0x%04x device=0x%04x)\n",
+                        index, desc.VendorId, desc.DeviceId);
+            }
+        }
+
+        if (!matched) {
+            if (candidateTexture) candidateTexture->Release();
+            if (candidateDevice1) candidateDevice1->Release();
+            if (candidateContext) candidateContext->Release();
+            if (candidateDevice) candidateDevice->Release();
+        }
+        adapter->Release();
+        if (matched) break;
+    }
+    factory->Release();
+    return matched;
+}
+
 // Look up the latest sender info from the Spout sender map and keep our
 // cached DXGI share handle / opened texture pointer in sync. Returns true
 // if we have a live connection at return time.
 static bool refresh_sender(SpoutReceiverBridge* bridge) {
-    if (!bridge->senderName[0] || !bridge->device) {
+    if (!bridge->senderName[0]) {
         bridge->connected = false;
         return false;
     }
@@ -228,9 +389,12 @@ static bool refresh_sender(SpoutReceiverBridge* bridge) {
             bridge->connected = false;
             return false;
         }
-        if (!bridge->directX->OpenDX11shareHandle(
-                bridge->device, &bridge->senderTexture, shareHandle)) {
-            bridge->senderTexture = nullptr;
+        if (bridge->device) {
+            open_sender_texture(
+                bridge->device, bridge->device1, shareHandle, &bridge->senderTexture);
+        }
+        if (!bridge->senderTexture &&
+            !select_receiver_adapter(bridge, shareHandle)) {
             bridge->connected = false;
             return false;
         }
@@ -387,39 +551,8 @@ void* spout_receiver_create(const char* sender_name) {
     bridge->frameCount  = new spoutFrameCount();
     bridge->directX     = new spoutDirectX();
 
-    // Create our own D3D11 device with BGRA_SUPPORT so that NT-shared BGRA
-    // staging textures are accepted by CreateTexture2D. spoutDirectX's own
-    // CreateDX11device does not pass this flag and CreateTexture2D returns
-    // E_INVALIDARG on NT-handle textures.
-    const D3D_FEATURE_LEVEL featureLevels[] = {
-        D3D_FEATURE_LEVEL_11_1,
-        D3D_FEATURE_LEVEL_11_0,
-    };
-    D3D_FEATURE_LEVEL obtained = D3D_FEATURE_LEVEL_11_0;
-    HRESULT hr = D3D11CreateDevice(
-        /*adapter*/ nullptr,
-        D3D_DRIVER_TYPE_HARDWARE,
-        /*softwareModule*/ nullptr,
-        D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-        featureLevels,
-        ARRAYSIZE(featureLevels),
-        D3D11_SDK_VERSION,
-        &bridge->device,
-        &obtained,
-        &bridge->context);
-    if (FAILED(hr) || !bridge->device) {
-        fprintf(stderr,
-                "[SpoutBridge] D3D11CreateDevice failed hr=0x%08lx\n",
-                static_cast<unsigned long>(hr));
-        delete bridge->senderNames;
-        delete bridge->frameCount;
-        delete bridge->directX;
-        delete bridge;
-        return nullptr;
-    }
-    bridge->device->QueryInterface(
-        __uuidof(ID3D11Device1), reinterpret_cast<void**>(&bridge->device1));
-
+    // Device selection is deferred until the sender appears. Opening its
+    // shared handle identifies the only adapter that can receive the texture.
     return bridge;
 }
 
@@ -428,25 +561,14 @@ void spout_receiver_destroy(void* handle) {
 
     SpoutReceiverBridge* bridge = static_cast<SpoutReceiverBridge*>(handle);
 
-    // Release cached NT handle before NT staging. Duplicates already handed
-    // to Electron are independent kernel handles and stay valid until their
-    // owners close them.
-    if (bridge->cachedNtHandle) {
-        CloseHandle(bridge->cachedNtHandle);
-        bridge->cachedNtHandle = nullptr;
-    }
-    if (bridge->ntStaging)   { bridge->ntStaging->Release();   bridge->ntStaging = nullptr; }
-    if (bridge->cpuStaging)  { bridge->cpuStaging->Release();  bridge->cpuStaging = nullptr; }
-    release_sender_texture(bridge);
+    // Duplicates already handed to Electron are independent kernel handles
+    // and stay valid until their owners close them.
+    release_receiver_graphics(bridge);
 
     if (bridge->frameCount) {
         if (bridge->accessMutexCreated) bridge->frameCount->CloseAccessMutex();
         if (bridge->frameCountEnabled)  bridge->frameCount->DisableFrameCount();
     }
-
-    if (bridge->context) { bridge->context->Release(); bridge->context = nullptr; }
-    if (bridge->device1) { bridge->device1->Release(); bridge->device1 = nullptr; }
-    if (bridge->device)  { bridge->device->Release();  bridge->device  = nullptr; }
 
     delete bridge->senderNames;
     delete bridge->frameCount;

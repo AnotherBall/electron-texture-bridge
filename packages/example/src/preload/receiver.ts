@@ -99,15 +99,20 @@ const refreshSenders = async (): Promise<void> => {
   }
 };
 
+const getElement = <T extends HTMLElement>(id: string, ctor: new () => T): T | null => {
+  const element = document.getElementById(id);
+  return element instanceof ctor ? element : null;
+};
+
 window.addEventListener("DOMContentLoaded", () => {
-  const canvas = document.getElementById("canvas") as HTMLCanvasElement | null;
+  const canvas = getElement("canvas", HTMLCanvasElement);
   const ctx = canvas?.getContext("2d");
-  const info = document.getElementById("info") as HTMLDivElement | null;
-  const senderList = document.getElementById("senderList") as HTMLSelectElement | null;
-  const refreshBtn = document.getElementById("refreshBtn") as HTMLButtonElement | null;
-  const connectBtn = document.getElementById("connectBtn") as HTMLButtonElement | null;
-  const disconnectBtn = document.getElementById("disconnectBtn") as HTMLButtonElement | null;
-  const flipYCheckbox = document.getElementById("flipYCheckbox") as HTMLInputElement | null;
+  const info = getElement("info", HTMLDivElement);
+  const senderList = getElement("senderList", HTMLSelectElement);
+  const refreshBtn = getElement("refreshBtn", HTMLButtonElement);
+  const connectBtn = getElement("connectBtn", HTMLButtonElement);
+  const disconnectBtn = getElement("disconnectBtn", HTMLButtonElement);
+  const flipYCheckbox = getElement("flipYCheckbox", HTMLInputElement);
 
   if (
     !canvas ||
@@ -123,7 +128,16 @@ window.addEventListener("DOMContentLoaded", () => {
     return;
   }
 
-  ui = { canvas, ctx, info, senderList, refreshBtn, connectBtn, disconnectBtn, flipYCheckbox };
+  ui = {
+    canvas,
+    ctx,
+    info,
+    senderList,
+    refreshBtn,
+    connectBtn,
+    disconnectBtn,
+    flipYCheckbox,
+  };
   state.lastFpsTime = performance.now();
 
   senderList.addEventListener("change", () => {
@@ -155,7 +169,7 @@ window.addEventListener("DOMContentLoaded", () => {
       senderList.disabled = true;
       formatInfo();
     } catch (err) {
-      info.textContent = `Error: ${(err as Error).message}`;
+      info.textContent = `Error: ${err instanceof Error ? err.message : `${err}`}`;
     }
   });
 
