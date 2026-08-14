@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { readdir, readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 const version = process.argv[2]
@@ -60,13 +60,30 @@ for (const relativePath of manifestPaths) {
   await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`)
 }
 
-const sourcePaths = [
-  'packages/core/src/index.ts',
-  'packages/renderer/src/bridge.ts',
-  'packages/renderer/src/discovery.ts',
-  'packages/renderer/src/receiver.ts',
-  'packages/renderer/src/shared-texture-receiver.ts'
+const sourceRoots = [
+  'packages/core/src',
+  'packages/renderer/src',
+  'packages/example/src'
 ]
+
+async function listSourceFiles(relativeDirectory) {
+  const directory = resolve(root, relativeDirectory)
+  const entries = await readdir(directory, { withFileTypes: true })
+  const paths = []
+  for (const entry of entries) {
+    const relativePath = `${relativeDirectory}/${entry.name}`
+    if (entry.isDirectory()) {
+      paths.push(...await listSourceFiles(relativePath))
+    } else if (/\.(?:[cm]?[jt]sx?)$/.test(entry.name)) {
+      paths.push(relativePath)
+    }
+  }
+  return paths
+}
+
+const sourcePaths = (
+  await Promise.all(sourceRoots.map((sourceRoot) => listSourceFiles(sourceRoot)))
+).flat()
 
 for (const relativePath of sourcePaths) {
   const path = resolve(root, relativePath)
