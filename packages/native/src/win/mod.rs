@@ -24,7 +24,9 @@ impl Sender {
     pub fn send(&self, texture_handle: RawTextureHandle) -> Result<(), String> {
         let ret = unsafe { ffi::spout_bridge_send(self.handle, texture_handle) };
         if ret != 0 {
-            Err("Failed to send texture via Spout".into())
+            Err(format!(
+                "Failed to send texture via Spout (native error code {ret})"
+            ))
         } else {
             Ok(())
         }
