@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.15.0](https://github.com/AnotherBall/electron-texture-bridge/compare/core-v0.14.0...core-v0.15.0) (2026-08-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **renderer:** TextureBridge.dispose() now destroys the offscreen window synchronously instead of close()ing it. Consequences: the render window's close event and the page's beforeunload/unload no longer fire (closed still fires); 'disposed' listeners must not touch bridge.renderWindow.webContents (already destroyed); a leftover external renderWindow.destroy() workaround called after dispose() can throw — remove it, or guard it with isDestroyed(), or call it before dispose().
+
+### Features
+
+* add renderer package with high-level createTextureBridge API ([8d44863](https://github.com/AnotherBall/electron-texture-bridge/commit/8d44863610d74ace40d9b0568674ca326702be6e))
+* add TextureReceiver and listSenders API for Syphon/Spout ([#13](https://github.com/AnotherBall/electron-texture-bridge/issues/13)) ([9bbfb54](https://github.com/AnotherBall/electron-texture-bridge/commit/9bbfb54dd2b89f7fd621a45f4cd57ddbfb44c4e6))
+* add zero-copy GPU shared-texture receiver (Windows) ([2d1ad79](https://github.com/AnotherBall/electron-texture-bridge/commit/2d1ad79d6ebdfadde48b740b9565d3903d8e8f3c))
+* add zero-copy GPU shared-texture receiver (Windows) ([7909b5f](https://github.com/AnotherBall/electron-texture-bridge/commit/7909b5f11f5a7de410a0c404886f8cb2af791853))
+* convert to pnpm monorepo with scoped packages ([17a9e0a](https://github.com/AnotherBall/electron-texture-bridge/commit/17a9e0a8b22627ee28077506edef990153b20fec))
+* **core:** forwardSharedTexture primitive on a new electron subpath ([bb8a172](https://github.com/AnotherBall/electron-texture-bridge/commit/bb8a172f8167ef6608116c8e1c2b81cc6b410b0b))
+* **core:** re-export closeNativeHandle from native ([5bf928d](https://github.com/AnotherBall/electron-texture-bridge/commit/5bf928d062afed1a265a3ba39300c419eadd1d05))
+* **core:** return PaintDefect from sendTextureFromPaintEvent instead of silent drop ([f89fd74](https://github.com/AnotherBall/electron-texture-bridge/commit/f89fd74e63bde48ec34a7b45ec71345b53026246))
+* **core:** wrap native send failures in TextureSendError ([c4eef46](https://github.com/AnotherBall/electron-texture-bridge/commit/c4eef46a479aab12772c77584d9045efcfd4df29))
+* DI seam (createTextureBridgeWith) + synchronous dispose + package docs ([cca64cd](https://github.com/AnotherBall/electron-texture-bridge/commit/cca64cdb12ececea59e31a7059de7853fcffef84))
+* explicit native disposal with Symbol.dispose support ([#18](https://github.com/AnotherBall/electron-texture-bridge/issues/18)) ([e65509e](https://github.com/AnotherBall/electron-texture-bridge/commit/e65509eb4b12175c6f4416d3f983f2cbf506ecc4))
+* forwardSharedTexture / forwardFrames zero-copy monitors + Multi-Receiver Grid example ([7696926](https://github.com/AnotherBall/electron-texture-bridge/commit/769692637d16a4b5867b876529c22d08a4f7ffd9))
+* make silent paint drops observable (frameDropped) + guard ESM __dirname shim ([06677e1](https://github.com/AnotherBall/electron-texture-bridge/commit/06677e1cf5a2ce495aea7543218ff66f4a9c16e3))
+* migrate to @napolab/texture-bridge package scope ([2f5d3e4](https://github.com/AnotherBall/electron-texture-bridge/commit/2f5d3e4c6a6af61a00ae05dc05e25cdc45ff116a))
+* **spout:** event-driven receiver via native thread ([aa24f9e](https://github.com/AnotherBall/electron-texture-bridge/commit/aa24f9ea3f638f8f91998c4b6472b8c5f6d17ee8))
+
+
+### Bug Fixes
+
+* add repository field for npm provenance verification ([32da705](https://github.com/AnotherBall/electron-texture-bridge/commit/32da705c2d22796c3db80b8284b083c44279eb88))
+* **ci:** use stub module for native package in vitest ([86eccfa](https://github.com/AnotherBall/electron-texture-bridge/commit/86eccfacdf568940650eec9b350d2cb581fe89c6))
+* **core:** harden electron-free guard against subpath specifiers and chunk splitting ([6cba3f3](https://github.com/AnotherBall/electron-texture-bridge/commit/6cba3f3b707773b3bde57ec3a1edf9a5d5382e78))
+* **core:** harden electron-free guard, preserve error cause, dedupe deliver ([8f924cf](https://github.com/AnotherBall/electron-texture-bridge/commit/8f924cf5b35c11a014d1ff05903281fdfc39f575))
+* **core:** require both subpath artifacts, document sendImportedTexture, pin regex negatives ([1f0560d](https://github.com/AnotherBall/electron-texture-bridge/commit/1f0560dc3c34368a6e800a47251c6706cccd2c1c))
+* guard against undefined textureInfo in paint event ([#10](https://github.com/AnotherBall/electron-texture-bridge/issues/10)) ([f9f20e4](https://github.com/AnotherBall/electron-texture-bridge/commit/f9f20e49efb1857c42a895c52ccd2a6d8bc2c49e))
+* harden forwardFrames/forwardSharedTexture and the multiviewer example (code-review max findings) ([4880ea0](https://github.com/AnotherBall/electron-texture-bridge/commit/4880ea03412f654eac8eb50cb02305d1aa6216bf))
+* **renderer:** harden frameDropped edge cases from final review ([12cca63](https://github.com/AnotherBall/electron-texture-bridge/commit/12cca63e8d21b124ee3406f391905eb8e77d8902))
+* **renderer:** surface dispose() teardown semantics in release notes ([e6fc292](https://github.com/AnotherBall/electron-texture-bridge/commit/e6fc292afe05648fe7f2534a807fba01203cfb8e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @napolab/texture-bridge bumped to 0.15.0
+
 ## [0.14.0](https://github.com/naporin0624/electron-texture-bridge/compare/core-v0.13.1...core-v0.14.0) (2026-08-13)
 
 
