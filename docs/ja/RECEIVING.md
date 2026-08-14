@@ -1,0 +1,133 @@
+# Spout/Syphon からのテクスチャ受信
+
+受信経路は 2 つあり、それぞれ解決する問題が異なります。
+
+- **`TextureReceiver.receiveFrame()` / `createTextureReceiver()`** — RGBA リードバック。ネイティブ側が GPU→CPU ブリット（D3D11 ステージング / Metal ブリット）を実行し、IPC を 1 回経由して `ArrayBuffer` を渡します。1080p 1 フレームあたり約 8 MB が IPC 経由でコピーされます。JavaScript 側で実際にピクセルデータが欲しい場合（解析、画像エクスポート、独自のカラーパイプラインなど）に使ってください。
+- **`TextureReceiver.receiveSharedTexture()` / `createSharedTextureReceiver()` / `consumeSharedTexture()`** — ゼロコピー GPU 配信。ネイティブ側がフレームごとにプラットフォームネイティブな共有ハンドル（Windows では DXGI NT ハンドル、macOS では IOSurface ポインタ）を発行し、Electron の `sharedTexture.importSharedTexture` + `sendSharedTexture` のペアを介してレンダラーへ `VideoFrame` として渡します。CPU リードバックも `ArrayBuffer` の IPC コピーもありません。`ctx.drawImage(videoFrame, 0, 0)` は GPU 上で完結し、`GPUDevice.importExternalTexture({ source: videoFrame })` も同じテクスチャをコピーなしで WebGPU に渡します。受信した映像を表示するだけ、あるいは GPU 上で処理したいだけの場合に使ってください。
+
+そのフレームで何をしたいかに応じて、どちらか一方を選んでください。
+
+> **ステータス。** ゼロコピー GPU 経路は Windows（Spout）と macOS（Syphon Metal）の両方でエンドツーエンドの動作を確認済みです。macOS ではレシーバーがフレームごとに新しい `IOSurfaceRef` を発行し、レシーバーごとのステージング用 `MTLTexture` を経由して小さなレンダーパスで Y 反転を行うため、`drawImage(videoFrame)` / `importExternalTexture({ source: videoFrame })` の結果が正しい向きで表示されます。同じ `closeNativeHandle()` の所有権契約が両プラットフォームに適用されます。
+
+## メインプロセス: `createSharedTextureReceiver`
+
+```typescript
+// main process
+import { app, BrowserWindow } from "electron";
+import { createSharedTextureReceiver } from "@napolab/texture-bridge-renderer";
+
+app.whenReady().then(() => {
+  const receiverWindow = new BrowserWindow({
+    width: 960,
+    height: 540,
+    webPreferences: {
+      preload: /* path to preload that installs the consumer */ undefined,
+    },
+  });
+
+  const bridge = createSharedTextureReceiver({
+    senderName: "Resolume Arena",   // required
+    target: receiverWindow.webContents,
+    pollIntervalMs: 8,              // optional, defaults to 16
+    appName: undefined,             // optional, macOS filter
+    serverUuid: undefined,          // optional, macOS UUID
+    extraArgs: [],                  // optional, forwarded to sendSharedTexture(..., ...args)
+  });
+
+  bridge.on("fps", (fps) => console.log(`[receiver] ${fps.toFixed(1)} fps`));
+  bridge.on("error", (err) => console.error("[receiver]", err.message));
+  bridge.on("disposed", () => console.log("[receiver] disposed"));
+
+  bridge.start();
+
+  receiverWindow.on("closed", () => {
+    bridge.dispose();   // stops polling, releases the native receiver, emits "disposed"
+  });
+});
+```
+
+このブリッジは drop-latest ポリシーで動作します。前回の `sendSharedTexture` がまだ処理中の状態で次のポーリングが発火した場合、そのティックはスキップされます。これにより main プロセス側で保持される import 済みテクスチャ参照は常に最大 1 個に抑えられ、レンダラーの処理が遅い場合でもフレームが積み上がるのを防ぎます。
+
+## レンダラープロセス: `installSharedTextureReceiver` + `consumeSharedTexture`
+
+```typescript
+// renderer process (or preload with nodeIntegration: true, contextIsolation: false)
+import {
+  installSharedTextureReceiver,
+  consumeSharedTexture,
+} from "@napolab/texture-bridge-renderer/client";
+
+// Call once at startup. Binds Electron's single
+// sharedTexture.setSharedTextureReceiver slot to an internal pool so multiple
+// consumers can coexist. Idempotent.
+installSharedTextureReceiver();
+
+const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+const ctx = canvas.getContext("2d")!;
+
+const registration = consumeSharedTexture({
+  onFrame: ({ textureId, videoFrame }) => {
+    if (canvas.width !== videoFrame.displayWidth) canvas.width = videoFrame.displayWidth;
+    if (canvas.height !== videoFrame.displayHeight) canvas.height = videoFrame.displayHeight;
+    // Zero-copy GPU blit in Chromium when the source is a shared-texture VideoFrame.
+    ctx.drawImage(videoFrame, 0, 0);
+  },
+  onError: (err) => console.error("[consumer]", err),
+});
+
+// registration.dispose();  // optional — removes this consumer from the pool
+```
+
+`videoFrame` は標準の Web `VideoFrame` です。WebGPU で使う場合は `drawImage` の代わりに `device.importExternalTexture({ source: videoFrame })` に渡してください — こちらの経路もゼロコピーです。`videoFrame.close()` を自分で呼ぶ**必要はありません**。ハンドラーが返す Promise が解決した後、consumer 側のラッパーが close します。
+
+## オプション: `TextureReceiver.receiveSharedTexture()` を直接ポーリングする
+
+自前のスケジューラと統合するなど、ポーリングループ自体を自分で駆動したい場合は、低レベルのプリミティブを使い、ハンドルを手動で `sharedTexture.importSharedTexture` に渡してください。
+
+```typescript
+import { TextureReceiver, closeNativeHandle } from "@napolab/texture-bridge";
+import { sharedTexture } from "electron";
+
+const receiver = new TextureReceiver("Resolume Arena");
+const frame = receiver.receiveSharedTexture();
+if (frame) {
+  const handle =
+    process.platform === "win32" ? { ntHandle: frame.handle } : { ioSurface: frame.handle };
+  try {
+    const imported = sharedTexture.importSharedTexture({
+      textureInfo: {
+        codedSize: { width: frame.width, height: frame.height },
+        handle,
+        pixelFormat: frame.pixelFormat,   // "bgra" | "rgba" | "rgbaf16"
+      },
+    });
+    // ... deliver `imported` via sendSharedTexture, then imported.release() ...
+  } catch (err) {
+    // importSharedTexture threw before taking ownership — release ourselves.
+    closeNativeHandle(frame.handle);
+    throw err;
+  }
+}
+```
+
+> **所有権契約。** `receiveSharedTexture()` が返す `SharedTextureFrame.handle` は、そのつど新しく発行されたネイティブハンドルです。`importSharedTexture` が成功すると、Electron がそのハンドルの所有権を引き受け、import 済みテクスチャが release されたタイミングで解放します。ハンドルが `importSharedTexture` に渡らない経路（未知のピクセルフォーマット、ターゲットが破棄済み、`importSharedTexture` が例外を投げた、フレームをスキップすると決めた、など）を通った場合は**必ず** `closeNativeHandle(frame.handle)` を呼んでください。呼ばないと、フレームごとに NT HANDLE（Windows）/ `IOSurfaceRef`（macOS）がリークします。
+
+## 利用可能なセンダーの検出
+
+```typescript
+import { listSenders } from "@napolab/texture-bridge-renderer";
+
+for (const s of listSenders()) {
+  console.log(s.name, s.appName ?? "", s.uuid ?? "");
+}
+// [{ name: "Resolume Arena", appName: "Resolume Arena", uuid: "..." }, ...]
+```
+
+継続的な変更通知が必要な場合は `SenderDiscovery` を使ってください（[API リファレンス](API.md#senderdiscovery)を参照）。
+
+## レンダラーのコンテキスト分離
+
+Electron の `sharedTexture` モジュールは、`electron` を実行時に解決できる main / renderer プロセスからのみアクセスできます。`@napolab/texture-bridge-renderer/client` を Vite 駆動のレンダラーから直接 import すると、dev のプリバンドル時に失敗することがあります（`path.join is not a function`）。これは Vite が `electron` の CJS モジュールをプリバンドルできないためです。回避方法は 2 つあります。
+
+1. **単純なケースでの推奨方法:** `installSharedTextureReceiver()` と `consumeSharedTexture()` を **preload スクリプト**（electron-vite / electron-builder が `externalizeDepsPlugin` でバンドルする）に置き、レシーバーウィンドウを `nodeIntegration: true, contextIsolation: false` で実行します。サンプルアプリはこの方式を採っています — [`packages/example/src/preload/receiver.ts`](../../packages/example/src/preload/receiver.ts) を参照してください。
+2. **コンテキスト分離を維持する場合:** consumer を preload 側でバインドし、各 `VideoFrame` を `window.postMessage(videoFrame, "*", [videoFrame])`（`VideoFrame` は transferable です）で分離された renderer world へ転送します。使用後は renderer 側で close してください。

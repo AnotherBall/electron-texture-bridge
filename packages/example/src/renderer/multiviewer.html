@@ -1,0 +1,181 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Multiviewer</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      /* html+body height:100% turns body into the scrolling container that
+         matches the window's client area — required for overflow-y: auto
+         below to actually produce a reachable scrollbar instead of letting
+         the flex column silently grow past the viewport with no scroll
+         affordance. */
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        background: #111;
+        color: #eee;
+        font-family: monospace;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        /* Horizontal padding trimmed to 12px so content (968px decks grid /
+           962px composite, whichever is wider) plus padding fits inside the
+           BrowserWindow's 1000px content width (useContentSize: true) —
+           968 + 24 = 992 <= 1000. Vertical padding unchanged. */
+        padding: 16px 12px;
+        gap: 12px;
+        /* Full content (decks grid + composite preview) measures ~1348px
+           tall — taller than the window's ~1000px content height and than
+           most laptop displays. Rather than growing the window to match,
+           the composite preview is display-scaled down (see #composite
+           below) and the remainder is reachable by scrolling this element,
+           the document's scrolling box now that html/body are 100% tall. */
+        overflow-y: auto;
+      }
+      h1 {
+        font-size: 16px;
+      }
+      #global-controls {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      select {
+        background: #222;
+        color: #eee;
+        border: 1px solid #555;
+        padding: 4px 8px;
+        font-family: monospace;
+        font-size: 13px;
+      }
+      button {
+        background: #333;
+        color: #eee;
+        border: 1px solid #555;
+        padding: 4px 12px;
+        cursor: pointer;
+        font-family: monospace;
+        font-size: 13px;
+      }
+      button:hover {
+        background: #444;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      #decks {
+        display: grid;
+        grid-template-columns: repeat(2, 480px);
+        gap: 8px;
+      }
+      .deck {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        align-items: center;
+      }
+      .deck canvas {
+        border: 1px solid #444;
+        background: #000;
+      }
+      .deck-controls {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .deck-status {
+        font-size: 11px;
+        color: #aaa;
+      }
+      #composite-section {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+      }
+      #composite {
+        border: 1px solid #444;
+        background: #000;
+        /* Display-scaled down via CSS only — the backing store stays its
+           full 960x540 (see the `width`/`height` attributes on the element
+           below), so multiviewer.ts's drawImage/quadrant math (which
+           targets the canvas's internal pixel coordinate space, not its
+           CSS box) is completely untouched. This is purely a layout fix to
+           shrink the composite section's on-screen footprint. */
+        width: 640px;
+        height: 360px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Multi-Receiver Grid</h1>
+      </header>
+      <section id="global-controls" aria-label="Global controls">
+        <label
+          title="When checked, the Syphon receiver route applies a vertical flip when staging the IOSurface for importSharedTexture. Only affects newly connected slots on the syphon route."
+          ><input type="checkbox" id="flipY" checked />Flip Y (syphon, mac)</label
+        >
+        <button id="refreshBtn">Refresh Sources</button>
+      </section>
+      <section id="decks" aria-label="Deck grid">
+        <article class="deck">
+          <h2 class="deck-title">P0</h2>
+          <canvas id="deck-0" width="480" height="270"></canvas>
+          <div class="deck-controls">
+            <select id="source-0"></select>
+            <button id="connect-0" disabled>Connect</button>
+            <button id="disconnect-0" disabled>Disconnect</button>
+          </div>
+          <span id="status-0" class="deck-status">P0 | idle</span>
+        </article>
+        <article class="deck">
+          <h2 class="deck-title">P1</h2>
+          <canvas id="deck-1" width="480" height="270"></canvas>
+          <div class="deck-controls">
+            <select id="source-1"></select>
+            <button id="connect-1" disabled>Connect</button>
+            <button id="disconnect-1" disabled>Disconnect</button>
+          </div>
+          <span id="status-1" class="deck-status">P1 | idle</span>
+        </article>
+        <article class="deck">
+          <h2 class="deck-title">P2</h2>
+          <canvas id="deck-2" width="480" height="270"></canvas>
+          <div class="deck-controls">
+            <select id="source-2"></select>
+            <button id="connect-2" disabled>Connect</button>
+            <button id="disconnect-2" disabled>Disconnect</button>
+          </div>
+          <span id="status-2" class="deck-status">P2 | idle</span>
+        </article>
+        <article class="deck">
+          <h2 class="deck-title">P3</h2>
+          <canvas id="deck-3" width="480" height="270"></canvas>
+          <div class="deck-controls">
+            <select id="source-3"></select>
+            <button id="connect-3" disabled>Connect</button>
+            <button id="disconnect-3" disabled>Disconnect</button>
+          </div>
+          <span id="status-3" class="deck-status">P3 | idle</span>
+        </article>
+      </section>
+      <section id="composite-section" aria-label="Composite preview">
+        <h2 style="font-size: 13px">Composite Preview (not re-sent to Syphon)</h2>
+        <canvas id="composite" width="960" height="540"></canvas>
+      </section>
+    </main>
+    <!-- All renderer logic lives in the preload (src/preload/multiviewer.ts).
+         The window runs with `nodeIntegration: true, contextIsolation: false`,
+         so this preload shares the window's global scope. -->
+  </body>
+</html>

@@ -50,6 +50,13 @@ vi.mock("@napolab/texture-bridge-core", () => ({
 }));
 
 import { createSharedTextureReceiver } from "../shared-texture-receiver";
+import {
+  FrameReceiveError,
+  ReceiverStoppedError,
+  TextureDeliveryError,
+  TextureImportError,
+  UnsupportedPixelFormatError,
+} from "../errors";
 
 const makeFrame = (overrides: Partial<MockFrame> = {}): MockFrame => ({
   width: 1920,
@@ -61,8 +68,12 @@ const makeFrame = (overrides: Partial<MockFrame> = {}): MockFrame => ({
 });
 
 const flushPromises = async () => {
-  await Promise.resolve();
-  await Promise.resolve();
+  // Drain the microtask queue enough rounds to settle chained ResultAsync
+  // combinators — the exact hop count is an implementation detail the tests
+  // must not pin.
+  for (const _ of Array.from({ length: 20 })) {
+    await Promise.resolve();
+  }
 };
 
 describe("createSharedTextureReceiver", () => {
@@ -222,12 +233,13 @@ describe("createSharedTextureReceiver", () => {
 
     expect(handler).toHaveBeenCalled();
     expect(handler.mock.calls[0][0]).toBeInstanceOf(Error);
+    expect(handler.mock.calls[0][0]).toBeInstanceOf(FrameReceiveError);
     expect((handler.mock.calls[0][0] as Error).message).toBe("native boom");
 
     bridge.dispose();
   });
 
-  it("emits 'error' when importSharedTexture throws and does not call sendSharedTexture", () => {
+  it("emits the prepare error on the same tick's microtask queue when importSharedTexture throws, and does not call sendSharedTexture", async () => {
     const handler = vi.fn();
     mockReceiver.receiveSharedTexture.mockReturnValue(makeFrame());
     mockImportSharedTexture.mockImplementation(() => {
@@ -242,8 +254,11 @@ describe("createSharedTextureReceiver", () => {
     bridge.on("error", handler);
     bridge.start();
     vi.advanceTimersByTime(15);
+    await flushPromises();
 
     expect(handler).toHaveBeenCalled();
+    expect(handler.mock.calls[0][0]).toBeInstanceOf(TextureImportError);
+    expect((handler.mock.calls[0][0] as Error).message).toBe("import failed");
     expect(mockSendSharedTexture).not.toHaveBeenCalled();
 
     bridge.dispose();
@@ -266,6 +281,8 @@ describe("createSharedTextureReceiver", () => {
     await flushPromises();
     expect(mockImported.release).toHaveBeenCalledTimes(1);
     expect(handler).toHaveBeenCalled();
+    expect(handler.mock.calls[0][0]).toBeInstanceOf(TextureDeliveryError);
+    expect((handler.mock.calls[0][0] as Error).message).toBe("send failed");
 
     bridge.dispose();
   });
@@ -538,7 +555,9 @@ describe("createSharedTextureReceiver", () => {
     expect(errorHandler).toHaveBeenCalledTimes(11);
     const finalErr = errorHandler.mock.calls[10][0] as Error;
     expect(finalErr).toBeInstanceOf(Error);
+    expect(finalErr).toBeInstanceOf(ReceiverStoppedError);
     expect(finalErr.message).toMatch(/stopped after 10 consecutive errors/);
+    expect(errorHandler.mock.calls[0][0]).toBeInstanceOf(FrameReceiveError);
 
     // Receiver should now be stopped: further timer advancement must not
     // invoke receiveSharedTexture again.
@@ -709,6 +728,7 @@ describe("createSharedTextureReceiver", () => {
     expect(mockSendSharedTexture).not.toHaveBeenCalled();
     expect(errorHandler).toHaveBeenCalled();
     const err = errorHandler.mock.calls[0][0] as Error;
+    expect(err).toBeInstanceOf(UnsupportedPixelFormatError);
     expect(err.message).toMatch(/unsupported pixelFormat/);
     expect(err.message).toMatch(/something-weird/);
 
@@ -769,6 +789,7 @@ describe("createSharedTextureReceiver", () => {
     expect(errorHandler).toHaveBeenCalledTimes(1);
     const emitted = errorHandler.mock.calls[0][0] as Error;
     expect(emitted).toBeInstanceOf(Error);
+    expect(emitted).toBeInstanceOf(UnsupportedPixelFormatError);
     expect(emitted.message).toMatch(/unsupported pixelFormat/);
     expect(emitted.message).toMatch(/yuv420p/);
 
@@ -801,6 +822,7 @@ describe("createSharedTextureReceiver", () => {
     expect(errorHandler).toHaveBeenCalledTimes(1);
     const emitted = errorHandler.mock.calls[0][0] as Error;
     expect(emitted).toBeInstanceOf(Error);
+    expect(emitted).toBeInstanceOf(TextureImportError);
     expect(emitted.message).toBe("import failed badly");
 
     bridge.dispose();

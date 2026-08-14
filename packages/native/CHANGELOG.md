@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.14.0](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.13.1...native-v0.14.0) (2026-08-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* **renderer:** TextureBridge.dispose() now destroys the offscreen window synchronously instead of close()ing it. Consequences: the render window's close event and the page's beforeunload/unload no longer fire (closed still fires); 'disposed' listeners must not touch bridge.renderWindow.webContents (already destroyed); a leftover external renderWindow.destroy() workaround called after dispose() can throw — remove it, or guard it with isDestroyed(), or call it before dispose().
+
+### Bug Fixes
+
+* **renderer:** surface dispose() teardown semantics in release notes ([e6fc292](https://github.com/naporin0624/electron-texture-bridge/commit/e6fc292afe05648fe7f2534a807fba01203cfb8e))
+
 ## [0.13.1](https://github.com/naporin0624/electron-texture-bridge/compare/native-v0.13.0...native-v0.13.1) (2026-06-15)
 
 

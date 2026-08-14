@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.14.0](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.13.1...renderer-v0.14.0) (2026-08-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* **renderer:** TextureBridge.dispose() now destroys the offscreen window synchronously instead of close()ing it. Consequences: the render window's close event and the page's beforeunload/unload no longer fire (closed still fires); 'disposed' listeners must not touch bridge.renderWindow.webContents (already destroyed); a leftover external renderWindow.destroy() workaround called after dispose() can throw — remove it, or guard it with isDestroyed(), or call it before dispose().
+
+### Features
+
+* DI seam (createTextureBridgeWith) + synchronous dispose + package docs ([cca64cd](https://github.com/naporin0624/electron-texture-bridge/commit/cca64cdb12ececea59e31a7059de7853fcffef84))
+* forwardSharedTexture / forwardFrames zero-copy monitors + Multi-Receiver Grid example ([7696926](https://github.com/naporin0624/electron-texture-bridge/commit/769692637d16a4b5867b876529c22d08a4f7ffd9))
+* make silent paint drops observable (frameDropped) + guard ESM __dirname shim ([06677e1](https://github.com/naporin0624/electron-texture-bridge/commit/06677e1cf5a2ce495aea7543218ff66f4a9c16e3))
+* **renderer:** add OSR scale policy resolvers for Electron 41+ deviceScaleFactor ([557a35f](https://github.com/naporin0624/electron-texture-bridge/commit/557a35f6f6328223fd15bfb008c3f7b08432732b))
+* **renderer:** apply OSR scale policy to window sizing and resize ([a9d44db](https://github.com/naporin0624/electron-texture-bridge/commit/a9d44dbf0700a7126967edd38c59403f376c7863))
+* **renderer:** emit frameDropped event for silently dropped paint frames ([9e74900](https://github.com/naporin0624/electron-texture-bridge/commit/9e74900f23f2dfe1226384742bbc6d8ab5691e19))
+* **renderer:** expose createTextureBridgeWith dependency-injection seam ([770d223](https://github.com/naporin0624/electron-texture-bridge/commit/770d22317593426bc3932799e35ed7dcce94fbf0))
+* **renderer:** expose droppedReason and harden frameDropped test coverage ([7187bb3](https://github.com/naporin0624/electron-texture-bridge/commit/7187bb321ceae0358bf7dc6232f4f19de73e4ace))
+* **renderer:** pin offscreen.deviceScaleFactor=1 under unit-scale policy ([2ca1c92](https://github.com/naporin0624/electron-texture-bridge/commit/2ca1c922bcc80385603d3fecf7a8232890ae432f))
+* **renderer:** re-export TextureSendError and document the new throw contract ([275124a](https://github.com/naporin0624/electron-texture-bridge/commit/275124a635aa1378bd9ed635df372b3afe32dfbf))
+* **renderer:** TextureBridge.forwardFrames zero-copy monitor driver ([66c9d13](https://github.com/naporin0624/electron-texture-bridge/commit/66c9d13caa7797d65063ed09ddf88d255d382dbf))
+* version-aware OSR scale policy (pin deviceScaleFactor on Electron 41+) ([04dfe8a](https://github.com/naporin0624/electron-texture-bridge/commit/04dfe8aec88c619040fa7c1efeac30398a9559b2))
+
+
+### Bug Fixes
+
+* **core:** harden electron-free guard, preserve error cause, dedupe deliver ([8f924cf](https://github.com/naporin0624/electron-texture-bridge/commit/8f924cf5b35c11a014d1ff05903281fdfc39f575))
+* harden forwardFrames/forwardSharedTexture and the multiviewer example (code-review max findings) ([4880ea0](https://github.com/naporin0624/electron-texture-bridge/commit/4880ea03412f654eac8eb50cb02305d1aa6216bf))
+* **renderer:** destroy the offscreen window synchronously in dispose() ([9403e2a](https://github.com/naporin0624/electron-texture-bridge/commit/9403e2a67bc56d08ccb645baacde46071ff2d8ef))
+* **renderer:** guard forwardFrames against post-dispose registration and dead targets ([4440eed](https://github.com/naporin0624/electron-texture-bridge/commit/4440eed0d436ccabd165619e517d025d73d4067f))
+* **renderer:** harden frameDropped edge cases from final review ([12cca63](https://github.com/naporin0624/electron-texture-bridge/commit/12cca63e8d21b124ee3406f391905eb8e77d8902))
+* **renderer:** keep preview sendFrame best-effort and cover PreviewManager ([3f4fb50](https://github.com/naporin0624/electron-texture-bridge/commit/3f4fb5024aa4c4943d464858206ed1e707c56b23))
+* **renderer:** make frame forwards independent of the native send path ([d0c7186](https://github.com/naporin0624/electron-texture-bridge/commit/d0c7186322cf2fe3d2285f87a179b1b7d862f586))
+* **renderer:** surface dispose() teardown semantics in release notes ([e6fc292](https://github.com/naporin0624/electron-texture-bridge/commit/e6fc292afe05648fe7f2534a807fba01203cfb8e))
+* **renderer:** unhook destroyed listeners on dispose and reject destroyed targets ([17e5fb4](https://github.com/naporin0624/electron-texture-bridge/commit/17e5fb42eaff74ed53175fccda2288de65ffbc7c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * @napolab/texture-bridge-core bumped to 0.14.0
+
 ## [0.13.1](https://github.com/naporin0624/electron-texture-bridge/compare/renderer-v0.13.0...renderer-v0.13.1) (2026-06-15)
 
 
