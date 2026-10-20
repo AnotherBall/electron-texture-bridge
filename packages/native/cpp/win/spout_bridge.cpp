@@ -7,6 +7,7 @@
 // implicit contract that `*ppTexture` be pre-allocated, which broke the
 // zero-copy GPU receive path in our configuration.
 
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -242,6 +243,16 @@ struct SpoutReceiverBridge {
     bool              accessMutexCreated;
     bool              connected;
 
+    // Frame counter read directly from the sender's "<name>_Count_Semaphore".
+    // spoutFrameCount only counts when the machine-wide "Framecount" registry
+    // setting is on; without it every poll looked like a new frame, so the
+    // same texture was copied again on each poll. Reading the semaphore here
+    // needs no registry change and falls back to "always new" for senders
+    // that do not count frames.
+    HANDLE            countSemaphore;
+    long              lastFrameCount;
+    bool              lastFrameNew;
+
     // Our NT-shared output staging (per-frame DuplicateHandle target).
     ID3D11Texture2D*  ntStaging;
     unsigned int      ntStagingWidth;
@@ -401,6 +412,15 @@ static bool refresh_sender(SpoutReceiverBridge* bridge) {
         bridge->cachedSenderHandle = shareHandle;
     }
 
+    // Open (or create) the frame count semaphore under the same name as the
+    // Spout SDK, with the SDK's initial count, so either side may create it.
+    if (!bridge->countSemaphore) {
+        char semaphoreName[300];
+        snprintf(semaphoreName, sizeof(semaphoreName), "%s_Count_Semaphore", bridge->senderName);
+        bridge->countSemaphore = CreateSemaphoreA(nullptr, 1, LONG_MAX, semaphoreName);
+        bridge->lastFrameCount = 0;
+    }
+
     // Enable the named semaphore + mutex once we know who we're talking to.
     if (!bridge->frameCountEnabled) {
         bridge->frameCount->EnableFrameCount(bridge->senderName);
@@ -539,6 +559,26 @@ static bool ensure_cpu_staging(SpoutReceiverBridge* bridge,
     return true;
 }
 
+// spoutFrameCount::GetNewFrame without the registry gate: take one count and
+// give it back to read the sender's frame number. 0 means the sender does not
+// count frames (every poll is new); an unchanged number means no new frame.
+static bool get_new_frame(SpoutReceiverBridge* bridge) {
+    bridge->lastFrameNew = true;
+    if (!bridge->countSemaphore) return true;
+
+    LONG frameCount = 0;
+    if (WaitForSingleObject(bridge->countSemaphore, 0) == WAIT_OBJECT_0) {
+        if (!ReleaseSemaphore(bridge->countSemaphore, 1, &frameCount)) return true;
+    }
+    if (frameCount == 0) return true;
+    if (frameCount == bridge->lastFrameCount) {
+        bridge->lastFrameNew = false;
+        return false;
+    }
+    bridge->lastFrameCount = frameCount;
+    return true;
+}
+
 void* spout_receiver_create(const char* sender_name) {
     SpoutReceiverBridge* bridge = new SpoutReceiverBridge();
     memset(bridge, 0, sizeof(*bridge));
@@ -569,6 +609,7 @@ void spout_receiver_destroy(void* handle) {
         if (bridge->accessMutexCreated) bridge->frameCount->CloseAccessMutex();
         if (bridge->frameCountEnabled)  bridge->frameCount->DisableFrameCount();
     }
+    if (bridge->countSemaphore) CloseHandle(bridge->countSemaphore);
 
     delete bridge->senderNames;
     delete bridge->frameCount;
@@ -579,7 +620,7 @@ void spout_receiver_destroy(void* handle) {
 int32_t spout_receiver_has_new_frame(void* handle) {
     if (!handle) return 0;
     SpoutReceiverBridge* bridge = static_cast<SpoutReceiverBridge*>(handle);
-    return bridge->frameCount->IsFrameNew() ? 1 : 0;
+    return bridge->lastFrameNew ? 1 : 0;
 }
 
 // Return codes:
@@ -616,7 +657,7 @@ int32_t spout_receiver_receive_rgba(void* handle,
     }
 
     // Drop the poll if Spout's semaphore says no new frame arrived.
-    if (!bridge->frameCount->GetNewFrame()) return 1;
+    if (!get_new_frame(bridge)) return 1;
 
     // Acquire the sender's texture (keyed mutex or named mutex).
     if (!bridge->frameCount->CheckTextureAccess(bridge->senderTexture)) return 1;
@@ -686,7 +727,7 @@ int32_t spout_receiver_receive_shared_texture(void* handle,
         return 2;
     }
 
-    if (!bridge->frameCount->GetNewFrame()) return 1;
+    if (!get_new_frame(bridge)) return 1;
 
     if (!bridge->frameCount->CheckTextureAccess(bridge->senderTexture)) return 1;
     bridge->context->CopyResource(bridge->ntStaging, bridge->senderTexture);
