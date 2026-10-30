@@ -38,6 +38,8 @@ pub enum CopyFrameResult {
         height: u32,
         format: u32,
     },
+    /// The sender held the texture; nothing was copied this time.
+    SenderBusy,
     /// No sender is published under this name.
     NotConnected,
 }
@@ -161,9 +163,7 @@ impl Receiver {
         match ret {
             0 => {
                 if nt_handle.is_null() {
-                    return Err(
-                        "Spout returned success but shared NT handle is null".into(),
-                    );
+                    return Err("Spout returned success but shared NT handle is null".into());
                 }
                 Ok(Some(SharedTextureHandleInfo {
                     nt_handle: nt_handle as u64,
@@ -215,6 +215,7 @@ impl Receiver {
         //  0 = frame copied
         //  1 = no new frame
         //  2 = dst missing or mismatched (size / format / device)
+        //  3 = the sender holds the texture (did not wait for it)
         // -1 = not connected
         match ret {
             0 => CopyFrameResult::Copied,
@@ -224,6 +225,7 @@ impl Receiver {
                 height,
                 format,
             },
+            3 => CopyFrameResult::SenderBusy,
             _ => CopyFrameResult::NotConnected,
         }
     }

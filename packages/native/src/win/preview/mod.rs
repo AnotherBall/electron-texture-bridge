@@ -7,7 +7,7 @@
 
 mod gpu;
 mod renderer;
-mod state;
+use crate::preview_state as state;
 mod window;
 
 use super::receiver::Receiver;
@@ -64,6 +64,10 @@ impl PreviewView {
 
     pub fn set_background(&mut self, clear_color: [f32; 4]) {
         self.shared.update(|v| v.clear_color = clear_color);
+    }
+
+    pub fn set_vsync(&mut self, vsync: bool) {
+        self.shared.update(|v| v.vsync = vsync);
     }
 
     pub fn stats(&self) -> PreviewStatsSnapshot {

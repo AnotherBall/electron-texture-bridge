@@ -4,8 +4,9 @@
 
 use super::gpu::{create_default_device, FrameTexture, Gpu, ShaderBytecode, PRESENT_SYNC_INTERVAL};
 use super::state::{Shared, ViewState};
-use super::window::is_window_alive;
-use crate::preview_stats::{is_vsync, StatsTracker};
+use super::window::{is_window_alive, monitor_refresh_hz};
+use crate::preview_layout::{should_present_unsynced, unsynced_min_interval_ns};
+use crate::preview_stats::{is_vsync, LoopStage, StatsTracker, STATS_WINDOW_NS};
 use crate::win::receiver::{CopyFrameResult, Receiver};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -19,6 +20,8 @@ const FRAME_WAIT_MS: u32 = 100;
 const IDLE_WAIT: Duration = Duration::from_millis(100);
 /// Back-off after a GPU failure before rebuilding resources.
 const RETRY_DELAY: Duration = Duration::from_millis(250);
+/// Sleep while vsync is off and nothing is due yet, so the loop does not spin.
+const UNSYNCED_POLL: Duration = Duration::from_millis(1);
 /// Back-off while the window is occluded (Present does not block then).
 const OCCLUDED_DELAY: Duration = Duration::from_millis(16);
 
@@ -83,6 +86,17 @@ struct Renderer {
     stats: StatsTracker,
     /// Origin of the monotonic timestamps fed to `stats`.
     clock: Instant,
+    /// When the monitor's refresh rate was last read (it changes rarely).
+    monitor_checked_ns: Option<u64>,
+    /// The view's vsync switch as of the last pass.
+    vsync: bool,
+    /// The last receive copied a new sender frame not presented yet.
+    new_frame: bool,
+    last_present_ns: u64,
+    /// View generation last presented, to re-present after a view change.
+    presented_generation: u64,
+    /// Last refresh rate read for the window's monitor (0 = unknown).
+    monitor_hz: u32,
 }
 
 impl Renderer {
@@ -99,6 +113,12 @@ impl Renderer {
             wait_pending: false,
             stats: StatsTracker::new(),
             clock: Instant::now(),
+            monitor_checked_ns: None,
+            vsync: false,
+            new_frame: false,
+            last_present_ns: 0,
+            presented_generation: u64::MAX,
+            monitor_hz: 0,
         }
     }
 
@@ -111,13 +131,34 @@ impl Renderer {
         let now = self.now_ns();
         let snapshot = self.stats.snapshot(now);
         self.shared.publish_stats(&snapshot);
+        if self
+            .monitor_checked_ns
+            .is_none_or(|t| now.saturating_sub(t) >= STATS_WINDOW_NS)
+        {
+            self.monitor_checked_ns = Some(now);
+            self.monitor_hz = monitor_refresh_hz(self.hwnd);
+            self.shared.set_monitor_refresh_hz(self.monitor_hz);
+        }
+    }
+
+    /// Run `f` and record how long it took as `stage`.
+    fn timed<T>(&mut self, stage: LoopStage, f: impl FnOnce(&mut Self) -> T) -> T {
+        let start = self.now_ns();
+        let result = f(self);
+        let end = self.now_ns();
+        self.stats.record_stage(stage, end, end - start);
+        result
     }
 
     fn run(&mut self) {
         loop {
-            self.wait_for_vsync();
+            self.timed(LoopStage::Wait, |r| r.wait_for_vsync());
             self.publish_stats();
             let view = self.shared.snapshot();
+            if view.vsync != self.vsync {
+                self.vsync = view.vsync;
+                self.shared.set_vsync(is_vsync(self.sync_interval()));
+            }
             if view.stop || !is_window_alive(self.hwnd) {
                 break;
             }
@@ -134,7 +175,21 @@ impl Renderer {
         self.reset_gpu();
     }
 
+    fn sync_interval(&self) -> u32 {
+        if self.vsync {
+            PRESENT_SYNC_INTERVAL
+        } else {
+            0
+        }
+    }
+
+    /// With vsync off the frame-latency object is not waited on: presents
+    /// follow new frames instead (`should_present_unsynced`).
     fn wait_for_vsync(&mut self) {
+        if !self.vsync {
+            self.wait_pending = false;
+            return;
+        }
         if !self.wait_pending {
             return;
         }
@@ -146,7 +201,7 @@ impl Renderer {
 
     fn render_frame(&mut self, view: &ViewState) -> Result<(), String> {
         self.ensure_gpu()?;
-        self.receive_frame()?;
+        self.timed(LoopStage::Receive, |r| r.receive_frame())?;
 
         let gpu = self.gpu.as_mut().ok_or("GPU resources missing")?;
         let created = gpu.ensure_swapchain(self.hwnd, view.width, view.height)?;
@@ -157,18 +212,34 @@ impl Renderer {
             self.wait_pending = true;
             return Ok(());
         }
+        if !view.vsync {
+            let now = self.clock.elapsed().as_nanos() as u64;
+            let since = now.saturating_sub(self.last_present_ns);
+            let changed = view.generation != self.presented_generation;
+            let gap = unsynced_min_interval_ns(self.monitor_hz);
+            if !should_present_unsynced(self.new_frame, changed, since, gap) {
+                std::thread::sleep(UNSYNCED_POLL);
+                return Ok(());
+            }
+        }
         let frame = if self.has_frame {
             self.frame.as_ref()
         } else {
             None
         };
+        let start = self.clock.elapsed().as_nanos() as u64;
         gpu.draw(&view.clear_color, frame)?;
-        self.present()
+        let result = self.present(view.vsync);
+        self.presented_generation = view.generation;
+        let end = self.now_ns();
+        self.stats
+            .record_stage(LoopStage::Present, end, end - start);
+        result
     }
 
-    fn present(&mut self) -> Result<(), String> {
+    fn present(&mut self, vsync: bool) -> Result<(), String> {
         let gpu = self.gpu.as_ref().ok_or("GPU resources missing")?;
-        let hr = gpu.present();
+        let hr = gpu.present(vsync);
         self.wait_pending = true;
         if hr == DXGI_STATUS_OCCLUDED {
             std::thread::sleep(OCCLUDED_DELAY);
@@ -180,6 +251,8 @@ impl Renderer {
         }
         let now = self.now_ns();
         self.stats.record_present(now, self.has_frame);
+        self.last_present_ns = now;
+        self.new_frame = false;
         Ok(())
     }
 
@@ -199,7 +272,8 @@ impl Renderer {
     fn install_gpu(&mut self, device: ID3D11Device) -> Result<(), String> {
         let gpu = Gpu::new(device, &self.shaders)?;
         self.shared.set_adapter_name(gpu.adapter_name());
-        self.shared.set_vsync(is_vsync(PRESENT_SYNC_INTERVAL));
+        self.shared.set_vsync(is_vsync(self.sync_interval()));
+        self.shared.set_tearing(gpu.tearing_supported());
         self.gpu = Some(gpu);
         Ok(())
     }
@@ -239,6 +313,7 @@ impl Renderer {
         match result {
             CopyFrameResult::Copied => {
                 self.has_frame = true;
+                self.new_frame = true;
                 let now = self.now_ns();
                 self.stats
                     .record_frame_received(now, self.receiver.frame_count());
@@ -247,6 +322,10 @@ impl Renderer {
                 self.has_frame = false;
                 self.stats.record_disconnected();
                 self.shared.set_frame_size(0, 0);
+            }
+            CopyFrameResult::SenderBusy => {
+                let now = self.now_ns();
+                self.stats.record_sender_busy(now);
             }
             CopyFrameResult::NoNewFrame | CopyFrameResult::NeedsTexture { .. } => {}
         }

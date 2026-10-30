@@ -68,6 +68,25 @@ export interface JsSenderInfo {
  */
 export declare function closeNativeHandle(handle: Buffer): void
 /**
+ * Optional `PreviewView` constructor settings. Every field is macOS-only
+ * and ignored on Windows (a Spout sender is found by name alone).
+ */
+export interface PreviewViewOptions {
+  /**
+   * Syphon server UUID (`listSenders()[].uuid`); takes priority over the
+   * name, like `TextureReceiver`'s `serverUuid`.
+   */
+  serverUuid?: string
+  /** Syphon application name filter, used with the sender name. */
+  appName?: string
+  /**
+   * Draw the Syphon texture's first row at the bottom (Syphon's
+   * bottom-left origin). Default true, matching `TextureReceiver`'s
+   * default receive-side flip.
+   */
+  flipY?: boolean
+}
+/**
  * napi-rs object returned from `PreviewView.getStats()`. Per-second figures
  * cover a sliding window of about 1 s; totals run since the view was created.
  */
@@ -102,18 +121,44 @@ export interface PreviewStats {
   presentIntervalAvgMs: number
   /** Longest time between consecutive presents in the last second (ms). */
   presentIntervalMaxMs: number
-  /** Swapchain size in physical pixels (0 until it exists). */
+  /**
+   * Swapchain (macOS: CAMetalLayer drawable) size in physical pixels
+   * (0 until it exists).
+   */
   swapchainWidth: number
   swapchainHeight: number
   /** Size of the sender frame being drawn (0 while not connected). */
   frameWidth: number
   frameHeight: number
-  /** Description of the GPU adapter rendering the view ("" until known). */
+  /**
+   * GPU rendering the view: DXGI adapter description / MTLDevice name
+   * ("" until known).
+   */
   adapterName: string
-  /** Whether presents wait for vertical blank (sync interval > 0). */
+  /**
+   * Whether presents wait for vertical blank (Windows: sync interval > 0;
+   * macOS: CAMetalLayer.displaySyncEnabled).
+   */
   vsync: boolean
   /** Whether the sender was published at the last poll. */
   connected: boolean
+  /** Refresh rate of the monitor the view is on (Hz); 0 when unknown. */
+  monitorRefreshHz: number
+  /**
+   * Sender polls per second (last 1 s) that found the sender holding the
+   * texture; the previous frame is shown again instead of waiting.
+   */
+  senderBusyFps: number
+  /**
+   * Render-loop stage times over the last 1 s (ms): waiting for the
+   * swapchain, polling + copying the sender frame, draw + Present.
+   */
+  waitAvgMs: number
+  receiveAvgMs: number
+  receiveMaxMs: number
+  presentCallAvgMs: number
+  /** Tearing presents are available for vsync off (Windows). */
+  tearingSupported: boolean
 }
 /** List all available texture senders (Syphon servers / Spout senders). */
 export declare function listSenders(): Array<JsSenderInfo>
@@ -232,20 +277,23 @@ export declare class TextureReceiver {
 /**
  * A native child view inside a parent window that draws the newest frame of
  * a sender on a solid background, paced by the display's vsync.
- * Windows only for now; the constructor throws elsewhere.
+ * Windows (child HWND, D3D11) and macOS (child NSView, Metal); the
+ * constructor throws elsewhere.
  */
 export declare class PreviewView {
   /**
    * Create a hidden preview view.
    *
    * - `parentHandle`: native window handle of the parent, e.g. Electron's
-   *   `BrowserWindow.getNativeWindowHandle()` (HWND, 8 or 4 bytes LE)
-   * - `senderName`: Spout sender to show
+   *   `BrowserWindow.getNativeWindowHandle()` (Windows: HWND; macOS: the
+   *   content `NSView*`; 8 or 4 bytes LE)
+   * - `senderName`: Spout sender / Syphon server name to show
+   * - `options`: macOS-only Syphon settings (see `PreviewViewOptions`)
    *
    * Must be called on the thread that owns the parent window (Electron's
    * main process thread).
    */
-  constructor(parentHandle: Buffer, senderName: string)
+  constructor(parentHandle: Buffer, senderName: string, options?: PreviewViewOptions | undefined | null)
   /**
    * Position and size in physical pixels of the parent's client area.
    * A zero (or negative) width or height hides the view.
@@ -253,6 +301,13 @@ export declare class PreviewView {
   setBounds(x: number, y: number, width: number, height: number): void
   /** Show or hide the view. It is shown only once it also has a size. */
   setVisible(visible: boolean): void
+  /**
+   * Present on vsync (true), or when a new frame arrives (false, the
+   * default: sync interval 0, tearing when supported, at most once per
+   * monitor refresh). Applies at once. Windows: a child window's vsync
+   * presents were held near 60 on a 165 Hz monitor, so frames were missed.
+   */
+  setVsync(vsync: boolean): void
   /** Background colour behind the frame, 0–255 per channel. */
   setBackground(r: number, g: number, b: number): void
   /** Debug statistics (see `PreviewStats`). Returns zeros once destroyed. */

@@ -10,7 +10,10 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
     GetLastError, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HMODULE, HWND, LPARAM, LRESULT, WPARAM,
 };
-use windows::Win32::Graphics::Gdi::ValidateRect;
+use windows::Win32::Graphics::Gdi::{
+    EnumDisplaySettingsW, GetMonitorInfoW, MonitorFromWindow, ValidateRect, DEVMODEW,
+    ENUM_CURRENT_SETTINGS, MONITORINFO, MONITORINFOEXW, MONITOR_DEFAULTTONEAREST,
+};
 use windows::Win32::System::LibraryLoader::{
     GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
     GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -96,6 +99,38 @@ impl Drop for ChildWindow {
 }
 
 /// Whether `hwnd` (raw) still refers to a live window. Safe from any thread.
+/// Refresh rate (Hz) of the monitor showing most of `hwnd`; 0 when unknown.
+/// Safe from any thread: it only reads monitor and display settings.
+pub fn monitor_refresh_hz(hwnd: usize) -> u32 {
+    unsafe {
+        let monitor = MonitorFromWindow(HWND(hwnd as *mut _), MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFOEXW::default();
+        info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
+        if !GetMonitorInfoW(
+            monitor,
+            &mut info as *mut MONITORINFOEXW as *mut MONITORINFO,
+        )
+        .as_bool()
+        {
+            return 0;
+        }
+        let mut mode = DEVMODEW {
+            dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+            ..Default::default()
+        };
+        if !EnumDisplaySettingsW(
+            PCWSTR(info.szDevice.as_ptr()),
+            ENUM_CURRENT_SETTINGS,
+            &mut mode,
+        )
+        .as_bool()
+        {
+            return 0;
+        }
+        mode.dmDisplayFrequency
+    }
+}
+
 pub fn is_window_alive(hwnd: usize) -> bool {
     unsafe { IsWindow(HWND(hwnd as *mut _)) }.as_bool()
 }

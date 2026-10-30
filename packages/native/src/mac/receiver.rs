@@ -73,6 +73,62 @@ fn decode_iosurface_return(
 
 unsafe impl Send for Receiver {}
 
+/// A +1 retained `id<MTLTexture>` from `syphon_receiver_newest_texture`,
+/// released on drop. Lives on the receiver's MTLDevice.
+pub struct SyphonTexture {
+    ptr: *mut std::ffi::c_void,
+    pub width: u32,
+    pub height: u32,
+}
+
+unsafe impl Send for SyphonTexture {}
+
+impl SyphonTexture {
+    pub fn as_ptr(&self) -> *mut std::ffi::c_void {
+        self.ptr
+    }
+}
+
+impl Drop for SyphonTexture {
+    fn drop(&mut self) {
+        unsafe { ffi::syphon_texture_release(self.ptr) };
+    }
+}
+
+/// Result of [`Receiver::newest_texture`].
+pub enum NewestTexture {
+    /// A new frame, with the server's announced-frame counter (>= 1).
+    Frame {
+        texture: SyphonTexture,
+        frame_count: u64,
+    },
+    NoNewFrame,
+    NotConnected,
+}
+
+/// Map `syphon_receiver_newest_texture`'s return code (0 = frame, 1 = no new
+/// frame, -1 = not connected); unknown codes count as "no new frame".
+fn decode_newest_texture_return(ret: i32, has_texture: bool) -> NewestTextureKind {
+    match ret {
+        0 if has_texture => NewestTextureKind::Frame,
+        -1 => NewestTextureKind::NotConnected,
+        _ => NewestTextureKind::NoNewFrame,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum NewestTextureKind {
+    Frame,
+    NoNewFrame,
+    NotConnected,
+}
+
+fn to_cstring(value: Option<&str>) -> Result<Option<CString>, String> {
+    value
+        .map(|s| CString::new(s).map_err(|e| e.to_string()))
+        .transpose()
+}
+
 impl Receiver {
     pub fn new(
         server_uuid: Option<&str>,
@@ -104,6 +160,67 @@ impl Receiver {
         Ok(Self {
             handle: Some(handle),
         })
+    }
+
+    /// A receiver whose Syphon client (and textures) live on `mtl_device`
+    /// (an unretained `id<MTLDevice>`). Fails quietly (no log) when no server
+    /// matches, for callers that retry until it appears.
+    pub fn with_device(
+        server_uuid: Option<&str>,
+        server_name: Option<&str>,
+        app_name: Option<&str>,
+        mtl_device: *mut std::ffi::c_void,
+    ) -> Result<Self, String> {
+        let c_uuid = to_cstring(server_uuid)?;
+        let c_name = to_cstring(server_name)?;
+        let c_app = to_cstring(app_name)?;
+        let handle = unsafe {
+            ffi::syphon_receiver_create_with_device(
+                c_uuid.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+                c_name.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+                c_app.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+                mtl_device,
+                1,
+            )
+        };
+        if handle.is_null() {
+            return Err("No matching Syphon server".into());
+        }
+        Ok(Self {
+            handle: Some(handle),
+        })
+    }
+
+    /// The newest frame as Syphon vends it (no copy). Consumes the receiver's
+    /// new-frame flag, so do not mix with `receive_shared_iosurface`.
+    pub fn newest_texture(&self) -> NewestTexture {
+        let Some(handle) = self.handle else {
+            return NewestTexture::NotConnected;
+        };
+        let mut ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+        let (mut width, mut height, mut frame_count) = (0u32, 0u32, 0u64);
+        let ret = unsafe {
+            ffi::syphon_receiver_newest_texture(
+                handle,
+                &mut ptr,
+                &mut width,
+                &mut height,
+                &mut frame_count,
+            )
+        };
+        match decode_newest_texture_return(ret, !ptr.is_null()) {
+            NewestTextureKind::Frame => NewestTexture::Frame {
+                texture: SyphonTexture { ptr, width, height },
+                frame_count,
+            },
+            NewestTextureKind::NotConnected => NewestTexture::NotConnected,
+            NewestTextureKind::NoNewFrame => {
+                if !ptr.is_null() {
+                    unsafe { ffi::syphon_texture_release(ptr) };
+                }
+                NewestTexture::NoNewFrame
+            }
+        }
     }
 
     pub fn destroy(&mut self) {
@@ -259,6 +376,30 @@ pub fn list_servers_json() -> Result<String, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn decode_newest_texture_return_maps_codes() {
+        assert_eq!(
+            decode_newest_texture_return(0, true),
+            NewestTextureKind::Frame
+        );
+        assert_eq!(
+            decode_newest_texture_return(0, false),
+            NewestTextureKind::NoNewFrame
+        );
+        assert_eq!(
+            decode_newest_texture_return(1, false),
+            NewestTextureKind::NoNewFrame
+        );
+        assert_eq!(
+            decode_newest_texture_return(-1, false),
+            NewestTextureKind::NotConnected
+        );
+        assert_eq!(
+            decode_newest_texture_return(7, false),
+            NewestTextureKind::NoNewFrame
+        );
+    }
+
     // ---- SharedIoSurfaceInfo::pixel_format_string ----
 
     #[test]
@@ -313,7 +454,9 @@ mod tests {
     #[test]
     fn decode_iosurface_return_code_0_returns_some_info_with_handle() {
         let result = decode_iosurface_return(0, 0xdead_beef_0000_1234, 1920, 1080, 1);
-        let info = result.expect("ret=0 must not error").expect("ret=0 must yield Some");
+        let info = result
+            .expect("ret=0 must not error")
+            .expect("ret=0 must yield Some");
         assert_eq!(info.iosurface_ptr, 0xdead_beef_0000_1234);
         assert_eq!(info.width, 1920);
         assert_eq!(info.height, 1080);
@@ -382,17 +525,17 @@ mod tests {
     fn convert_bgra_to_rgba_multiple_pixels() {
         let bgra: [u8; 12] = [
             0, 128, 255, 200, // pixel 0: B=0, G=128, R=255, A=200
-            50, 100, 150, 0,  // pixel 1: B=50, G=100, R=150, A=0
-            1, 2, 3, 4,       // pixel 2: B=1, G=2, R=3, A=4
+            50, 100, 150, 0, // pixel 1: B=50, G=100, R=150, A=0
+            1, 2, 3, 4, // pixel 2: B=1, G=2, R=3, A=4
         ];
         let mut rgba = [0u8; 12];
         unsafe { ffi::syphon_convert_bgra_to_rgba(bgra.as_ptr(), rgba.as_mut_ptr(), 3) };
         assert_eq!(
             rgba,
             [
-                255, 128, 0, 200,  // R=255, G=128, B=0, A=200
-                150, 100, 50, 0,   // R=150, G=100, B=50, A=0
-                3, 2, 1, 4,        // R=3, G=2, B=1, A=4
+                255, 128, 0, 200, // R=255, G=128, B=0, A=200
+                150, 100, 50, 0, // R=150, G=100, B=50, A=0
+                3, 2, 1, 4, // R=3, G=2, B=1, A=4
             ]
         );
     }
@@ -408,8 +551,8 @@ mod tests {
     #[test]
     fn convert_bgra_to_rgba_in_place() {
         let mut data: [u8; 8] = [
-            10, 20, 30, 40,  // pixel 0: B=10, G=20, R=30, A=40
-            50, 60, 70, 80,  // pixel 1: B=50, G=60, R=70, A=80
+            10, 20, 30, 40, // pixel 0: B=10, G=20, R=30, A=40
+            50, 60, 70, 80, // pixel 1: B=50, G=60, R=70, A=80
         ];
         unsafe {
             ffi::syphon_convert_bgra_to_rgba(data.as_ptr(), data.as_mut_ptr(), 2);
@@ -421,12 +564,12 @@ mod tests {
     fn convert_bgra_to_rgba_preserves_alpha() {
         // Test with fully transparent and fully opaque
         let bgra: [u8; 8] = [
-            100, 100, 100, 0,    // fully transparent
-            100, 100, 100, 255,  // fully opaque
+            100, 100, 100, 0, // fully transparent
+            100, 100, 100, 255, // fully opaque
         ];
         let mut rgba = [0u8; 8];
         unsafe { ffi::syphon_convert_bgra_to_rgba(bgra.as_ptr(), rgba.as_mut_ptr(), 2) };
-        assert_eq!(rgba[3], 0);   // alpha preserved as 0
+        assert_eq!(rgba[3], 0); // alpha preserved as 0
         assert_eq!(rgba[7], 255); // alpha preserved as 255
     }
 

@@ -1,10 +1,22 @@
 mod types;
-// Only the Windows PreviewView consumes these helpers today.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+// Platform-independent PreviewView helpers; only the Windows and macOS
+// implementations consume them.
+#[cfg_attr(
+    not(any(target_os = "windows", target_os = "macos")),
+    allow(dead_code)
+)]
 mod preview_layout;
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg_attr(
+    not(any(target_os = "windows", target_os = "macos")),
+    allow(dead_code)
+)]
+mod preview_state;
+#[cfg_attr(
+    not(any(target_os = "windows", target_os = "macos")),
+    allow(dead_code)
+)]
 mod preview_stats;
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 mod preview_unsupported;
 
 #[cfg(target_os = "macos")]
@@ -580,6 +592,7 @@ pub fn close_native_handle(handle: napi::bindgen_prelude::Buffer) -> Result<()> 
 // JS API: PreviewView
 //
 //   const view = new PreviewView(win.getNativeWindowHandle(), "SenderName")
+//   // macOS: new PreviewView(handle, "SenderName", { serverUuid })
 //   view.setBounds(x, y, width, height)  // physical px in the parent client area
 //   view.setVisible(true)
 //   view.setBackground(32, 32, 32)
@@ -588,10 +601,54 @@ pub fn close_native_handle(handle: napi::bindgen_prelude::Buffer) -> Result<()> 
 //
 // ============================================================
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "macos")]
+use mac::preview::PreviewView as PreviewInner;
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 use preview_unsupported::PreviewView as PreviewInner;
 #[cfg(target_os = "windows")]
 use win::preview::PreviewView as PreviewInner;
+
+/// Optional `PreviewView` constructor settings. Every field is macOS-only
+/// and ignored on Windows (a Spout sender is found by name alone).
+#[napi(object)]
+#[derive(Default)]
+pub struct PreviewViewOptions {
+    /// Syphon server UUID (`listSenders()[].uuid`); takes priority over the
+    /// name, like `TextureReceiver`'s `serverUuid`.
+    pub server_uuid: Option<String>,
+    /// Syphon application name filter, used with the sender name.
+    pub app_name: Option<String>,
+    /// Draw the Syphon texture's first row at the bottom (Syphon's
+    /// bottom-left origin). Default true, matching `TextureReceiver`'s
+    /// default receive-side flip.
+    pub flip_y: Option<bool>,
+}
+
+#[cfg(target_os = "macos")]
+fn create_preview_inner(
+    parent: usize,
+    sender_name: String,
+    options: PreviewViewOptions,
+) -> std::result::Result<PreviewInner, String> {
+    PreviewInner::new(
+        parent,
+        mac::preview::SyphonSource {
+            name: sender_name,
+            server_uuid: options.server_uuid,
+            app_name: options.app_name,
+            flip_y: options.flip_y.unwrap_or(true),
+        },
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn create_preview_inner(
+    parent: usize,
+    sender_name: String,
+    _options: PreviewViewOptions,
+) -> std::result::Result<PreviewInner, String> {
+    PreviewInner::new(parent, &sender_name)
+}
 
 /// napi-rs object returned from `PreviewView.getStats()`. Per-second figures
 /// cover a sliding window of about 1 s; totals run since the view was created.
@@ -619,18 +676,34 @@ pub struct PreviewStats {
     pub present_interval_avg_ms: f64,
     /// Longest time between consecutive presents in the last second (ms).
     pub present_interval_max_ms: f64,
-    /// Swapchain size in physical pixels (0 until it exists).
+    /// Swapchain (macOS: CAMetalLayer drawable) size in physical pixels
+    /// (0 until it exists).
     pub swapchain_width: u32,
     pub swapchain_height: u32,
     /// Size of the sender frame being drawn (0 while not connected).
     pub frame_width: u32,
     pub frame_height: u32,
-    /// Description of the GPU adapter rendering the view ("" until known).
+    /// GPU rendering the view: DXGI adapter description / MTLDevice name
+    /// ("" until known).
     pub adapter_name: String,
-    /// Whether presents wait for vertical blank (sync interval > 0).
+    /// Whether presents wait for vertical blank (Windows: sync interval > 0;
+    /// macOS: CAMetalLayer.displaySyncEnabled).
     pub vsync: bool,
     /// Whether the sender was published at the last poll.
     pub connected: bool,
+    /// Refresh rate of the monitor the view is on (Hz); 0 when unknown.
+    pub monitor_refresh_hz: u32,
+    /// Sender polls per second (last 1 s) that found the sender holding the
+    /// texture; the previous frame is shown again instead of waiting.
+    pub sender_busy_fps: f64,
+    /// Render-loop stage times over the last 1 s (ms): waiting for the
+    /// swapchain, polling + copying the sender frame, draw + Present.
+    pub wait_avg_ms: f64,
+    pub receive_avg_ms: f64,
+    pub receive_max_ms: f64,
+    pub present_call_avg_ms: f64,
+    /// Tearing presents are available for vsync off (Windows).
+    pub tearing_supported: bool,
 }
 
 impl From<preview_stats::PreviewStatsSnapshot> for PreviewStats {
@@ -651,6 +724,13 @@ impl From<preview_stats::PreviewStatsSnapshot> for PreviewStats {
             frame_width: s.frame_width,
             frame_height: s.frame_height,
             adapter_name: s.adapter_name,
+            monitor_refresh_hz: s.monitor_refresh_hz,
+            sender_busy_fps: w.busy_fps,
+            wait_avg_ms: w.wait_avg_ms,
+            receive_avg_ms: w.receive_avg_ms,
+            receive_max_ms: w.receive_max_ms,
+            present_call_avg_ms: w.present_call_avg_ms,
+            tearing_supported: s.tearing_supported,
             vsync: s.vsync,
             connected: s.connected,
         }
@@ -659,7 +739,8 @@ impl From<preview_stats::PreviewStatsSnapshot> for PreviewStats {
 
 /// A native child view inside a parent window that draws the newest frame of
 /// a sender on a solid background, paced by the display's vsync.
-/// Windows only for now; the constructor throws elsewhere.
+/// Windows (child HWND, D3D11) and macOS (child NSView, Metal); the
+/// constructor throws elsewhere.
 #[napi]
 pub struct PreviewView {
     inner: Option<PreviewInner>,
@@ -670,16 +751,23 @@ impl PreviewView {
     /// Create a hidden preview view.
     ///
     /// - `parentHandle`: native window handle of the parent, e.g. Electron's
-    ///   `BrowserWindow.getNativeWindowHandle()` (HWND, 8 or 4 bytes LE)
-    /// - `senderName`: Spout sender to show
+    ///   `BrowserWindow.getNativeWindowHandle()` (Windows: HWND; macOS: the
+    ///   content `NSView*`; 8 or 4 bytes LE)
+    /// - `senderName`: Spout sender / Syphon server name to show
+    /// - `options`: macOS-only Syphon settings (see `PreviewViewOptions`)
     ///
     /// Must be called on the thread that owns the parent window (Electron's
     /// main process thread).
     #[napi(constructor)]
-    pub fn new(parent_handle: napi::bindgen_prelude::Buffer, sender_name: String) -> Result<Self> {
+    pub fn new(
+        parent_handle: napi::bindgen_prelude::Buffer,
+        sender_name: String,
+        options: Option<PreviewViewOptions>,
+    ) -> Result<Self> {
         let parent = preview_layout::parse_parent_handle(parent_handle.as_ref())
             .map_err(|e| Error::from_reason(e))?;
-        let inner = PreviewInner::new(parent, &sender_name).map_err(|e| Error::from_reason(e))?;
+        let inner = create_preview_inner(parent, sender_name, options.unwrap_or_default())
+            .map_err(|e| Error::from_reason(e))?;
         Ok(Self { inner: Some(inner) })
     }
 
@@ -696,6 +784,16 @@ impl PreviewView {
     #[napi]
     pub fn set_visible(&mut self, visible: bool) -> Result<()> {
         self.inner_mut()?.set_visible(visible);
+        Ok(())
+    }
+
+    /// Present on vsync (true), or when a new frame arrives (false, the
+    /// default: sync interval 0, tearing when supported, at most once per
+    /// monitor refresh). Applies at once. Windows: a child window's vsync
+    /// presents were held near 60 on a 165 Hz monitor, so frames were missed.
+    #[napi]
+    pub fn set_vsync(&mut self, vsync: bool) -> Result<()> {
+        self.inner_mut()?.set_vsync(vsync);
         Ok(())
     }
 

@@ -26,10 +26,11 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    IDXGIDevice, IDXGIFactory2, IDXGIOutput, IDXGISwapChain2, DXGI_MWA_NO_WINDOW_CHANGES,
-    DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
-    DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
-    DXGI_USAGE_RENDER_TARGET_OUTPUT,
+    IDXGIDevice, IDXGIFactory2, IDXGIFactory5, IDXGIOutput, IDXGISwapChain2,
+    DXGI_FEATURE_PRESENT_ALLOW_TEARING, DXGI_MWA_NO_WINDOW_CHANGES, DXGI_PRESENT,
+    DXGI_PRESENT_ALLOW_TEARING, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_CHAIN_FLAG,
+    DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+    DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
 use windows::Win32::System::Threading::WaitForSingleObject;
 
@@ -214,12 +215,16 @@ pub struct Gpu {
     sampler: ID3D11SamplerState,
     blend: ID3D11BlendState,
     swapchain: Option<Swapchain>,
+    /// The system supports tearing presents (vsync off without waiting for
+    /// DWM); the swapchain is then created with ALLOW_TEARING.
+    tearing: bool,
 }
 
 impl Gpu {
     pub fn new(device: ID3D11Device, shaders: &ShaderBytecode) -> Result<Self, String> {
         let context = unsafe { device.GetImmediateContext() }
             .map_err(|e| format!("GetImmediateContext failed: {e}"))?;
+        let tearing = supports_tearing(&device);
         Ok(Self {
             vertex_shader: create_vertex_shader(&device, &shaders.vertex)?,
             pixel_shader: create_pixel_shader(&device, &shaders.pixel)?,
@@ -228,7 +233,20 @@ impl Gpu {
             device,
             context,
             swapchain: None,
+            tearing,
         })
+    }
+
+    pub fn tearing_supported(&self) -> bool {
+        self.tearing
+    }
+
+    fn swapchain_flags(&self) -> DXGI_SWAP_CHAIN_FLAG {
+        let mut flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0;
+        if self.tearing {
+            flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.0;
+        }
+        DXGI_SWAP_CHAIN_FLAG(flags)
     }
 
     pub fn device(&self) -> &ID3D11Device {
@@ -327,13 +345,22 @@ impl Gpu {
         }
     }
 
-    /// Present with `PRESENT_SYNC_INTERVAL`. Returns the raw HRESULT so the
-    /// caller can tell device loss from status codes such as occlusion.
-    pub fn present(&self) -> HRESULT {
-        match &self.swapchain {
-            Some(sc) => unsafe { sc.chain.Present(PRESENT_SYNC_INTERVAL, DXGI_PRESENT(0)) },
-            None => HRESULT(0),
-        }
+    /// Present with `PRESENT_SYNC_INTERVAL` when `vsync`, else at once
+    /// (sync interval 0, tearing allowed when supported). Returns the raw
+    /// HRESULT so the caller can tell device loss from status codes such as
+    /// occlusion.
+    pub fn present(&self, vsync: bool) -> HRESULT {
+        let Some(sc) = &self.swapchain else {
+            return HRESULT(0);
+        };
+        let (interval, flags) = if vsync {
+            (PRESENT_SYNC_INTERVAL, DXGI_PRESENT(0))
+        } else if self.tearing {
+            (0, DXGI_PRESENT_ALLOW_TEARING)
+        } else {
+            (0, DXGI_PRESENT(0))
+        };
+        unsafe { sc.chain.Present(interval, flags) }
     }
 
     fn create_swapchain(&self, hwnd: usize, width: u32, height: u32) -> Result<Swapchain, String> {
@@ -353,7 +380,7 @@ impl Gpu {
             Scaling: DXGI_SCALING_STRETCH,
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
             AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-            Flags: DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32,
+            Flags: self.swapchain_flags().0 as u32,
         };
         let chain = unsafe {
             factory.CreateSwapChainForHwnd(&self.device, hwnd, &desc, None, None::<&IDXGIOutput>)
@@ -381,6 +408,7 @@ impl Gpu {
     }
 
     fn resize_swapchain(&mut self, width: u32, height: u32) -> Result<(), String> {
+        let flags = self.swapchain_flags();
         // Every back-buffer reference must be gone before ResizeBuffers.
         unsafe {
             self.context.OMSetRenderTargets(None, None);
@@ -392,13 +420,8 @@ impl Gpu {
             .ok_or("resize without a swapchain")?;
         sc.target = None;
         unsafe {
-            sc.chain.ResizeBuffers(
-                BUFFER_COUNT,
-                width,
-                height,
-                SWAPCHAIN_FORMAT,
-                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
-            )
+            sc.chain
+                .ResizeBuffers(BUFFER_COUNT, width, height, SWAPCHAIN_FORMAT, flags)
         }
         .map_err(|e| format!("ResizeBuffers ({width}x{height}) failed: {e}"))?;
         sc.width = width;
@@ -499,4 +522,28 @@ fn create_premultiplied_blend(device: &ID3D11Device) -> Result<ID3D11BlendState,
     unsafe { device.CreateBlendState(&desc, Some(&mut blend)) }
         .map_err(|e| format!("CreateBlendState failed: {e}"))?;
     blend.ok_or_else(|| "CreateBlendState returned no blend state".into())
+}
+
+/// Whether DXGI allows tearing presents on this system (Windows 10 1607+
+/// with a supporting driver).
+fn supports_tearing(device: &ID3D11Device) -> bool {
+    let Ok(dxgi) = device.cast::<IDXGIDevice>() else {
+        return false;
+    };
+    let Ok(adapter) = (unsafe { dxgi.GetAdapter() }) else {
+        return false;
+    };
+    let Ok(factory) = (unsafe { adapter.GetParent::<IDXGIFactory5>() }) else {
+        return false;
+    };
+    let mut allowed = BOOL(0);
+    unsafe {
+        factory.CheckFeatureSupport(
+            DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+            &mut allowed as *mut BOOL as *mut _,
+            std::mem::size_of::<BOOL>() as u32,
+        )
+    }
+    .is_ok()
+        && allowed.as_bool()
 }

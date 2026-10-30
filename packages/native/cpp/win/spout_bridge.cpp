@@ -250,6 +250,9 @@ struct SpoutReceiverBridge {
     // needs no registry change and falls back to "always new" for senders
     // that do not count frames.
     HANDLE            countSemaphore;
+    // Our own handle to the sender's "<name>_SpoutAccessMutex", for the
+    // non-blocking copy (spoutFrameCount only offers a 67 ms wait).
+    HANDLE            tryAccessMutex;
     long              lastFrameCount;
     bool              lastFrameNew;
     // Sender frame number read by the latest get_new_frame (0 = the sender
@@ -615,6 +618,7 @@ void spout_receiver_destroy(void* handle) {
         if (bridge->frameCountEnabled)  bridge->frameCount->DisableFrameCount();
     }
     if (bridge->countSemaphore) CloseHandle(bridge->countSemaphore);
+    if (bridge->tryAccessMutex) CloseHandle(bridge->tryAccessMutex);
 
     delete bridge->senderNames;
     delete bridge->frameCount;
@@ -792,6 +796,41 @@ static bool texture_matches_sender(SpoutReceiverBridge* bridge,
     return sameDevice;
 }
 
+// Take the sender texture's lock without waiting: its keyed mutex when the
+// texture has one, else the sender's named access mutex. A sender drawing
+// far faster than the display (an uncapped Unity) holds it most of the time,
+// and waiting for it held the preview's Present back by a scheduler tick.
+static bool try_acquire_sender_texture(SpoutReceiverBridge* bridge, IDXGIKeyedMutex** outKeyed) {
+    *outKeyed = nullptr;
+    IDXGIKeyedMutex* keyed = nullptr;
+    if (SUCCEEDED(bridge->senderTexture->QueryInterface(
+            __uuidof(IDXGIKeyedMutex), reinterpret_cast<void**>(&keyed))) && keyed) {
+        if (keyed->AcquireSync(0, 0) == S_OK) {
+            *outKeyed = keyed;
+            return true;
+        }
+        keyed->Release();
+        return false;
+    }
+    if (!bridge->tryAccessMutex) {
+        char mutexName[512];
+        snprintf(mutexName, sizeof(mutexName), "%s_SpoutAccessMutex", bridge->senderName);
+        bridge->tryAccessMutex = CreateMutexA(nullptr, FALSE, mutexName);
+        if (!bridge->tryAccessMutex) return true;  // No mutex: rely on GPU sync, as Spout does.
+    }
+    const DWORD wait = WaitForSingleObject(bridge->tryAccessMutex, 0);
+    return wait == WAIT_OBJECT_0 || wait == WAIT_ABANDONED;
+}
+
+static void release_sender_texture_access(SpoutReceiverBridge* bridge, IDXGIKeyedMutex* keyed) {
+    if (keyed) {
+        keyed->ReleaseSync(0);
+        keyed->Release();
+    } else if (bridge->tryAccessMutex) {
+        ReleaseMutex(bridge->tryAccessMutex);
+    }
+}
+
 // Copy the newest sender frame into a caller-owned texture on the receiver's
 // device (see spout_receiver_get_device). No NT handles are involved.
 // out_width / out_height / out_format always receive the sender's current
@@ -802,6 +841,8 @@ static bool texture_matches_sender(SpoutReceiverBridge* bridge,
 //   1 = no new frame (dst_texture keeps its previous contents)
 //   2 = dst_texture is null or does not match the sender (size, format or
 //       device); recreate it from out_* on the receiver's device
+//   3 = the sender holds the texture right now; nothing copied (the frame
+//       counter is not consumed, so the next call can still copy it)
 //  -1 = not connected / no sender
 int32_t spout_receiver_copy_frame(void* handle,
                                   void* dst_texture,
@@ -823,12 +864,15 @@ int32_t spout_receiver_copy_frame(void* handle,
     ID3D11Texture2D* dst = static_cast<ID3D11Texture2D*>(dst_texture);
     if (!texture_matches_sender(bridge, dst)) return 2;
 
-    if (!get_new_frame(bridge)) return 1;
-
-    if (!bridge->frameCount->CheckTextureAccess(bridge->senderTexture)) return 1;
+    IDXGIKeyedMutex* keyed = nullptr;
+    if (!try_acquire_sender_texture(bridge, &keyed)) return 3;
+    if (!get_new_frame(bridge)) {
+        release_sender_texture_access(bridge, keyed);
+        return 1;
+    }
     bridge->context->CopyResource(dst, bridge->senderTexture);
     bridge->context->Flush();
-    bridge->frameCount->AllowTextureAccess(bridge->senderTexture);
+    release_sender_texture_access(bridge, keyed);
     return 0;
 }
 

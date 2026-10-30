@@ -65,10 +65,13 @@ fn build_macos(vendor_dir: &std::path::Path) {
     // C++ ソースの変更を検知してリビルドする
     println!("cargo:rerun-if-changed=cpp/mac/syphon_bridge.mm");
     println!("cargo:rerun-if-changed=cpp/mac/syphon_bridge.h");
+    println!("cargo:rerun-if-changed=cpp/mac/preview_view.mm");
+    println!("cargo:rerun-if-changed=cpp/mac/preview_view.h");
 
-    // Syphon Metal の ObjC++ ブリッジをビルド
+    // Syphon Metal の ObjC++ ブリッジ + PreviewView（NSView / CAMetalLayer）をビルド
     cc::Build::new()
         .file("cpp/mac/syphon_bridge.mm")
+        .file("cpp/mac/preview_view.mm")
         .include("cpp/mac")
         .flag("-ObjC++")
         .flag("-std=c++17")
@@ -87,6 +90,9 @@ fn build_macos(vendor_dir: &std::path::Path) {
     println!("cargo:rustc-link-lib=framework=IOSurface");
     println!("cargo:rustc-link-lib=framework=Cocoa");
     println!("cargo:rustc-link-lib=framework=QuartzCore");
+    // PreviewView: NSView (AppKit) と CVDisplayLink（macOS 14 未満の vsync）
+    println!("cargo:rustc-link-lib=framework=AppKit");
+    println!("cargo:rustc-link-lib=framework=CoreVideo");
 
     // Syphon.framework の検索パス
     println!("cargo:rustc-link-search=framework={vendor_str}");

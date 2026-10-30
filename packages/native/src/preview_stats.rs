@@ -84,6 +84,50 @@ impl SkipCounter {
     }
 }
 
+/// A timed part of one render-loop pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopStage {
+    /// Waiting for the swapchain to take another frame (vsync pacing).
+    Wait,
+    /// Polling the sender and copying its newest frame.
+    Receive,
+    /// Drawing and the Present call itself.
+    Present,
+}
+
+/// (end time, duration) of one kind of timed stage inside the window.
+#[derive(Debug, Clone)]
+struct DurationWindow {
+    samples: VecDeque<(u64, u64)>,
+}
+
+impl DurationWindow {
+    fn new() -> Self {
+        Self {
+            samples: VecDeque::new(),
+        }
+    }
+
+    fn record(&mut self, now_ns: u64, duration_ns: u64) {
+        self.samples.push_back((now_ns, duration_ns));
+    }
+
+    fn prune(&mut self, now_ns: u64) {
+        while self
+            .samples
+            .front()
+            .is_some_and(|&(t, _)| !in_window(t, now_ns))
+        {
+            self.samples.pop_front();
+        }
+    }
+
+    /// (average, maximum) in ms; (0, 0) when empty.
+    fn summary_ms(&self) -> (f64, f64) {
+        interval_summary_ms(self.samples.iter().map(|&(_, d)| d))
+    }
+}
+
 /// Figures the render thread publishes for JS. Rates cover the last
 /// `STATS_WINDOW_NS`; totals run since the view was created.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -97,6 +141,14 @@ pub struct WindowedStats {
     pub presented: u64,
     pub received: u64,
     pub skipped: u64,
+    /// Sender polls per second that found the sender holding the texture
+    /// (the frame is shown again rather than waiting for it).
+    pub busy_fps: f64,
+    pub wait_avg_ms: f64,
+    pub receive_avg_ms: f64,
+    pub receive_max_ms: f64,
+    /// Draw plus the Present call.
+    pub present_call_avg_ms: f64,
 }
 
 /// Records render-thread events and summarises them over the window.
@@ -105,6 +157,10 @@ pub struct StatsTracker {
     presents: EventWindow,
     received: EventWindow,
     repeated: EventWindow,
+    busy: EventWindow,
+    waits: DurationWindow,
+    receives: DurationWindow,
+    present_calls: DurationWindow,
     /// (present time, time since the previous present), both in ns.
     intervals: VecDeque<(u64, u64)>,
     last_present_ns: Option<u64>,
@@ -127,6 +183,10 @@ impl StatsTracker {
             presents: EventWindow::new(),
             received: EventWindow::new(),
             repeated: EventWindow::new(),
+            busy: EventWindow::new(),
+            waits: DurationWindow::new(),
+            receives: DurationWindow::new(),
+            present_calls: DurationWindow::new(),
             intervals: VecDeque::new(),
             last_present_ns: None,
             new_frame_since_present: false,
@@ -144,6 +204,21 @@ impl StatsTracker {
         self.received_total += 1;
         self.skipped_total += self.skips.observe(sender_count);
         self.new_frame_since_present = true;
+    }
+
+    /// A sender poll found the texture held by the sender.
+    pub fn record_sender_busy(&mut self, now_ns: u64) {
+        self.busy.record(now_ns);
+    }
+
+    /// One render-loop stage ended at `now_ns` after `duration_ns`.
+    pub fn record_stage(&mut self, stage: LoopStage, now_ns: u64, duration_ns: u64) {
+        let window = match stage {
+            LoopStage::Wait => &mut self.waits,
+            LoopStage::Receive => &mut self.receives,
+            LoopStage::Present => &mut self.present_calls,
+        };
+        window.record(now_ns, duration_ns);
     }
 
     /// The sender is gone: the next frame starts a fresh counter baseline.
@@ -173,6 +248,10 @@ impl StatsTracker {
         self.presents.prune(now_ns);
         self.received.prune(now_ns);
         self.repeated.prune(now_ns);
+        self.busy.prune(now_ns);
+        self.waits.prune(now_ns);
+        self.receives.prune(now_ns);
+        self.present_calls.prune(now_ns);
         while self
             .intervals
             .front()
@@ -180,6 +259,7 @@ impl StatsTracker {
         {
             self.intervals.pop_front();
         }
+        let (receive_avg_ms, receive_max_ms) = self.receives.summary_ms();
         let (avg_ms, max_ms) = interval_summary_ms(self.intervals.iter().map(|&(_, d)| d));
         WindowedStats {
             present_fps: per_second(self.presents.len()),
@@ -190,6 +270,11 @@ impl StatsTracker {
             presented: self.presented_total,
             received: self.received_total,
             skipped: self.skipped_total,
+            busy_fps: per_second(self.busy.len()),
+            wait_avg_ms: self.waits.summary_ms().0,
+            receive_avg_ms: receive_avg_ms,
+            receive_max_ms: receive_max_ms,
+            present_call_avg_ms: self.present_calls.summary_ms().0,
         }
     }
 }
@@ -209,12 +294,14 @@ fn interval_summary_ms(intervals: impl Iterator<Item = u64>) -> (f64, f64) {
 }
 
 /// Whether a Present sync interval waits for vertical blank.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn is_vsync(sync_interval: u32) -> bool {
     sync_interval > 0
 }
 
 /// A fixed-size UTF-16 adapter description (as DXGI returns it) to a String,
 /// cut at the first NUL and trimmed.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub fn adapter_description(raw: &[u16]) -> String {
     let end = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
     String::from_utf16_lossy(&raw[..end]).trim().to_string()
@@ -232,6 +319,10 @@ pub struct PreviewStatsSnapshot {
     /// Empty until a device exists.
     pub adapter_name: String,
     pub vsync: bool,
+    /// Refresh rate of the monitor the view is on; 0 when unknown.
+    pub monitor_refresh_hz: u32,
+    /// Tearing presents are available for vsync off (Windows).
+    pub tearing_supported: bool,
 }
 
 #[cfg(test)]
@@ -422,5 +513,35 @@ mod tests {
         assert_eq!(adapter_description(&[0u16; 4]), "");
         let full: Vec<u16> = "ABC".encode_utf16().collect();
         assert_eq!(adapter_description(&full), "ABC");
+    }
+
+    // ---- render-loop stage timings ----
+
+    #[test]
+    fn stage_timings_average_and_max_over_the_window() {
+        let mut t = StatsTracker::new();
+        t.record_stage(LoopStage::Wait, 0, 4 * MS);
+        t.record_stage(LoopStage::Wait, 10 * MS, 2 * MS);
+        t.record_stage(LoopStage::Receive, 10 * MS, 15 * MS);
+        t.record_stage(LoopStage::Present, 10 * MS, MS);
+        let s = t.snapshot(10 * MS);
+        assert_eq!(s.wait_avg_ms, 3.0);
+        assert_eq!(s.receive_avg_ms, 15.0);
+        assert_eq!(s.receive_max_ms, 15.0);
+        assert_eq!(s.present_call_avg_ms, 1.0);
+        // Old timings leave the window.
+        let s = t.snapshot(1_500 * MS);
+        assert_eq!(s.wait_avg_ms, 0.0);
+        assert_eq!(s.receive_max_ms, 0.0);
+    }
+
+    #[test]
+    fn busy_fps_counts_polls_that_found_the_sender_holding_the_texture() {
+        let mut t = StatsTracker::new();
+        for i in 0..5u64 {
+            t.record_sender_busy(i * 10 * MS);
+        }
+        assert_eq!(t.snapshot(40 * MS).busy_fps, 5.0);
+        assert_eq!(t.snapshot(2_000 * MS).busy_fps, 0.0);
     }
 }

@@ -102,6 +102,80 @@ pub fn should_show(visible: bool, bounds: Bounds) -> bool {
     visible && !bounds.is_empty()
 }
 
+/// A view frame in points of the parent view's own coordinate system, as
+/// macOS `-[NSView setFrame:]` takes it.
+// macOS only (NSView frames).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewFrame {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// A backing scale factor (physical px per point) usable as a divisor:
+/// non-finite or non-positive values become 1.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn sanitize_scale(scale: f64) -> f64 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
+}
+
+/// Convert `bounds` (physical px from the top-left of the parent's content,
+/// the same meaning as on Windows) to a frame in the parent's points.
+///
+/// `parent_height` is the parent's height in points. In an unflipped parent
+/// (AppKit's default, origin at the bottom-left) y is measured from the
+/// bottom edge to the view's bottom edge; in a flipped one it is the top.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn physical_to_view_frame(
+    bounds: Bounds,
+    scale: f64,
+    parent_height: f64,
+    parent_flipped: bool,
+) -> ViewFrame {
+    let scale = sanitize_scale(scale);
+    let x = bounds.x as f64 / scale;
+    let top = bounds.y as f64 / scale;
+    let width = bounds.width as f64 / scale;
+    let height = bounds.height as f64 / scale;
+    let y = if parent_flipped {
+        top
+    } else {
+        parent_height - top - height
+    };
+    ViewFrame {
+        x,
+        y,
+        width,
+        height,
+    }
+}
+
+/// With vsync off, presents follow frames: a new sender frame or a view
+/// change (size, background, visibility), at most once per refresh of the
+/// monitor, since a DWM-composed window shows one image per refresh anyway.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn should_present_unsynced(
+    new_frame: bool,
+    view_changed: bool,
+    since_last_present_ns: u64,
+    min_interval_ns: u64,
+) -> bool {
+    (new_frame || view_changed) && since_last_present_ns >= min_interval_ns
+}
+
+/// One refresh of a `refresh_hz` monitor in ns (240 Hz when unknown).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn unsynced_min_interval_ns(refresh_hz: u32) -> u64 {
+    let hz = if refresh_hz > 0 { refresh_hz } else { 240 };
+    1_000_000_000 / hz as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +324,103 @@ mod tests {
         assert!(should_show(true, sized));
         assert!(!should_show(false, sized));
         assert!(!should_show(true, Bounds::default()));
+    }
+    // ---- physical_to_view_frame (macOS NSView frame) ----
+
+    #[test]
+    fn view_frame_divides_by_scale_in_a_flipped_parent() {
+        let b = normalize_bounds(200, 100, 800, 400);
+        assert_eq!(
+            physical_to_view_frame(b, 2.0, 1000.0, true),
+            ViewFrame {
+                x: 100.0,
+                y: 50.0,
+                width: 400.0,
+                height: 200.0
+            }
+        );
+    }
+
+    #[test]
+    fn view_frame_measures_y_from_the_bottom_in_an_unflipped_parent() {
+        // 600 pt tall parent, top edge at 50 pt, 200 pt tall → bottom edge at
+        // 250 pt from the top → origin 350 pt above the parent's bottom.
+        let b = normalize_bounds(200, 100, 800, 400);
+        assert_eq!(
+            physical_to_view_frame(b, 2.0, 600.0, false),
+            ViewFrame {
+                x: 100.0,
+                y: 350.0,
+                width: 400.0,
+                height: 200.0
+            }
+        );
+    }
+
+    #[test]
+    fn view_frame_at_scale_one_keeps_pixels() {
+        let b = normalize_bounds(-10, 0, 300, 100);
+        assert_eq!(
+            physical_to_view_frame(b, 1.0, 100.0, false),
+            ViewFrame {
+                x: -10.0,
+                y: 0.0,
+                width: 300.0,
+                height: 100.0
+            }
+        );
+    }
+
+    #[test]
+    fn view_frame_treats_invalid_scale_as_one() {
+        let b = normalize_bounds(10, 20, 30, 40);
+        let expected = physical_to_view_frame(b, 1.0, 500.0, true);
+        assert_eq!(physical_to_view_frame(b, 0.0, 500.0, true), expected);
+        assert_eq!(physical_to_view_frame(b, -2.0, 500.0, true), expected);
+        assert_eq!(physical_to_view_frame(b, f64::NAN, 500.0, true), expected);
+        assert_eq!(
+            physical_to_view_frame(b, f64::INFINITY, 500.0, true),
+            expected
+        );
+    }
+
+    #[test]
+    fn view_frame_of_empty_bounds_has_zero_size() {
+        let f = physical_to_view_frame(Bounds::default(), 2.0, 600.0, false);
+        assert_eq!(f.width, 0.0);
+        assert_eq!(f.height, 0.0);
+    }
+
+    #[test]
+    fn sanitize_scale_keeps_finite_positive_values() {
+        assert_eq!(sanitize_scale(2.0), 2.0);
+        assert_eq!(sanitize_scale(1.5), 1.5);
+        assert_eq!(sanitize_scale(0.0), 1.0);
+        assert_eq!(sanitize_scale(f64::NAN), 1.0);
+    }
+
+    // ---- pacing with vsync off ----
+
+    #[test]
+    fn unsynced_presents_need_a_new_frame_or_a_view_change() {
+        let gap = unsynced_min_interval_ns(165);
+        assert!(should_present_unsynced(true, false, gap, gap));
+        assert!(should_present_unsynced(false, true, gap, gap));
+        assert!(!should_present_unsynced(false, false, 10 * gap, gap));
+    }
+
+    #[test]
+    fn unsynced_presents_are_capped_at_the_refresh_rate() {
+        let gap = unsynced_min_interval_ns(165);
+        assert!(!should_present_unsynced(true, false, gap - 1, gap));
+        assert!(should_present_unsynced(true, false, gap, gap));
+    }
+
+    #[test]
+    fn unsynced_interval_follows_the_monitor() {
+        assert_eq!(unsynced_min_interval_ns(165), 1_000_000_000 / 165);
+        assert_eq!(unsynced_min_interval_ns(60), 1_000_000_000 / 60);
+        // Unknown refresh rate: allow up to 240 per second.
+        assert_eq!(unsynced_min_interval_ns(0), 1_000_000_000 / 240);
     }
 }

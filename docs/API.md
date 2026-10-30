@@ -408,18 +408,29 @@ function closeNativeHandle(handle: Buffer): void;
 
 Releases a native shared-texture handle (NT HANDLE on Windows, `IOSurfaceRef` on macOS) that was minted by `receiveSharedTexture()` but never consumed by Electron's `importSharedTexture`. Only call this for handles you have **not** forwarded to Electron; Electron releases handles it has taken ownership of on its own.
 
-### `PreviewView` (Windows only for now)
+### `PreviewView` (Windows, macOS)
 
-Native child view inside a parent window that shows the newest frame of a Spout sender, drawn with its own D3D11 flip-model swapchain and presented every display refresh (vsync). The frame is drawn premultiplied-alpha, aspect-fit and centred on a solid background. Mouse input passes through to the Chromium content underneath (`HTTRANSPARENT`). On other platforms the constructor throws `PreviewView is not supported on this platform yet`.
+Native child view inside a parent window that shows the newest frame of a sender, presented every display refresh (vsync). The frame is drawn premultiplied-alpha, aspect-fit and centred on a solid background. Mouse input passes through to the Chromium content underneath. On other platforms the constructor throws `PreviewView is not supported on this platform yet`.
+
+- **Windows:** a child HWND with its own D3D11 flip-model swapchain, showing a Spout sender; `WM_NCHITTEST` returns `HTTRANSPARENT`.
+- **macOS:** a layer-backed child `NSView` (`CAMetalLayer`, BGRA8Unorm, opaque, `framebufferOnly`, `displaySyncEnabled = YES`, `maximumDrawableCount = 3`, sRGB) added on top of the content view's subviews, showing a Syphon server; `hitTest:` returns `nil`. Each refresh is signalled by a `CADisplayLink` from `-[NSView displayLinkWithTarget:selector:]` on its own run-loop thread (macOS 14+), else a `CVDisplayLink` that follows the window's display. A Metal render thread draws the newest Syphon texture directly (no copy), and keeps looking for the server (every 0.5 s) until it appears or after it goes away.
 
 ```typescript
 class PreviewView {
-  constructor(parentHandle: Buffer, senderName: string); // e.g. win.getNativeWindowHandle()
+  constructor(parentHandle: Buffer, senderName: string, options?: PreviewViewOptions); // e.g. win.getNativeWindowHandle()
   setBounds(x: number, y: number, width: number, height: number): void; // physical px; width/height <= 0 hides
   setVisible(visible: boolean): void;
   setBackground(r: number, g: number, b: number): void; // 0–255, clamped
+  setVsync(vsync: boolean): void; // false (default): present each new frame, at most once per refresh; true: vsync (Windows only for now)
   getStats(): PreviewStats;
   destroy(): void; // Terminal and idempotent
+}
+
+// macOS-only; ignored on Windows (a Spout sender is found by name).
+interface PreviewViewOptions {
+  serverUuid?: string; // Syphon server UUID (listSenders()[].uuid); takes priority over the name
+  appName?: string;    // Syphon application name filter, used with the name
+  flipY?: boolean;     // default true: draw texture row 0 at the bottom (Syphon's bottom-left origin), like TextureReceiver's default flip
 }
 
 interface PreviewStats {
@@ -435,21 +446,21 @@ interface PreviewStats {
   framesDrawn: number;          // same as `received` (kept for compatibility)
   framesSkipped: number;        // sender frames never shown (gaps in the sender's frame counter); 0 if the sender does not count frames
   // Current state
-  swapchainWidth: number;       // physical px, 0 until the swapchain exists
+  swapchainWidth: number;       // physical px, 0 until the swapchain exists (macOS: the last drawable's size)
   swapchainHeight: number;
   frameWidth: number;           // sender frame size, 0 while not connected
   frameHeight: number;
-  adapterName: string;          // DXGI adapter description of the device in use ("" until known)
-  vsync: boolean;               // Present sync interval > 0 (the native code path's constant)
+  adapterName: string;          // DXGI adapter description / MTLDevice name of the device in use ("" until known)
+  vsync: boolean;               // Windows: Present sync interval > 0; macOS: CAMetalLayer.displaySyncEnabled
   connected: boolean;           // sender found at the last poll
 }
 ```
 
-The render thread only records events; the windowed figures are computed natively and published through atomics, so `getStats()` never stalls Present. Poll it about once a second. Skips are counted from the sender's `<name>_Count_Semaphore` frame number: a jump of _n_ between two copied frames means _n − 1_ frames were replaced before the view copied them.
+The render thread only records events; the windowed figures are computed natively and published through atomics, so `getStats()` never stalls Present. Poll it about once a second. Skips are counted from a frame counter: on Windows the sender's `<name>_Count_Semaphore` frame number, on macOS the number of new frames the Syphon server announced to the view's client. A jump of _n_ between two drawn frames means _n − 1_ frames were replaced before the view took them. On macOS "received" means a new Syphon texture was taken (it is drawn without a copy).
 
-- Create it in Electron's main process (the thread that owns the parent window). It starts hidden; call `setBounds` and `setVisible(true)` to show it.
-- Bounds are in **physical** pixels of the parent's client area — multiply DIP coordinates by the display's `scaleFactor`.
-- The view uses its own Spout receiver, independent of any `TextureReceiver` for the same sender.
+- Create it in Electron's main process (the thread that owns the parent window). It starts hidden; call `setBounds` and `setVisible(true)` to show it. On macOS every AppKit call (create, `setBounds`, `setVisible`, `destroy`) runs synchronously on that thread; only `destroy()` waits for the render thread (bounded).
+- Bounds are in **physical** pixels of the parent's client area, from its top-left — multiply DIP coordinates by the display's `scaleFactor`. On macOS the view's frame is `bounds / backingScaleFactor` points (y measured from the bottom edge when the parent is not flipped, and pinned to the top while the window resizes) and the drawable is `width × height` physical px.
+- The view uses its own Spout receiver / Syphon client, independent of any `TextureReceiver` for the same sender.
 - After `destroy()`, the setters throw `PreviewView has been destroyed` and `getStats()` returns zeros.
 - HTML cannot be drawn over the view: it is a separate native window above the page.
 

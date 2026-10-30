@@ -19,6 +19,8 @@ impl PreviewView {
         match *self {}
     }
 
+    pub fn set_vsync(&mut self, _vsync: bool) {}
+
     pub fn set_background(&mut self, _clear_color: [f32; 4]) {
         match *self {}
     }

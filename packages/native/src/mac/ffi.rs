@@ -54,6 +54,24 @@ extern "C" {
     ) -> i32;
     pub fn syphon_receiver_set_flip_y(handle: SyphonReceiverHandle, flip: i32);
 
+    // ---- Newest-frame seam (PreviewView) ----
+    pub fn syphon_receiver_create_with_device(
+        server_uuid: *const c_char,
+        server_name: *const c_char,
+        app_name: *const c_char,
+        mtl_device: *mut std::ffi::c_void,
+        quiet: i32,
+    ) -> SyphonReceiverHandle;
+    pub fn syphon_directory_warm_up();
+    pub fn syphon_receiver_newest_texture(
+        handle: SyphonReceiverHandle,
+        out_texture: *mut *mut std::ffi::c_void,
+        out_width: *mut u32,
+        out_height: *mut u32,
+        out_frame_count: *mut u64,
+    ) -> i32;
+    pub fn syphon_texture_release(texture: *mut std::ffi::c_void);
+
     // ---- Discovery ----
     pub fn syphon_discovery_list_servers() -> *mut c_char;
     pub fn syphon_discovery_free_string(str: *mut c_char);

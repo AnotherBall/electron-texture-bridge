@@ -21,7 +21,7 @@ SyphonBridgeHandle syphon_bridge_create(const char* name) {
         auto* bridge = new SyphonBridge();
 
         // デフォルト Metal デバイス
-        bridge->device = MTLCreateSystemDefaultDevice();
+        bridge->device = device ? device : MTLCreateSystemDefaultDevice();
         if (!bridge->device) {
             NSLog(@"[SyphonBridge] ERROR: Failed to create Metal device");
             delete bridge;
@@ -243,6 +243,9 @@ struct SyphonReceiverBridge {
     uint32_t            lastWidth;
     uint32_t            lastHeight;
     std::atomic<bool>   hasNewFrameFlag{false};
+    // Frames the server announced (newFrameHandler calls) since connecting.
+    // Read by syphon_receiver_newest_texture as the frame counter.
+    std::atomic<uint64_t> announcedFrames{0};
 
     // CPU readback path: shared MTLBuffer reused per-frame.
     id<MTLBuffer>       stagingBuffer;
@@ -478,9 +481,14 @@ static bool ensure_shared_staging(SyphonReceiverBridge* bridge,
     return true;
 }
 
-SyphonReceiverHandle syphon_receiver_create(const char* server_uuid,
-                                             const char* server_name,
-                                             const char* app_name) {
+// Shared by syphon_receiver_create and syphon_receiver_create_with_device.
+// `device` nil = the system default device. `quiet` skips the log line when
+// no server matches (callers that retry until the server appears).
+static SyphonReceiverHandle create_receiver(const char* server_uuid,
+                                            const char* server_name,
+                                            const char* app_name,
+                                            id<MTLDevice> device,
+                                            bool quiet) {
     @autoreleasepool {
         // Find the server in the directory
         SyphonServerDirectory* dir = [SyphonServerDirectory sharedDirectory];
@@ -511,7 +519,7 @@ SyphonReceiverHandle syphon_receiver_create(const char* server_uuid,
         }
 
         if (!serverDesc) {
-            NSLog(@"[SyphonReceiver] ERROR: No matching server found");
+            if (!quiet) NSLog(@"[SyphonReceiver] ERROR: No matching server found");
             return nullptr;
         }
 
@@ -530,7 +538,7 @@ SyphonReceiverHandle syphon_receiver_create(const char* server_uuid,
         bridge->yFlipPipelinePixelFormat = (MTLPixelFormat)0;
         bridge->flipY = true;
 
-        bridge->device = MTLCreateSystemDefaultDevice();
+        bridge->device = device ? device : MTLCreateSystemDefaultDevice();
         if (!bridge->device) {
             NSLog(@"[SyphonReceiver] ERROR: Failed to create Metal device");
             delete bridge;
@@ -547,6 +555,7 @@ SyphonReceiverHandle syphon_receiver_create(const char* server_uuid,
                                                                        device:bridge->device
                                                                       options:nil
                                                               newFrameHandler:^(SyphonMetalClient* __unused client) {
+            bridgePtr->announcedFrames.fetch_add(1, std::memory_order_relaxed);
             bridgePtr->hasNewFrameFlag.store(true, std::memory_order_release);
         }];
 
@@ -557,6 +566,64 @@ SyphonReceiverHandle syphon_receiver_create(const char* server_uuid,
         }
 
         return static_cast<SyphonReceiverHandle>(bridge);
+    }
+}
+
+SyphonReceiverHandle syphon_receiver_create(const char* server_uuid,
+                                             const char* server_name,
+                                             const char* app_name) {
+    return create_receiver(server_uuid, server_name, app_name, nil, false);
+}
+
+SyphonReceiverHandle syphon_receiver_create_with_device(const char* server_uuid,
+                                                         const char* server_name,
+                                                         const char* app_name,
+                                                         void* mtl_device,
+                                                         int quiet) {
+    id<MTLDevice> device = (__bridge id<MTLDevice>)mtl_device;
+    return create_receiver(server_uuid, server_name, app_name, device, quiet != 0);
+}
+
+void syphon_directory_warm_up(void) {
+    @autoreleasepool {
+        (void)[SyphonServerDirectory sharedDirectory];
+    }
+}
+
+int syphon_receiver_newest_texture(SyphonReceiverHandle handle,
+                                   void** out_texture,
+                                   uint32_t* out_width,
+                                   uint32_t* out_height,
+                                   uint64_t* out_frame_count) {
+    if (!handle || !out_texture || !out_width || !out_height || !out_frame_count) return -1;
+    auto* bridge = static_cast<SyphonReceiverBridge*>(handle);
+    *out_texture = nullptr;
+    @autoreleasepool {
+        if (!bridge->client.isValid) return -1;
+        if (!bridge->hasNewFrameFlag.exchange(false, std::memory_order_acq_rel)) {
+            return 1; // no new frame
+        }
+        // Read the counter after consuming the flag: it covers at least the
+        // frame newFrameImage returns.
+        const uint64_t count = bridge->announcedFrames.load(std::memory_order_relaxed);
+        id<MTLTexture> texture = [bridge->client newFrameImage];
+        if (!texture) return 1;
+        bridge->lastWidth = (uint32_t)texture.width;
+        bridge->lastHeight = (uint32_t)texture.height;
+        *out_width = bridge->lastWidth;
+        *out_height = bridge->lastHeight;
+        *out_frame_count = count;
+        // Hand a +1 reference to the caller (syphon_texture_release balances it).
+        *out_texture = (__bridge_retained void*)texture;
+        return 0;
+    }
+}
+
+void syphon_texture_release(void* texture) {
+    if (!texture) return;
+    @autoreleasepool {
+        id<MTLTexture> released = (__bridge_transfer id<MTLTexture>)texture;
+        released = nil;
     }
 }
 

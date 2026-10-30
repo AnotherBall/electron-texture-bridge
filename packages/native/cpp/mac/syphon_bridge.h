@@ -108,6 +108,39 @@ int syphon_receiver_receive_shared_iosurface(SyphonReceiverHandle handle,
                                              uint32_t* out_height,
                                              uint32_t* out_pixel_format);
 
+// ---- Newest-frame seam for GPU consumers on the receiver's device ----
+// (used by the macOS PreviewView, see preview_view.h)
+
+// Like syphon_receiver_create, but the Syphon client (and every texture it
+// vends) lives on `mtl_device` (an unretained id<MTLDevice>; NULL = system
+// default). quiet != 0 skips the log line when no server matches, for
+// callers that retry until the server appears.
+SyphonReceiverHandle syphon_receiver_create_with_device(const char* server_uuid,
+                                                         const char* server_name,
+                                                         const char* app_name,
+                                                         void* mtl_device,
+                                                         int quiet);
+
+// Create SyphonServerDirectory's shared instance. Call once on the main
+// thread before creating receivers from another thread, so its distributed
+// notifications are registered from the main run loop.
+void syphon_directory_warm_up(void);
+
+// The newest frame as Syphon vends it (no copy, no flip): on success
+// *out_texture is a +1 retained id<MTLTexture> on the receiver's device, to
+// be released with syphon_texture_release. *out_frame_count is the number of
+// frames the server announced since the receiver connected (>= 1), so a jump
+// of n between two returned frames means n - 1 frames were never fetched.
+// Return codes: 0 = new frame, 1 = no new frame, -1 = not connected.
+int syphon_receiver_newest_texture(SyphonReceiverHandle handle,
+                                   void** out_texture,
+                                   uint32_t* out_width,
+                                   uint32_t* out_height,
+                                   uint64_t* out_frame_count);
+
+// Release a texture returned by syphon_receiver_newest_texture. NULL is a no-op.
+void syphon_texture_release(void* texture);
+
 // Toggle the receive-side Y-flip pass on/off. flip != 0 enables the
 // fullscreen Y-flip render pipeline (default — matches PR #46 behavior, used
 // when the consumer expects Y-DOWN image-coord layout). flip == 0 falls back

@@ -1,4 +1,5 @@
-// State shared between the JS-facing PreviewView and its render thread.
+// State shared between the JS-facing PreviewView and its render thread
+// (both platforms): what to draw, set from JS, and the published stats.
 
 use crate::preview_stats::{PreviewStatsSnapshot, WindowedStats};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -13,6 +14,8 @@ pub struct ViewState {
     pub height: u32,
     pub visible: bool,
     pub clear_color: [f32; 4],
+    /// Present on vsync, or (false, the default) when a new frame arrives.
+    pub vsync: bool,
     pub stop: bool,
     /// Bumped on every update so the idle thread can tell it missed nothing.
     pub generation: u64,
@@ -37,6 +40,11 @@ struct PublishedStats {
     presented: AtomicU64,
     received: AtomicU64,
     skipped: AtomicU64,
+    busy_fps: AtomicU64,
+    wait_avg_ms: AtomicU64,
+    receive_avg_ms: AtomicU64,
+    receive_max_ms: AtomicU64,
+    present_call_avg_ms: AtomicU64,
 }
 
 fn store_f64(a: &AtomicU64, v: f64) {
@@ -57,6 +65,11 @@ impl PublishedStats {
         self.presented.store(s.presented, Ordering::Relaxed);
         self.received.store(s.received, Ordering::Relaxed);
         self.skipped.store(s.skipped, Ordering::Relaxed);
+        store_f64(&self.busy_fps, s.busy_fps);
+        store_f64(&self.wait_avg_ms, s.wait_avg_ms);
+        store_f64(&self.receive_avg_ms, s.receive_avg_ms);
+        store_f64(&self.receive_max_ms, s.receive_max_ms);
+        store_f64(&self.present_call_avg_ms, s.present_call_avg_ms);
     }
 
     fn load(&self) -> WindowedStats {
@@ -69,6 +82,11 @@ impl PublishedStats {
             presented: self.presented.load(Ordering::Relaxed),
             received: self.received.load(Ordering::Relaxed),
             skipped: self.skipped.load(Ordering::Relaxed),
+            busy_fps: load_f64(&self.busy_fps),
+            wait_avg_ms: load_f64(&self.wait_avg_ms),
+            receive_avg_ms: load_f64(&self.receive_avg_ms),
+            receive_max_ms: load_f64(&self.receive_max_ms),
+            present_call_avg_ms: load_f64(&self.present_call_avg_ms),
         }
     }
 }
@@ -83,6 +101,8 @@ pub struct Shared {
     swapchain_height: AtomicU32,
     frame_width: AtomicU32,
     frame_height: AtomicU32,
+    monitor_refresh_hz: AtomicU32,
+    tearing: AtomicBool,
     /// Written only when the render thread (re)creates its device.
     adapter_name: Mutex<String>,
 }
@@ -95,6 +115,7 @@ impl Shared {
                 height: 0,
                 visible: false,
                 clear_color: [0.0, 0.0, 0.0, 1.0],
+                vsync: false,
                 stop: false,
                 generation: 0,
             }),
@@ -106,6 +127,8 @@ impl Shared {
             swapchain_height: AtomicU32::new(0),
             frame_width: AtomicU32::new(0),
             frame_height: AtomicU32::new(0),
+            monitor_refresh_hz: AtomicU32::new(0),
+            tearing: AtomicBool::new(false),
             adapter_name: Mutex::new(String::new()),
         }
     }
@@ -153,6 +176,16 @@ impl Shared {
         self.frame_height.store(height, Ordering::Relaxed);
     }
 
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub fn set_monitor_refresh_hz(&self, hz: u32) {
+        self.monitor_refresh_hz.store(hz, Ordering::Relaxed);
+    }
+
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    pub fn set_tearing(&self, supported: bool) {
+        self.tearing.store(supported, Ordering::Relaxed);
+    }
+
     pub fn set_adapter_name(&self, name: String) {
         *self.adapter_name.lock().unwrap_or_else(|e| e.into_inner()) = name;
     }
@@ -171,11 +204,96 @@ impl Shared {
                 .unwrap_or_else(|e| e.into_inner())
                 .clone(),
             vsync: self.vsync.load(Ordering::Relaxed),
+            monitor_refresh_hz: self.monitor_refresh_hz.load(Ordering::Relaxed),
+            tearing_supported: self.tearing.load(Ordering::Relaxed),
         }
     }
 
     // A panic while holding the lock leaves plain data behind; keep using it.
     fn lock_view(&self) -> std::sync::MutexGuard<'_, ViewState> {
         self.view.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// Rate-limits an attempt that may fail repeatedly (on macOS: connecting to
+/// a Syphon server that has not appeared yet). Timestamps are monotonic ns.
+// Only the macOS PreviewView retries connecting (Spout's receiver does it itself).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug, Clone, Copy)]
+pub struct RetryGate {
+    interval_ns: u64,
+    last_ns: Option<u64>,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl RetryGate {
+    pub fn new(interval_ns: u64) -> Self {
+        Self {
+            interval_ns,
+            last_ns: None,
+        }
+    }
+
+    /// True (and remembers `now_ns`) when no attempt was made yet or the
+    /// interval has passed since the previous one.
+    pub fn try_now(&mut self, now_ns: u64) -> bool {
+        let due = self
+            .last_ns
+            .is_none_or(|last| now_ns.saturating_sub(last) >= self.interval_ns);
+        if due {
+            self.last_ns = Some(now_ns);
+        }
+        due
+    }
+
+    /// Allow the next attempt at once (e.g. right after a disconnect).
+    #[allow(dead_code)]
+    pub fn reset(&mut self) {
+        self.last_ns = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MS: u64 = 1_000_000;
+
+    #[test]
+    fn retry_gate_allows_the_first_attempt_at_once() {
+        let mut gate = RetryGate::new(500 * MS);
+        assert!(gate.try_now(0));
+    }
+
+    #[test]
+    fn retry_gate_waits_for_the_interval_between_attempts() {
+        let mut gate = RetryGate::new(500 * MS);
+        assert!(gate.try_now(10 * MS));
+        assert!(!gate.try_now(100 * MS));
+        assert!(!gate.try_now(509 * MS));
+        assert!(gate.try_now(510 * MS));
+        assert!(!gate.try_now(600 * MS));
+    }
+
+    #[test]
+    fn retry_gate_reset_allows_an_attempt_at_once() {
+        let mut gate = RetryGate::new(500 * MS);
+        assert!(gate.try_now(0));
+        gate.reset();
+        assert!(gate.try_now(MS));
+    }
+
+    #[test]
+    fn view_state_renders_only_when_visible_with_a_size() {
+        let shared = Shared::new();
+        assert!(!shared.snapshot().is_rendering());
+        shared.update(|v| {
+            v.visible = true;
+            v.width = 10;
+            v.height = 10;
+        });
+        assert!(shared.snapshot().is_rendering());
+        shared.update(|v| v.height = 0);
+        assert!(!shared.snapshot().is_rendering());
     }
 }
