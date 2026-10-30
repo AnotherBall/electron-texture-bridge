@@ -1,5 +1,7 @@
 use super::ffi;
 use std::ffi::CString;
+use windows::core::Interface;
+use windows::Win32::Graphics::Direct3D11::{ID3D11Device, ID3D11Texture2D};
 
 pub struct Receiver {
     handle: Option<ffi::SpoutReceiverHandle>,
@@ -20,6 +22,24 @@ pub struct SharedTextureHandleInfo {
     /// Raw `DXGI_FORMAT` value. 87 = `B8G8R8A8_UNORM` (BGRA), which is what
     /// Spout senders default to.
     pub format: u32,
+}
+
+/// Outcome of [`Receiver::copy_frame`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyFrameResult {
+    /// The newest frame was copied into the destination texture.
+    Copied,
+    /// The sender has not published a new frame since the last copy.
+    NoNewFrame,
+    /// The destination is missing or does not match the sender; recreate it
+    /// with this description on the receiver's device.
+    NeedsTexture {
+        width: u32,
+        height: u32,
+        format: u32,
+    },
+    /// No sender is published under this name.
+    NotConnected,
 }
 
 unsafe impl Send for Receiver {}
@@ -159,6 +179,61 @@ impl Receiver {
             ),
             -2 => Err("Spout shared-texture GPU operation failed".into()),
             _ => Ok(None),
+        }
+    }
+
+    /// The receiver's D3D11 device, or `None` until a sender has been opened.
+    /// The receiver may switch devices when the sender changes adapter, so
+    /// renderers should compare it every frame.
+    pub fn device(&self) -> Option<ID3D11Device> {
+        let h = self.handle?;
+        let raw = unsafe { ffi::spout_receiver_get_device(h) };
+        if raw.is_null() {
+            return None;
+        }
+        // The bridge AddRef'd the device for us; from_raw takes that reference.
+        Some(unsafe { ID3D11Device::from_raw(raw) })
+    }
+
+    /// Copy the newest sender frame into `dst`, a texture on [`Self::device`].
+    pub fn copy_frame(&self, dst: Option<&ID3D11Texture2D>) -> CopyFrameResult {
+        let handle = match self.handle {
+            Some(h) => h,
+            None => return CopyFrameResult::NotConnected,
+        };
+
+        let mut width: u32 = 0;
+        let mut height: u32 = 0;
+        let mut format: u32 = 0;
+        let dst_raw = dst.map_or(std::ptr::null_mut(), |t| t.as_raw());
+
+        let ret = unsafe {
+            ffi::spout_receiver_copy_frame(handle, dst_raw, &mut width, &mut height, &mut format)
+        };
+
+        // Return codes:
+        //  0 = frame copied
+        //  1 = no new frame
+        //  2 = dst missing or mismatched (size / format / device)
+        // -1 = not connected
+        match ret {
+            0 => CopyFrameResult::Copied,
+            1 => CopyFrameResult::NoNewFrame,
+            2 => CopyFrameResult::NeedsTexture {
+                width,
+                height,
+                format,
+            },
+            _ => CopyFrameResult::NotConnected,
+        }
+    }
+
+    /// The sender's frame number seen by the latest copy, or 0 when the
+    /// sender does not count frames.
+    pub fn frame_count(&self) -> i64 {
+        match self.handle {
+            Some(h) => unsafe { ffi::spout_receiver_get_frame_count(h) },
+            None => 0,
         }
     }
 

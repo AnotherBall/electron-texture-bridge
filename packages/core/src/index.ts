@@ -2,6 +2,7 @@ import { Result } from "neverthrow";
 import {
   TextureSender,
   TextureReceiver,
+  PreviewView,
   closeNativeHandle,
   getPlatform,
   listSenders,
@@ -29,6 +30,9 @@ if (typeof Symbol.dispose === "symbol") {
   ) {
     this.stop();
   };
+  PreviewView.prototype[Symbol.dispose] = function (this: InstanceType<typeof PreviewView>) {
+    this.destroy();
+  };
 }
 
 // Augment native class types with Symbol.dispose (added at runtime above).
@@ -39,9 +43,12 @@ declare module "@napolab/texture-bridge" {
   interface TextureReceiver {
     [Symbol.dispose](): void;
   }
+  interface PreviewView {
+    [Symbol.dispose](): void;
+  }
 }
 
-export { TextureSender, TextureReceiver, closeNativeHandle, getPlatform, listSenders };
+export { TextureSender, TextureReceiver, PreviewView, closeNativeHandle, getPlatform, listSenders };
 export { TextureSendError } from "./errors";
 export type {
   TextureInfo,
@@ -52,7 +59,7 @@ export type {
   ReceivedFrame,
   PaintDefect,
 };
-export type { SharedTextureFrame } from "@napolab/texture-bridge";
+export type { SharedTextureFrame, PreviewStats } from "@napolab/texture-bridge";
 
 /**
  * Platform dispatch onto the native sender. Returns a {@link PaintDefect}

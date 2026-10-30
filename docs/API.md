@@ -408,6 +408,51 @@ function closeNativeHandle(handle: Buffer): void;
 
 Releases a native shared-texture handle (NT HANDLE on Windows, `IOSurfaceRef` on macOS) that was minted by `receiveSharedTexture()` but never consumed by Electron's `importSharedTexture`. Only call this for handles you have **not** forwarded to Electron; Electron releases handles it has taken ownership of on its own.
 
+### `PreviewView` (Windows only for now)
+
+Native child view inside a parent window that shows the newest frame of a Spout sender, drawn with its own D3D11 flip-model swapchain and presented every display refresh (vsync). The frame is drawn premultiplied-alpha, aspect-fit and centred on a solid background. Mouse input passes through to the Chromium content underneath (`HTTRANSPARENT`). On other platforms the constructor throws `PreviewView is not supported on this platform yet`.
+
+```typescript
+class PreviewView {
+  constructor(parentHandle: Buffer, senderName: string); // e.g. win.getNativeWindowHandle()
+  setBounds(x: number, y: number, width: number, height: number): void; // physical px; width/height <= 0 hides
+  setVisible(visible: boolean): void;
+  setBackground(r: number, g: number, b: number): void; // 0–255, clamped
+  getStats(): PreviewStats;
+  destroy(): void; // Terminal and idempotent
+}
+
+interface PreviewStats {
+  // Last ~1 s (sliding window)
+  presentFps: number;           // presents
+  receivedFps: number;          // new sender frames copied
+  repeatedFps: number;          // presents that re-showed the previous frame (no new frame arrived)
+  presentIntervalAvgMs: number; // average time between consecutive Present returns (0 with < 2 presents)
+  presentIntervalMaxMs: number; // longest time between consecutive Present returns
+  // Totals since creation
+  presented: number;            // swapchain presents
+  received: number;             // new sender frames copied
+  framesDrawn: number;          // same as `received` (kept for compatibility)
+  framesSkipped: number;        // sender frames never shown (gaps in the sender's frame counter); 0 if the sender does not count frames
+  // Current state
+  swapchainWidth: number;       // physical px, 0 until the swapchain exists
+  swapchainHeight: number;
+  frameWidth: number;           // sender frame size, 0 while not connected
+  frameHeight: number;
+  adapterName: string;          // DXGI adapter description of the device in use ("" until known)
+  vsync: boolean;               // Present sync interval > 0 (the native code path's constant)
+  connected: boolean;           // sender found at the last poll
+}
+```
+
+The render thread only records events; the windowed figures are computed natively and published through atomics, so `getStats()` never stalls Present. Poll it about once a second. Skips are counted from the sender's `<name>_Count_Semaphore` frame number: a jump of _n_ between two copied frames means _n − 1_ frames were replaced before the view copied them.
+
+- Create it in Electron's main process (the thread that owns the parent window). It starts hidden; call `setBounds` and `setVisible(true)` to show it.
+- Bounds are in **physical** pixels of the parent's client area — multiply DIP coordinates by the display's `scaleFactor`.
+- The view uses its own Spout receiver, independent of any `TextureReceiver` for the same sender.
+- After `destroy()`, the setters throw `PreviewView has been destroyed` and `getStats()` returns zeros.
+- HTML cannot be drawn over the view: it is a separate native window above the page.
+
 ### Resource Lifecycle
 
 Both `TextureSender` and `TextureReceiver` follow deterministic disposal semantics:
@@ -432,6 +477,8 @@ try {
 // Import from @napolab/texture-bridge-core for runtime Symbol.dispose patching.
 using sender = new TextureSender("MyApp", 1920, 1080);
 ```
+
+`PreviewView` follows the same rules with `destroy()` in place of `stop()`; `@napolab/texture-bridge-core` maps its `Symbol.dispose` to `destroy()`.
 
 ### `listSenders()`
 

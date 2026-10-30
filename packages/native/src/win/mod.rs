@@ -1,4 +1,5 @@
 mod ffi;
+pub mod preview;
 pub mod receiver;
 
 use crate::types::RawTextureHandle;

@@ -252,6 +252,9 @@ struct SpoutReceiverBridge {
     HANDLE            countSemaphore;
     long              lastFrameCount;
     bool              lastFrameNew;
+    // Sender frame number read by the latest get_new_frame (0 = the sender
+    // does not count frames). Exposed for skip statistics.
+    long              observedFrameCount;
 
     // Our NT-shared output staging (per-frame DuplicateHandle target).
     ID3D11Texture2D*  ntStaging;
@@ -564,12 +567,14 @@ static bool ensure_cpu_staging(SpoutReceiverBridge* bridge,
 // count frames (every poll is new); an unchanged number means no new frame.
 static bool get_new_frame(SpoutReceiverBridge* bridge) {
     bridge->lastFrameNew = true;
+    bridge->observedFrameCount = 0;
     if (!bridge->countSemaphore) return true;
 
     LONG frameCount = 0;
     if (WaitForSingleObject(bridge->countSemaphore, 0) == WAIT_OBJECT_0) {
         if (!ReleaseSemaphore(bridge->countSemaphore, 1, &frameCount)) return true;
     }
+    bridge->observedFrameCount = frameCount;
     if (frameCount == 0) return true;
     if (frameCount == bridge->lastFrameCount) {
         bridge->lastFrameNew = false;
@@ -752,6 +757,87 @@ int32_t spout_receiver_receive_shared_texture(void* handle,
     *out_height = bridge->senderHeight;
     *out_format = bridge->senderFormat;
     return 0;
+}
+
+// The receiver's D3D11 device, AddRef'd for the caller (who must Release
+// it). Null until a sender has been opened. The receiver replaces its device
+// when the sender moves to another adapter, so callers that render with it
+// should compare the pointer each frame and rebuild on change.
+void* spout_receiver_get_device(void* handle) {
+    if (!handle) return nullptr;
+    SpoutReceiverBridge* bridge = static_cast<SpoutReceiverBridge*>(handle);
+    if (!bridge->device) return nullptr;
+    bridge->device->AddRef();
+    return bridge->device;
+}
+
+// True when `texture` can take a CopyResource of the sender texture: same
+// size and format, and created on the receiver's current device.
+static bool texture_matches_sender(SpoutReceiverBridge* bridge,
+                                   ID3D11Texture2D* texture) {
+    if (!texture || !bridge->device) return false;
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    texture->GetDesc(&desc);
+    if (desc.Width  != bridge->senderWidth  ||
+        desc.Height != bridge->senderHeight ||
+        static_cast<DWORD>(desc.Format) != bridge->senderFormat) {
+        return false;
+    }
+
+    ID3D11Device* textureDevice = nullptr;
+    texture->GetDevice(&textureDevice);
+    const bool sameDevice = textureDevice == bridge->device;
+    if (textureDevice) textureDevice->Release();
+    return sameDevice;
+}
+
+// Copy the newest sender frame into a caller-owned texture on the receiver's
+// device (see spout_receiver_get_device). No NT handles are involved.
+// out_width / out_height / out_format always receive the sender's current
+// description once connected, so the caller can (re)create `dst_texture`.
+//
+// Return codes:
+//   0 = frame copied into dst_texture
+//   1 = no new frame (dst_texture keeps its previous contents)
+//   2 = dst_texture is null or does not match the sender (size, format or
+//       device); recreate it from out_* on the receiver's device
+//  -1 = not connected / no sender
+int32_t spout_receiver_copy_frame(void* handle,
+                                  void* dst_texture,
+                                  uint32_t* out_width,
+                                  uint32_t* out_height,
+                                  uint32_t* out_format) {
+    if (!handle || !out_width || !out_height || !out_format) return -1;
+
+    SpoutReceiverBridge* bridge = static_cast<SpoutReceiverBridge*>(handle);
+
+    if (!refresh_sender(bridge)) {
+        return -1;
+    }
+
+    *out_width  = bridge->senderWidth;
+    *out_height = bridge->senderHeight;
+    *out_format = bridge->senderFormat;
+
+    ID3D11Texture2D* dst = static_cast<ID3D11Texture2D*>(dst_texture);
+    if (!texture_matches_sender(bridge, dst)) return 2;
+
+    if (!get_new_frame(bridge)) return 1;
+
+    if (!bridge->frameCount->CheckTextureAccess(bridge->senderTexture)) return 1;
+    bridge->context->CopyResource(dst, bridge->senderTexture);
+    bridge->context->Flush();
+    bridge->frameCount->AllowTextureAccess(bridge->senderTexture);
+    return 0;
+}
+
+// The sender's frame number seen by the latest copy / receive call, or 0
+// when the sender does not count frames (or no call has run yet).
+int64_t spout_receiver_get_frame_count(void* handle) {
+    if (!handle) return 0;
+    SpoutReceiverBridge* bridge = static_cast<SpoutReceiverBridge*>(handle);
+    return static_cast<int64_t>(bridge->observedFrameCount);
 }
 
 // Close a raw NT HANDLE minted by spout_receiver_receive_shared_texture but

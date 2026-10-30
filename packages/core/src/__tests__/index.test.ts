@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockSend = vi.fn();
 const mockSendSurface = vi.fn();
 const mockStop = vi.fn();
+const mockDestroy = vi.fn();
 
 vi.mock("@napolab/texture-bridge", () => ({
   TextureSender: class MockTextureSender {
@@ -13,6 +14,10 @@ vi.mock("@napolab/texture-bridge", () => ({
   },
   TextureReceiver: class MockTextureReceiver {
     constructor(_name?: string, _app?: string, _uuid?: string) {}
+  },
+  PreviewView: class MockPreviewView {
+    destroy = mockDestroy;
+    constructor(_parentHandle?: Buffer, _senderName?: string) {}
   },
   getPlatform: () => "mock-platform",
   listSenders: () => [{ name: "TestSender", appName: "TestApp", uuid: "test-uuid" }],
@@ -27,6 +32,11 @@ describe("core re-exports", () => {
   it("re-exports TextureReceiver from native", async () => {
     const { TextureReceiver } = await import("../index");
     expect(TextureReceiver).toBeDefined();
+  });
+
+  it("re-exports PreviewView from native", async () => {
+    const { PreviewView } = await import("../index");
+    expect(PreviewView).toBeDefined();
   });
 
   it("re-exports listSenders from native", async () => {
@@ -53,6 +63,30 @@ describe("core re-exports", () => {
     expect(result[0]).toHaveProperty("name");
     expect(result[0]).toHaveProperty("appName");
     expect(result[0]).toHaveProperty("uuid");
+  });
+});
+
+describe("PreviewView Symbol.dispose", () => {
+  beforeEach(() => {
+    mockDestroy.mockReset();
+  });
+
+  it("calls destroy() when disposed", async () => {
+    const { PreviewView } = await import("../index");
+    const view = new PreviewView(Buffer.alloc(8), "Sender");
+
+    view[Symbol.dispose]();
+
+    expect(mockDestroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("calls destroy() at the end of a using block", async () => {
+    const { PreviewView } = await import("../index");
+    {
+      using _view = new PreviewView(Buffer.alloc(8), "Sender");
+    }
+
+    expect(mockDestroy).toHaveBeenCalledTimes(1);
   });
 });
 

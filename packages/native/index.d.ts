@@ -67,6 +67,54 @@ export interface JsSenderInfo {
  * Electron's importSharedTexture. Buffer must be 8 bytes LE.
  */
 export declare function closeNativeHandle(handle: Buffer): void
+/**
+ * napi-rs object returned from `PreviewView.getStats()`. Per-second figures
+ * cover a sliding window of about 1 s; totals run since the view was created.
+ */
+export interface PreviewStats {
+  /** Swapchain presents (one per display refresh while visible), total. */
+  presented: number
+  /**
+   * New sender frames copied and drawn, total. Same as `received`; kept
+   * for compatibility.
+   */
+  framesDrawn: number
+  /** New sender frames copied, total. */
+  received: number
+  /**
+   * Sender frames that were never shown (gaps in the sender's frame
+   * counter), total. Always 0 for senders that do not count frames.
+   */
+  framesSkipped: number
+  /** Presents in the last second. */
+  presentFps: number
+  /** New sender frames copied in the last second. */
+  receivedFps: number
+  /**
+   * Presents in the last second that showed the previous frame again
+   * because no new frame had arrived.
+   */
+  repeatedFps: number
+  /**
+   * Average time between consecutive presents in the last second (ms);
+   * 0 with fewer than two presents.
+   */
+  presentIntervalAvgMs: number
+  /** Longest time between consecutive presents in the last second (ms). */
+  presentIntervalMaxMs: number
+  /** Swapchain size in physical pixels (0 until it exists). */
+  swapchainWidth: number
+  swapchainHeight: number
+  /** Size of the sender frame being drawn (0 while not connected). */
+  frameWidth: number
+  frameHeight: number
+  /** Description of the GPU adapter rendering the view ("" until known). */
+  adapterName: string
+  /** Whether presents wait for vertical blank (sync interval > 0). */
+  vsync: boolean
+  /** Whether the sender was published at the last poll. */
+  connected: boolean
+}
 /** List all available texture senders (Syphon servers / Spout senders). */
 export declare function listSenders(): Array<JsSenderInfo>
 export declare class TextureSender {
@@ -180,4 +228,35 @@ export declare class TextureReceiver {
   setFlipY(flip: boolean): void
   /** Get the current platform name. */
   platform(): string
+}
+/**
+ * A native child view inside a parent window that draws the newest frame of
+ * a sender on a solid background, paced by the display's vsync.
+ * Windows only for now; the constructor throws elsewhere.
+ */
+export declare class PreviewView {
+  /**
+   * Create a hidden preview view.
+   *
+   * - `parentHandle`: native window handle of the parent, e.g. Electron's
+   *   `BrowserWindow.getNativeWindowHandle()` (HWND, 8 or 4 bytes LE)
+   * - `senderName`: Spout sender to show
+   *
+   * Must be called on the thread that owns the parent window (Electron's
+   * main process thread).
+   */
+  constructor(parentHandle: Buffer, senderName: string)
+  /**
+   * Position and size in physical pixels of the parent's client area.
+   * A zero (or negative) width or height hides the view.
+   */
+  setBounds(x: number, y: number, width: number, height: number): void
+  /** Show or hide the view. It is shown only once it also has a size. */
+  setVisible(visible: boolean): void
+  /** Background colour behind the frame, 0–255 per channel. */
+  setBackground(r: number, g: number, b: number): void
+  /** Debug statistics (see `PreviewStats`). Returns zeros once destroyed. */
+  getStats(): PreviewStats
+  /** Stop rendering and destroy the native view. Repeated calls are safe. */
+  destroy(): void
 }

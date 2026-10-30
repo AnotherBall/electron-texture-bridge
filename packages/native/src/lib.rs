@@ -1,4 +1,11 @@
 mod types;
+// Only the Windows PreviewView consumes these helpers today.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod preview_layout;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod preview_stats;
+#[cfg(not(target_os = "windows"))]
+mod preview_unsupported;
 
 #[cfg(target_os = "macos")]
 mod mac;
@@ -567,6 +574,163 @@ pub fn close_native_handle(handle: napi::bindgen_prelude::Buffer) -> Result<()> 
     }
 
     Ok(())
+}
+
+// ============================================================
+// JS API: PreviewView
+//
+//   const view = new PreviewView(win.getNativeWindowHandle(), "SenderName")
+//   view.setBounds(x, y, width, height)  // physical px in the parent client area
+//   view.setVisible(true)
+//   view.setBackground(32, 32, 32)
+//   view.getStats()  // { presentFps, receivedFps, repeatedFps, framesSkipped, ... }
+//   view.destroy()
+//
+// ============================================================
+
+#[cfg(not(target_os = "windows"))]
+use preview_unsupported::PreviewView as PreviewInner;
+#[cfg(target_os = "windows")]
+use win::preview::PreviewView as PreviewInner;
+
+/// napi-rs object returned from `PreviewView.getStats()`. Per-second figures
+/// cover a sliding window of about 1 s; totals run since the view was created.
+#[napi(object)]
+pub struct PreviewStats {
+    /// Swapchain presents (one per display refresh while visible), total.
+    pub presented: i64,
+    /// New sender frames copied and drawn, total. Same as `received`; kept
+    /// for compatibility.
+    pub frames_drawn: i64,
+    /// New sender frames copied, total.
+    pub received: i64,
+    /// Sender frames that were never shown (gaps in the sender's frame
+    /// counter), total. Always 0 for senders that do not count frames.
+    pub frames_skipped: i64,
+    /// Presents in the last second.
+    pub present_fps: f64,
+    /// New sender frames copied in the last second.
+    pub received_fps: f64,
+    /// Presents in the last second that showed the previous frame again
+    /// because no new frame had arrived.
+    pub repeated_fps: f64,
+    /// Average time between consecutive presents in the last second (ms);
+    /// 0 with fewer than two presents.
+    pub present_interval_avg_ms: f64,
+    /// Longest time between consecutive presents in the last second (ms).
+    pub present_interval_max_ms: f64,
+    /// Swapchain size in physical pixels (0 until it exists).
+    pub swapchain_width: u32,
+    pub swapchain_height: u32,
+    /// Size of the sender frame being drawn (0 while not connected).
+    pub frame_width: u32,
+    pub frame_height: u32,
+    /// Description of the GPU adapter rendering the view ("" until known).
+    pub adapter_name: String,
+    /// Whether presents wait for vertical blank (sync interval > 0).
+    pub vsync: bool,
+    /// Whether the sender was published at the last poll.
+    pub connected: bool,
+}
+
+impl From<preview_stats::PreviewStatsSnapshot> for PreviewStats {
+    fn from(s: preview_stats::PreviewStatsSnapshot) -> Self {
+        let w = s.windowed;
+        Self {
+            presented: w.presented as i64,
+            frames_drawn: w.received as i64,
+            received: w.received as i64,
+            frames_skipped: w.skipped as i64,
+            present_fps: w.present_fps,
+            received_fps: w.received_fps,
+            repeated_fps: w.repeated_fps,
+            present_interval_avg_ms: w.present_interval_avg_ms,
+            present_interval_max_ms: w.present_interval_max_ms,
+            swapchain_width: s.swapchain_width,
+            swapchain_height: s.swapchain_height,
+            frame_width: s.frame_width,
+            frame_height: s.frame_height,
+            adapter_name: s.adapter_name,
+            vsync: s.vsync,
+            connected: s.connected,
+        }
+    }
+}
+
+/// A native child view inside a parent window that draws the newest frame of
+/// a sender on a solid background, paced by the display's vsync.
+/// Windows only for now; the constructor throws elsewhere.
+#[napi]
+pub struct PreviewView {
+    inner: Option<PreviewInner>,
+}
+
+#[napi]
+impl PreviewView {
+    /// Create a hidden preview view.
+    ///
+    /// - `parentHandle`: native window handle of the parent, e.g. Electron's
+    ///   `BrowserWindow.getNativeWindowHandle()` (HWND, 8 or 4 bytes LE)
+    /// - `senderName`: Spout sender to show
+    ///
+    /// Must be called on the thread that owns the parent window (Electron's
+    /// main process thread).
+    #[napi(constructor)]
+    pub fn new(parent_handle: napi::bindgen_prelude::Buffer, sender_name: String) -> Result<Self> {
+        let parent = preview_layout::parse_parent_handle(parent_handle.as_ref())
+            .map_err(|e| Error::from_reason(e))?;
+        let inner = PreviewInner::new(parent, &sender_name).map_err(|e| Error::from_reason(e))?;
+        Ok(Self { inner: Some(inner) })
+    }
+
+    /// Position and size in physical pixels of the parent's client area.
+    /// A zero (or negative) width or height hides the view.
+    #[napi]
+    pub fn set_bounds(&mut self, x: i32, y: i32, width: i32, height: i32) -> Result<()> {
+        let bounds = preview_layout::normalize_bounds(x, y, width, height);
+        self.inner_mut()?.set_bounds(bounds);
+        Ok(())
+    }
+
+    /// Show or hide the view. It is shown only once it also has a size.
+    #[napi]
+    pub fn set_visible(&mut self, visible: bool) -> Result<()> {
+        self.inner_mut()?.set_visible(visible);
+        Ok(())
+    }
+
+    /// Background colour behind the frame, 0–255 per channel.
+    #[napi]
+    pub fn set_background(&mut self, r: f64, g: f64, b: f64) -> Result<()> {
+        self.inner_mut()?
+            .set_background(preview_layout::clear_color(r, g, b));
+        Ok(())
+    }
+
+    /// Debug statistics (see `PreviewStats`). Returns zeros once destroyed.
+    #[napi]
+    pub fn get_stats(&self) -> PreviewStats {
+        self.inner
+            .as_ref()
+            .map(|v| v.stats())
+            .unwrap_or_default()
+            .into()
+    }
+
+    /// Stop rendering and destroy the native view. Repeated calls are safe.
+    #[napi]
+    pub fn destroy(&mut self) -> Result<()> {
+        if let Some(mut inner) = self.inner.take() {
+            inner.destroy();
+        }
+        Ok(())
+    }
+
+    fn inner_mut(&mut self) -> Result<&mut PreviewInner> {
+        self.inner
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("PreviewView has been destroyed"))
+    }
 }
 
 /// List all available texture senders (Syphon servers / Spout senders).

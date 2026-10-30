@@ -27,6 +27,15 @@ extern "C" {
         out_height: *mut u32,
         out_format: *mut u32,
     ) -> i32;
+    pub fn spout_receiver_get_device(handle: SpoutReceiverHandle) -> *mut std::ffi::c_void;
+    pub fn spout_receiver_copy_frame(
+        handle: SpoutReceiverHandle,
+        dst_texture: *mut std::ffi::c_void,
+        out_width: *mut u32,
+        out_height: *mut u32,
+        out_format: *mut u32,
+    ) -> i32;
+    pub fn spout_receiver_get_frame_count(handle: SpoutReceiverHandle) -> i64;
     pub fn spout_receiver_is_connected(handle: SpoutReceiverHandle) -> i32;
     pub fn spout_receiver_get_width(handle: SpoutReceiverHandle) -> u32;
     pub fn spout_receiver_get_height(handle: SpoutReceiverHandle) -> u32;
