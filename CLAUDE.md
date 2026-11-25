@@ -7,6 +7,7 @@
 - 実装をする前にライブラリについて知らないことがある時は context7, web で調査してから進めること。
 - vitest を利用した TDD で実装すること
 - husky で commit 時に lint, typecheck を実行すること
+- ブランチ名は基本 `feature/<内容>`（英小文字のケバブケースで短く。例: `feature/release-build-estimate`）。修正・ドキュメント・リファクタも `feature/` にし、`feat/` `fix/` `docs/` は使わない。課題番号は入れない（Linear の紐づけで課題が閉じる）。`release/X.Y.Z` `hotfix/*` などリリースの流れで決まる名前はそれに従う（ユーザーの指定 2026-11-25）
 - 勝手に commit しないこと
 - 実装は小さいタスクに分けて実装すること。実装が終わったら difit を起動して私に review 依頼すること
 - review で繰り返し受けた内容は rules, skills にすることで永続化して
